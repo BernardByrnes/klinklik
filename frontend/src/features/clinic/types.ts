@@ -36,6 +36,8 @@ export type ClinicalNoteContent = {
   consultation?: string;
   presenting_complaint?: string;
   hpi?: string;
+  past_medical_history?: string;
+  past_surgical_history?: string;
   [key: string]: unknown;
 };
 

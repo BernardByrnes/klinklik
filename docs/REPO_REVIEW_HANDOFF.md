@@ -185,3 +185,25 @@ Authenticated browser verification: The local Playwright Phase 1B test passed wi
 Limitations: Verification used local SQLite synthetic data only; PostgreSQL/RLS-specific tests remain skipped pending a PostgreSQL environment. The in-app browser-control bridge was unavailable on this host, so the repository's authenticated local Playwright harness was used for the browser pass. The canonical blueprint and frozen backlog were not modified.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1C — Relevant Past Medical + Surgical History
+
+Status: VERIFIED / PASS.
+
+Objective: Extend the existing History section with clinician-authored Relevant Past Medical History and Relevant Past Surgical History using the existing Encounter and ClinicalNote structured-content path, while preserving Presenting Complaint, HPI, and Assessment/Plan.
+
+Frontend files changed: frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, and frontend/tests/phase-1c-history.spec.ts.
+
+Backend files changed: backend/clinical/serializers.py, backend/clinical/services.py, and backend/tests/test_phase_1c.py.
+
+Data contract changes: Existing ClinicalNote content now accepts past_medical_history and past_surgical_history text values up to 4,000 characters each. Partial draft and signing updates merge incoming keys with existing structured content, preserving other note fields. Existing clinical-note permissions, Encounter association, signed immutability, tenant/facility filters, and metadata-only audit behavior remain authoritative.
+
+Migration status: NONE. No new model, table, column, endpoint, or migration was added; manage.py migrate --plan reported no planned migration operations.
+
+Tests: Full backend suite passed with 26 passed and 5 PostgreSQL-only tests skipped. Focused Phase 1C backend coverage passed with 3 tests; existing Phase 1B backend regression coverage passed with 4 tests. Django check, frontend typecheck, lint, and production build passed.
+
+Authenticated browser verification: The local Playwright Phase 1C test passed with 1 passed in 33.8 seconds using synthetic local development patients. It verified real note persistence, partial save, existing Presenting Complaint/HPI retention, Assessment/Plan retention through signing, section switching, reload hydration, patient isolation, signed read-only behavior, desktop and narrow viewport width 768 layout, no horizontal overflow, and no authenticated console/API diagnostics. The existing no-payment Phase 1B browser regression also passed with 1 passed in 47.2 seconds.
+
+Known limitations: Verification used local SQLite synthetic data only; five PostgreSQL/RLS-specific tests remain skipped pending a PostgreSQL environment. The in-app browser-control bridge was unavailable on this host, so the repository Playwright harness was used for the authenticated browser pass. No family, social, medication, allergy, ROS, examination, diagnosis, laboratory, billing, payment, pharmacy, queue, CDS, AI, interpretation, or Phase 1D functionality was added. The canonical blueprint and frozen backlog were not modified.
+
+Next approved phase: NOT YET AUTHORISED

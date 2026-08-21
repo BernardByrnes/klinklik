@@ -21,6 +21,8 @@ def validate_note_content(value):
     for field_name, max_length in {
         "presenting_complaint": 500,
         "hpi": 4000,
+        "past_medical_history": 4000,
+        "past_surgical_history": 4000,
     }.items():
         if field_name not in value:
             continue

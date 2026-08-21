@@ -104,7 +104,10 @@ def _note_audit_metadata(content):
     return {
         "note_type": "CONSULTATION",
         "fields": sorted(
-            field for field in ("presenting_complaint", "hpi", "consultation", "assessment", "plan")
+            field for field in (
+                "presenting_complaint", "hpi", "past_medical_history", "past_surgical_history",
+                "consultation", "assessment", "plan",
+            )
             if field in content
         ),
     }
@@ -130,7 +133,7 @@ def save_note(*, organisation, facility, actor, encounter, content, request=None
     elif note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("Signed clinical history is immutable; use amend.")
     else:
-        note.content = content
+        note.content = {**(note.content or {}), **content}
         note.save(update_fields=["content", "updated_at"])
     record_event(
         request=request,
@@ -159,7 +162,7 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, request
     if note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("This note is already signed.")
     if content is not None:
-        note.content = content
+        note.content = {**(note.content or {}), **content}
     version = ClinicalNoteVersion.objects.create(
         organisation=organisation,
         note=note,

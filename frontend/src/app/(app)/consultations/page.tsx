@@ -51,6 +51,8 @@ type ConsultationDraft = {
   content: ClinicalNoteContent;
   presentingComplaint: string;
   hpi: string;
+  pastMedicalHistory: string;
+  pastSurgicalHistory: string;
   consultation: string;
 };
 
@@ -73,21 +75,29 @@ function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft
     content,
     presentingComplaint: contentText(content, "presenting_complaint"),
     hpi: contentText(content, "hpi"),
+    pastMedicalHistory: contentText(content, "past_medical_history"),
+    pastSurgicalHistory: contentText(content, "past_surgical_history"),
     consultation: consultation || assessmentPlan,
   };
 }
 
-function noteContentForSave(baseContent: ClinicalNoteContent, draft: Pick<ConsultationDraft, "presentingComplaint" | "hpi" | "consultation">): ClinicalNoteContent {
+function noteContentForSave(
+  baseContent: ClinicalNoteContent,
+  draft: Pick<ConsultationDraft, "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "consultation">,
+): ClinicalNoteContent {
   return {
     ...baseContent,
     presenting_complaint: draft.presentingComplaint,
     hpi: draft.hpi,
+    past_medical_history: draft.pastMedicalHistory,
+    past_surgical_history: draft.pastSurgicalHistory,
     consultation: draft.consultation,
   };
 }
+
 const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
   summary: "Additional summary information is not available from the current consultation data.",
-  history: "Start the encounter to capture the presenting complaint and HPI.",
+  history: "Start the encounter to capture the presenting complaint, HPI, and relevant past history.",
   examination: "Examination capture is reserved for a later consultation phase.",
   investigations: "Investigations are not implemented in this foundation phase.",
   diagnosis: "Diagnosis capture is reserved for a later consultation phase.",
@@ -167,8 +177,12 @@ type HistorySectionProps = {
   status: string;
   presentingComplaint: string;
   hpi: string;
+  pastMedicalHistory: string;
+  pastSurgicalHistory: string;
   onPresentingComplaintChange: (value: string) => void;
   onHpiChange: (value: string) => void;
+  onPastMedicalHistoryChange: (value: string) => void;
+  onPastSurgicalHistoryChange: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
   saveState: "idle" | "unsaved" | "saved";
@@ -178,8 +192,12 @@ function HistorySection({
   status,
   presentingComplaint,
   hpi,
+  pastMedicalHistory,
+  pastSurgicalHistory,
   onPresentingComplaintChange,
   onHpiChange,
+  onPastMedicalHistoryChange,
+  onPastSurgicalHistoryChange,
   onSave,
   savePending,
   saveState,
@@ -203,6 +221,18 @@ function HistorySection({
             {hpi || "Not recorded."}
           </p>
         </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Relevant Past Medical History</h3>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+            {pastMedicalHistory || "Not recorded."}
+          </p>
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Relevant Past Surgical History</h3>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+            {pastSurgicalHistory || "Not recorded."}
+          </p>
+        </div>
       </div>
     );
   }
@@ -210,7 +240,7 @@ function HistorySection({
   return (
     <div className="space-y-4">
       <p className="text-[12.5px] font-medium text-secondary">
-        Record the patient&apos;s presenting complaint and history of this illness. This section does not add a diagnosis or treatment.
+        Record the patient&apos;s presenting complaint, history of this illness, and relevant past history. This section does not add a diagnosis or treatment.
       </p>
       <Field
         label="Presenting complaint"
@@ -235,6 +265,32 @@ function HistorySection({
           maxLength={4000}
           value={hpi}
           onChange={(event) => onHpiChange(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="Relevant Past Medical History"
+        htmlFor="past-medical-history"
+        hint="Relevant prior medical conditions or history (4,000 characters maximum)."
+      >
+        <Textarea
+          id="past-medical-history"
+          className="min-h-[150px]"
+          maxLength={4000}
+          value={pastMedicalHistory}
+          onChange={(event) => onPastMedicalHistoryChange(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="Relevant Past Surgical History"
+        htmlFor="past-surgical-history"
+        hint="Relevant prior surgical history (4,000 characters maximum)."
+      >
+        <Textarea
+          id="past-surgical-history"
+          className="min-h-[150px]"
+          maxLength={4000}
+          value={pastSurgicalHistory}
+          onChange={(event) => onPastSurgicalHistoryChange(event.target.value)}
         />
       </Field>
       <div className="flex flex-wrap items-center gap-3">
@@ -262,6 +318,8 @@ function ConsultationsWorkspace() {
   const [noteContent, setNoteContent] = useState<ClinicalNoteContent>({});
   const [presentingComplaint, setPresentingComplaint] = useState("");
   const [hpi, setHpi] = useState("");
+  const [pastMedicalHistory, setPastMedicalHistory] = useState("");
+  const [pastSurgicalHistory, setPastSurgicalHistory] = useState("");
   const [draftSaveState, setDraftSaveState] = useState<"idle" | "unsaved" | "saved">("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
@@ -283,12 +341,20 @@ function ConsultationsWorkspace() {
     setNoteContent(draft.content);
     setPresentingComplaint(draft.presentingComplaint);
     setHpi(draft.hpi);
+    setPastMedicalHistory(draft.pastMedicalHistory);
+    setPastSurgicalHistory(draft.pastSurgicalHistory);
     setNote(draft.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
   }
 
   function buildNoteContent() {
-    return noteContentForSave(noteContent, { presentingComplaint, hpi, consultation: note });
+    return noteContentForSave(noteContent, {
+      presentingComplaint,
+      hpi,
+      pastMedicalHistory,
+      pastSurgicalHistory,
+      consultation: note,
+    });
   }
 
   function selectEntry(entry: QueueEntry) {
@@ -298,6 +364,8 @@ function ConsultationsWorkspace() {
     setNoteContent({});
     setPresentingComplaint("");
     setHpi("");
+    setPastMedicalHistory("");
+    setPastSurgicalHistory("");
     setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
@@ -491,6 +559,8 @@ function ConsultationsWorkspace() {
                       status={encounter.status}
                       presentingComplaint={presentingComplaint}
                       hpi={hpi}
+                      pastMedicalHistory={pastMedicalHistory}
+                      pastSurgicalHistory={pastSurgicalHistory}
                       onPresentingComplaintChange={(value) => {
                         setPresentingComplaint(value);
                         setDraftSaveState("unsaved");
@@ -498,6 +568,16 @@ function ConsultationsWorkspace() {
                       }}
                       onHpiChange={(value) => {
                         setHpi(value);
+                        setDraftSaveState("unsaved");
+                        setNotice("");
+                      }}
+                      onPastMedicalHistoryChange={(value) => {
+                        setPastMedicalHistory(value);
+                        setDraftSaveState("unsaved");
+                        setNotice("");
+                      }}
+                      onPastSurgicalHistoryChange={(value) => {
+                        setPastSurgicalHistory(value);
                         setDraftSaveState("unsaved");
                         setNotice("");
                       }}
