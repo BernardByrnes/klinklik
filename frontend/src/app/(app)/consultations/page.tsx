@@ -53,6 +53,8 @@ type ConsultationDraft = {
   hpi: string;
   pastMedicalHistory: string;
   pastSurgicalHistory: string;
+  familyHistory: string;
+  socialHistory: string;
   consultation: string;
 };
 
@@ -77,13 +79,15 @@ function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft
     hpi: contentText(content, "hpi"),
     pastMedicalHistory: contentText(content, "past_medical_history"),
     pastSurgicalHistory: contentText(content, "past_surgical_history"),
+    familyHistory: contentText(content, "family_history"),
+    socialHistory: contentText(content, "social_history"),
     consultation: consultation || assessmentPlan,
   };
 }
 
 function noteContentForSave(
   baseContent: ClinicalNoteContent,
-  draft: Pick<ConsultationDraft, "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "consultation">,
+  draft: Pick<ConsultationDraft, "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "consultation">,
 ): ClinicalNoteContent {
   return {
     ...baseContent,
@@ -91,6 +95,8 @@ function noteContentForSave(
     hpi: draft.hpi,
     past_medical_history: draft.pastMedicalHistory,
     past_surgical_history: draft.pastSurgicalHistory,
+    family_history: draft.familyHistory,
+    social_history: draft.socialHistory,
     consultation: draft.consultation,
   };
 }
@@ -179,10 +185,14 @@ type HistorySectionProps = {
   hpi: string;
   pastMedicalHistory: string;
   pastSurgicalHistory: string;
+  familyHistory: string;
+  socialHistory: string;
   onPresentingComplaintChange: (value: string) => void;
   onHpiChange: (value: string) => void;
   onPastMedicalHistoryChange: (value: string) => void;
   onPastSurgicalHistoryChange: (value: string) => void;
+  onFamilyHistoryChange: (value: string) => void;
+  onSocialHistoryChange: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
   saveState: "idle" | "unsaved" | "saved";
@@ -194,10 +204,14 @@ function HistorySection({
   hpi,
   pastMedicalHistory,
   pastSurgicalHistory,
+  familyHistory,
+  socialHistory,
   onPresentingComplaintChange,
   onHpiChange,
   onPastMedicalHistoryChange,
   onPastSurgicalHistoryChange,
+  onFamilyHistoryChange,
+  onSocialHistoryChange,
   onSave,
   savePending,
   saveState,
@@ -231,6 +245,18 @@ function HistorySection({
           <h3 className="text-[13px] font-bold text-ink">Relevant Past Surgical History</h3>
           <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
             {pastSurgicalHistory || "Not recorded."}
+          </p>
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Relevant Family History</h3>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+            {familyHistory || "Not recorded."}
+          </p>
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Relevant Social History</h3>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+            {socialHistory || "Not recorded."}
           </p>
         </div>
       </div>
@@ -293,6 +319,32 @@ function HistorySection({
           onChange={(event) => onPastSurgicalHistoryChange(event.target.value)}
         />
       </Field>
+      <Field
+        label="Relevant Family History"
+        htmlFor="family-history"
+        hint="Relevant family history in the clinician's narrative (4,000 characters maximum)."
+      >
+        <Textarea
+          id="family-history"
+          className="min-h-[150px]"
+          maxLength={4000}
+          value={familyHistory}
+          onChange={(event) => onFamilyHistoryChange(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="Relevant Social History"
+        htmlFor="social-history"
+        hint="Relevant social or contextual history in the clinician's narrative (4,000 characters maximum)."
+      >
+        <Textarea
+          id="social-history"
+          className="min-h-[150px]"
+          maxLength={4000}
+          value={socialHistory}
+          onChange={(event) => onSocialHistoryChange(event.target.value)}
+        />
+      </Field>
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="secondary" disabled={savePending} onClick={onSave}>
           {savePending ? "Saving…" : "Save draft"}
@@ -320,6 +372,8 @@ function ConsultationsWorkspace() {
   const [hpi, setHpi] = useState("");
   const [pastMedicalHistory, setPastMedicalHistory] = useState("");
   const [pastSurgicalHistory, setPastSurgicalHistory] = useState("");
+  const [familyHistory, setFamilyHistory] = useState("");
+  const [socialHistory, setSocialHistory] = useState("");
   const [draftSaveState, setDraftSaveState] = useState<"idle" | "unsaved" | "saved">("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
@@ -343,6 +397,8 @@ function ConsultationsWorkspace() {
     setHpi(draft.hpi);
     setPastMedicalHistory(draft.pastMedicalHistory);
     setPastSurgicalHistory(draft.pastSurgicalHistory);
+    setFamilyHistory(draft.familyHistory);
+    setSocialHistory(draft.socialHistory);
     setNote(draft.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
   }
@@ -353,6 +409,8 @@ function ConsultationsWorkspace() {
       hpi,
       pastMedicalHistory,
       pastSurgicalHistory,
+      familyHistory,
+      socialHistory,
       consultation: note,
     });
   }
@@ -366,6 +424,8 @@ function ConsultationsWorkspace() {
     setHpi("");
     setPastMedicalHistory("");
     setPastSurgicalHistory("");
+    setFamilyHistory("");
+    setSocialHistory("");
     setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
@@ -561,6 +621,8 @@ function ConsultationsWorkspace() {
                       hpi={hpi}
                       pastMedicalHistory={pastMedicalHistory}
                       pastSurgicalHistory={pastSurgicalHistory}
+                      familyHistory={familyHistory}
+                      socialHistory={socialHistory}
                       onPresentingComplaintChange={(value) => {
                         setPresentingComplaint(value);
                         setDraftSaveState("unsaved");
@@ -578,6 +640,16 @@ function ConsultationsWorkspace() {
                       }}
                       onPastSurgicalHistoryChange={(value) => {
                         setPastSurgicalHistory(value);
+                        setDraftSaveState("unsaved");
+                        setNotice("");
+                      }}
+                      onFamilyHistoryChange={(value) => {
+                        setFamilyHistory(value);
+                        setDraftSaveState("unsaved");
+                        setNotice("");
+                      }}
+                      onSocialHistoryChange={(value) => {
+                        setSocialHistory(value);
                         setDraftSaveState("unsaved");
                         setNotice("");
                       }}

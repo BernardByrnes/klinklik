@@ -229,3 +229,32 @@ PostgreSQL limitation: the same test module could not complete under the non-byp
 Regression verification: full backend suite 28 passed, 7 skipped; focused Phase 1B suite 4 passed; focused Phase 1C suite 3 passed; Django check passed; frontend typecheck, lint, and production build passed. The existing safe authenticated synthetic Phase 1C browser regression passed with 1 passed using the repository Playwright harness. No payment or external side effect was exercised.
 
 Next approved phase: NOT YET AUTHORISED. Phase 1D was not started.
+
+### Phase 1D - Family History + Social History
+
+Status: VERIFIED / PASS.
+
+Objective: add only clinician-authored narrative Relevant Family History and Relevant Social History to the existing consultation History workspace.
+
+Fields implemented: family_history and social_history, both multiline narrative fields with a 4,000-character maximum. Structured smoking, alcohol, substance, occupation, safeguarding, and social-risk fields were not added.
+
+Persistence mechanism: existing Encounter -> ClinicalNote structured JSON content, using the Phase 1C-F hardened Encounter-first / ClinicalNote-second save and sign paths. No new model, endpoint, or database column was added.
+
+Frontend files changed: frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, and frontend/tests/phase-1d-history.spec.ts.
+
+Backend files changed: backend/clinical/serializers.py, backend/clinical/services.py, and backend/tests/test_phase_1d.py.
+
+Migration status: NONE. makemigrations --check --dry-run reported No changes detected.
+
+API/data-contract changes: existing note write/amend validation now accepts family_history and social_history as strings up to 4,000 characters. Existing partial merge, signing, amendment, and Encounter response behavior remains authoritative.
+
+Security/PHI verification: audit metadata records changed field names only; raw history text is not added to generic audit payloads, logs, or browser storage. Existing clinical-note capability, tenant, and facility isolation was verified.
+
+Tests: focused Phase 1D backend 7 passed; full backend 35 passed and 7 skipped; Phase 1B 4 passed; Phase 1C 3 passed; Phase 1C-F PostgreSQL integrity 4 passed; frontend typecheck, lint, and build passed.
+
+PostgreSQL concurrency regression status: PASS. Existing Phase 1C-F PostgreSQL owner-role suite passed 4/4; the previously documented non-bypass application-role pytest teardown limitation remains unchanged and no permissions were loosened.
+
+Authenticated browser verification: Phase 1D 1 passed; existing Phase 1B and Phase 1C consultation regressions 2 passed. Synthetic local Playwright verification covered reload, section switching, patient isolation, signing, signed read-only state, storage checks, narrow layout, and clean diagnostics. The in-app bridge was unavailable, so the repository harness was used.
+
+Known limitations: this implements the explicitly authorized narrative-only slice; the canonical backlog's broader structured-lite social expansion remains outside this phase. The canonical backlog was not modified.
+Next approved phase: NOT YET AUTHORISED

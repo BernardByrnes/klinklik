@@ -38,6 +38,8 @@ export type ClinicalNoteContent = {
   hpi?: string;
   past_medical_history?: string;
   past_surgical_history?: string;
+  family_history?: string;
+  social_history?: string;
   [key: string]: unknown;
 };
 

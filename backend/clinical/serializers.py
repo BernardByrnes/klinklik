@@ -23,6 +23,8 @@ def validate_note_content(value):
         "hpi": 4000,
         "past_medical_history": 4000,
         "past_surgical_history": 4000,
+        "family_history": 4000,
+        "social_history": 4000,
     }.items():
         if field_name not in value:
             continue
