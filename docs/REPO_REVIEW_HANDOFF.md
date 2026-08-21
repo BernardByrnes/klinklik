@@ -149,17 +149,17 @@ Independent reviewers should inspect the current repository, this handoff, `Klin
 
 ### Phase G0 — Public GitHub Repository Bootstrap
 
-Status: IN PROGRESS — baseline commit and public-repository publication pending.
+Status: PASS WITH VALIDATION LIMITATION.
 
 Repository initialised: YES
 GitHub repository name: `klinklik`
-Visibility: PUBLIC (pending creation)
-Initial baseline commit SHA: pending
-Public remote URL: pending
-Security scan result: Pre-init and staged-tree scans passed. No private keys, real data, browser auth/session state, local databases, or runtime/build artifacts are candidates for publication. Synthetic development fixtures and environment templates were reviewed; Docker credentials were converted to environment-bound bootstrap values.
+Visibility: PUBLIC
+Initial baseline commit SHA: `a52615a9ee4b0b786c5783e530880a0437ffa948`
+Public remote URL: `https://github.com/BernardByrnes/klinklik`
+Security scan result: PASS. Pre-init, staged-tree, and post-push public-clone scans found no private keys, real data, browser auth/session state, local databases, or runtime/build artifacts. Synthetic development fixtures and environment templates were reviewed; Docker credentials were converted to environment-bound bootstrap values.
 Any intentionally ignored local files/categories: local SQLite database, Python virtualenv/cache files, Node modules/Next build output, browser test output, logs, private keys/certificates, local environment files, and review artifacts.
 Any publication-related adjustments: expanded `.gitignore`; removed committed Docker development credentials; added an environment-bound Docker bootstrap script; retained clearly synthetic seed/test fixture credentials.
-Tests were not feature-regression changes: YES
+Tests were not feature-regression changes: YES. Django check, backend tests, frontend typecheck, lint, build, and the safe no-payment Playwright subset passed. Payment-creating E2E cases were not run under the explicit no-payments constraint.
 Next phase: Phase 1B — NOT YET AUTHORISED
 
-Current Git status: repository initialised on `main`; baseline commit pending. No GitHub repository has been created and nothing has been committed, pushed, merged, deployed, or submitted for review.
+Current Git status: clean `main` branch tracking the public `origin/main` baseline. No merge, deployment, or pull request was performed.
