@@ -58,6 +58,60 @@ type ConsultationDraft = {
   consultation: string;
 };
 
+type ClinicalNoteField =
+  | "presenting_complaint"
+  | "hpi"
+  | "past_medical_history"
+  | "past_surgical_history"
+  | "family_history"
+  | "social_history"
+  | "consultation";
+
+type EditableDraftValues = Pick<
+  ConsultationDraft,
+  "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "consultation"
+>;
+
+type DraftMutationVariables = {
+  content: ClinicalNoteContent;
+  fields: ClinicalNoteField[];
+  values: EditableDraftValues;
+  encounterId: string;
+  session: number;
+};
+
+type NoteSaveResponse = {
+  note: string;
+  status: string;
+  content: ClinicalNoteContent;
+};
+
+type NoteSignResponse = NoteSaveResponse & {
+  current_version: number;
+};
+
+const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues> = {
+  presenting_complaint: "presentingComplaint",
+  hpi: "hpi",
+  past_medical_history: "pastMedicalHistory",
+  past_surgical_history: "pastSurgicalHistory",
+  family_history: "familyHistory",
+  social_history: "socialHistory",
+  consultation: "consultation",
+};
+
+function emptyDraftValues(): EditableDraftValues {
+  return {
+    presentingComplaint: "",
+    hpi: "",
+    pastMedicalHistory: "",
+    pastSurgicalHistory: "",
+    familyHistory: "",
+    socialHistory: "",
+    consultation: DEFAULT_CONSULTATION_NOTE,
+  };
+}
+
 function consultationContent(encounter: Encounter): ClinicalNoteContent {
   return encounter.notes?.find((entry) => entry.note_type === "CONSULTATION")?.content ?? {};
 }
@@ -67,14 +121,12 @@ function contentText(content: ClinicalNoteContent, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft {
-  const content = consultationContent(encounter);
+function editableDraftValuesFromContent(content: ClinicalNoteContent): EditableDraftValues {
   const consultation = contentText(content, "consultation");
   const assessment = contentText(content, "assessment");
   const plan = contentText(content, "plan");
   const assessmentPlan = assessment || plan ? "Assessment: " + assessment + "\nPlan: " + plan : DEFAULT_CONSULTATION_NOTE;
   return {
-    content,
     presentingComplaint: contentText(content, "presenting_complaint"),
     hpi: contentText(content, "hpi"),
     pastMedicalHistory: contentText(content, "past_medical_history"),
@@ -85,20 +137,16 @@ function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft
   };
 }
 
-function noteContentForSave(
-  baseContent: ClinicalNoteContent,
-  draft: Pick<ConsultationDraft, "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "consultation">,
-): ClinicalNoteContent {
-  return {
-    ...baseContent,
-    presenting_complaint: draft.presentingComplaint,
-    hpi: draft.hpi,
-    past_medical_history: draft.pastMedicalHistory,
-    past_surgical_history: draft.pastSurgicalHistory,
-    family_history: draft.familyHistory,
-    social_history: draft.socialHistory,
-    consultation: draft.consultation,
-  };
+function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft {
+  const content = consultationContent(encounter);
+  return { content, ...editableDraftValuesFromContent(content) };
+}
+
+function noteContentForFields(values: EditableDraftValues, fields: ClinicalNoteField[]): ClinicalNoteContent {
+  return fields.reduce<ClinicalNoteContent>((content, field) => {
+    content[field] = values[FIELD_TO_DRAFT_VALUE[field]];
+    return content;
+  }, {});
 }
 
 const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
@@ -367,7 +415,7 @@ function ConsultationsWorkspace() {
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
   const [encounter, setEncounter] = useState<Encounter | null>(null);
   const [note, setNote] = useState(DEFAULT_CONSULTATION_NOTE);
-  const [noteContent, setNoteContent] = useState<ClinicalNoteContent>({});
+  const noteContentRef = useRef<ClinicalNoteContent>({});
   const [presentingComplaint, setPresentingComplaint] = useState("");
   const [hpi, setHpi] = useState("");
   const [pastMedicalHistory, setPastMedicalHistory] = useState("");
@@ -379,6 +427,9 @@ function ConsultationsWorkspace() {
   const [confirmingSign, setConfirmingSign] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const dirtyFieldsRef = useRef<Set<ClinicalNoteField>>(new Set());
+  const draftValuesRef = useRef<EditableDraftValues>(emptyDraftValues());
+  const draftSessionRef = useRef(0);
 
   const queue = useQuery({
     queryKey: ["queue", "TRIAGED,IN_CONSULTATION"],
@@ -392,34 +443,41 @@ function ConsultationsWorkspace() {
   );
   function hydrateNote(created: Encounter) {
     const draft = consultationDraftFromEncounter(created);
-    setNoteContent(draft.content);
-    setPresentingComplaint(draft.presentingComplaint);
-    setHpi(draft.hpi);
-    setPastMedicalHistory(draft.pastMedicalHistory);
-    setPastSurgicalHistory(draft.pastSurgicalHistory);
-    setFamilyHistory(draft.familyHistory);
-    setSocialHistory(draft.socialHistory);
-    setNote(draft.consultation);
+    const values = editableDraftValuesFromContent(draft.content);
+    noteContentRef.current = draft.content;
+    draftValuesRef.current = values;
+    dirtyFieldsRef.current = new Set();
+    draftSessionRef.current += 1;
+    setPresentingComplaint(values.presentingComplaint);
+    setHpi(values.hpi);
+    setPastMedicalHistory(values.pastMedicalHistory);
+    setPastSurgicalHistory(values.pastSurgicalHistory);
+    setFamilyHistory(values.familyHistory);
+    setSocialHistory(values.socialHistory);
+    setNote(values.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
   }
 
-  function buildNoteContent() {
-    return noteContentForSave(noteContent, {
-      presentingComplaint,
-      hpi,
-      pastMedicalHistory,
-      pastSurgicalHistory,
-      familyHistory,
-      socialHistory,
-      consultation: note,
-    });
+  function currentDraftMutation(): DraftMutationVariables {
+    const values = { ...draftValuesRef.current };
+    const fields = Array.from(dirtyFieldsRef.current);
+    return {
+      content: noteContentForFields(values, fields),
+      fields,
+      values,
+      encounterId: encounter?.id ?? "",
+      session: draftSessionRef.current,
+    };
   }
 
   function selectEntry(entry: QueueEntry) {
+    draftSessionRef.current += 1;
+    noteContentRef.current = {};
+    draftValuesRef.current = emptyDraftValues();
+    dirtyFieldsRef.current = new Set();
     setSelectedId(entry.id);
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
-    setNoteContent({});
     setPresentingComplaint("");
     setHpi("");
     setPastMedicalHistory("");
@@ -449,34 +507,54 @@ function ConsultationsWorkspace() {
     onError: (reason) => setError(errorMessage(reason)),
   });
 
-  const saveDraft = useMutation({
-    mutationFn: () =>
-      apiRequest<{ note: string; status: string; content: ClinicalNoteContent }>(
-        "/api/v1/clinic/encounters/" + encounter?.id + "/notes/",
+  const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
+    mutationFn: ({ content, encounterId }) =>
+      apiRequest<NoteSaveResponse>(
+        "/api/v1/clinic/encounters/" + encounterId + "/notes/",
         {
           method: "POST",
-          body: JSON.stringify({ content: buildNoteContent() }),
+          body: JSON.stringify({ content }),
         },
       ),
-    onSuccess: (saved) => {
-      setNoteContent(saved.content);
-      setDraftSaveState("saved");
+    onSuccess: (saved, variables) => {
+      if (variables.session !== draftSessionRef.current) return;
+      noteContentRef.current = saved.content;
+      for (const field of variables.fields) {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        if (draftValuesRef.current[draftKey] === variables.values[draftKey]) {
+          dirtyFieldsRef.current.delete(field);
+        }
+      }
+      setDraftSaveState(dirtyFieldsRef.current.size > 0 ? "unsaved" : "saved");
       setNotice("Consultation draft saved.");
       setError("");
     },
-    onError: (reason) => {
+    onError: (reason, variables) => {
+      if (variables.session !== draftSessionRef.current) return;
       setDraftSaveState("unsaved");
       setError(errorMessage(reason));
     },
   });
 
-  const signNote = useMutation({
-    mutationFn: () =>
-      apiRequest(`/api/v1/clinic/encounters/${encounter?.id}/sign/`, {
+  const signNote = useMutation<NoteSignResponse, unknown, DraftMutationVariables>({
+    mutationFn: ({ content, encounterId }) =>
+      apiRequest<NoteSignResponse>("/api/v1/clinic/encounters/" + encounterId + "/sign/", {
         method: "POST",
-        body: JSON.stringify({ content: buildNoteContent() }),
+        body: JSON.stringify({ content }),
       }),
-    onSuccess: () => {
+    onSuccess: (signed, variables) => {
+      if (variables.session !== draftSessionRef.current) return;
+      const signedDraft = editableDraftValuesFromContent(signed.content);
+      noteContentRef.current = signed.content;
+      draftValuesRef.current = signedDraft;
+      dirtyFieldsRef.current = new Set();
+      setPresentingComplaint(signedDraft.presentingComplaint);
+      setHpi(signedDraft.hpi);
+      setPastMedicalHistory(signedDraft.pastMedicalHistory);
+      setPastSurgicalHistory(signedDraft.pastSurgicalHistory);
+      setFamilyHistory(signedDraft.familyHistory);
+      setSocialHistory(signedDraft.socialHistory);
+      setNote(signedDraft.consultation);
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
       setDraftSaveState("saved");
       setConfirmingSign(false);
@@ -484,11 +562,31 @@ function ConsultationsWorkspace() {
       setError("");
       queryClient.invalidateQueries({ queryKey: ["queue"] });
     },
-    onError: (reason) => {
+    onError: (reason, variables) => {
+      if (variables.session !== draftSessionRef.current) return;
       setConfirmingSign(false);
       setError(errorMessage(reason));
     },
   });
+
+  function updateClinicalField(field: ClinicalNoteField, value: string, setValue: (value: string) => void) {
+    setValue(value);
+    draftValuesRef.current = {
+      ...draftValuesRef.current,
+      [FIELD_TO_DRAFT_VALUE[field]]: value,
+    };
+    dirtyFieldsRef.current.add(field);
+    setDraftSaveState("unsaved");
+    setNotice("");
+  }
+
+  function saveCurrentDraft() {
+    saveDraft.mutate(currentDraftMutation());
+  }
+
+  function signCurrentDraft() {
+    signNote.mutate(currentDraftMutation());
+  }
 
   if (!can("clinical.note.create")) {
     return <UnauthorisedState capability="clinical.note.create" />;
@@ -623,38 +721,14 @@ function ConsultationsWorkspace() {
                       pastSurgicalHistory={pastSurgicalHistory}
                       familyHistory={familyHistory}
                       socialHistory={socialHistory}
-                      onPresentingComplaintChange={(value) => {
-                        setPresentingComplaint(value);
-                        setDraftSaveState("unsaved");
-                        setNotice("");
-                      }}
-                      onHpiChange={(value) => {
-                        setHpi(value);
-                        setDraftSaveState("unsaved");
-                        setNotice("");
-                      }}
-                      onPastMedicalHistoryChange={(value) => {
-                        setPastMedicalHistory(value);
-                        setDraftSaveState("unsaved");
-                        setNotice("");
-                      }}
-                      onPastSurgicalHistoryChange={(value) => {
-                        setPastSurgicalHistory(value);
-                        setDraftSaveState("unsaved");
-                        setNotice("");
-                      }}
-                      onFamilyHistoryChange={(value) => {
-                        setFamilyHistory(value);
-                        setDraftSaveState("unsaved");
-                        setNotice("");
-                      }}
-                      onSocialHistoryChange={(value) => {
-                        setSocialHistory(value);
-                        setDraftSaveState("unsaved");
-                        setNotice("");
-                      }}
-                      onSave={() => saveDraft.mutate()}
-                      savePending={saveDraft.isPending}
+                      onPresentingComplaintChange={(value) => updateClinicalField("presenting_complaint", value, setPresentingComplaint)}
+                      onHpiChange={(value) => updateClinicalField("hpi", value, setHpi)}
+                      onPastMedicalHistoryChange={(value) => updateClinicalField("past_medical_history", value, setPastMedicalHistory)}
+                      onPastSurgicalHistoryChange={(value) => updateClinicalField("past_surgical_history", value, setPastSurgicalHistory)}
+                      onFamilyHistoryChange={(value) => updateClinicalField("family_history", value, setFamilyHistory)}
+                      onSocialHistoryChange={(value) => updateClinicalField("social_history", value, setSocialHistory)}
+                      onSave={saveCurrentDraft}
+                      savePending={saveDraft.isPending || signNote.isPending}
                       saveState={draftSaveState}
                     />
                   )
@@ -708,15 +782,13 @@ function ConsultationsWorkspace() {
                         className="min-h-[220px]"
                         value={note}
                         onChange={(event) => {
-                          setNote(event.target.value);
-                          setDraftSaveState("unsaved");
-                          setNotice("");
+                           updateClinicalField("consultation", event.target.value, setNote);
                         }}
                       />
                     </Field>
 
                     <div className="flex flex-wrap items-center gap-3">
-                      <Button variant="secondary" disabled={saveDraft.isPending} onClick={() => saveDraft.mutate()}>
+                      <Button variant="secondary" disabled={saveDraft.isPending || signNote.isPending} onClick={saveCurrentDraft}>
                         {saveDraft.isPending ? "Saving…" : "Save draft"}
                       </Button>
                       {draftSaveState === "saved" ? (
@@ -735,12 +807,12 @@ function ConsultationsWorkspace() {
                         <Button variant="secondary" onClick={() => setConfirmingSign(false)}>
                           Cancel
                         </Button>
-                        <Button disabled={signNote.isPending} onClick={() => signNote.mutate()}>
+                        <Button disabled={saveDraft.isPending || signNote.isPending} onClick={signCurrentDraft}>
                           {signNote.isPending ? "Signing…" : "Confirm signature"}
                         </Button>
                       </div>
                     ) : (
-                      <Button onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
+                      <Button disabled={saveDraft.isPending || signNote.isPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
                     )}
                   </div>
                 )}

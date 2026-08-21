@@ -119,7 +119,7 @@ class EncounterSignView(TenantAPIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"note": note.id, "status": note.status, "current_version": note.current_version})
+        return Response({"note": note.id, "status": note.status, "current_version": note.current_version, "content": note.content})
 
 
 class EncounterAmendView(TenantAPIView):

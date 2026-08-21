@@ -258,3 +258,31 @@ Authenticated browser verification: Phase 1D 1 passed; existing Phase 1B and Pha
 
 Known limitations: this implements the explicitly authorized narrative-only slice; the canonical backlog's broader structured-lite social expansion remains outside this phase. The canonical backlog was not modified.
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1D-F — Draft Lost-Update Protection
+
+Status: VERIFIED / PASS.
+
+Objective: prevent stale clinical draft snapshots from overwriting fields edited by another client or while a save request is in flight, without changing the Phase 1C-F locking or partial-merge contract.
+
+Correction: the consultation workspace now keeps an in-memory canonical snapshot, draft values, dirty field IDs, and a patient/session token. Save and sign requests submit only the dirty clinical fields. Successful responses update the canonical snapshot and clear only fields whose values are still unchanged; edits made during an in-flight request remain unsaved. Patient switching invalidates prior responses and clears draft state. Section switching retains the React draft state.
+
+Signing: signing uses the same dirty-field partial payload and hydrates the authoritative signed response. The existing Encounter-first / ClinicalNote-second locks, signed immutability, versioning, and backend merge behavior remain unchanged. The sign response now returns authoritative content so the client cannot rebuild a signed note from a stale snapshot.
+
+Race coverage: backend tests cover family-versus-social, family-versus-HPI, and family-versus-Assessment/Plan stale partial writes, audit field-name minimization, and stale partial signing. The authenticated browser tests cover two stale local clients editing different fields and a second edit made while the first save is delayed. Both writers survive.
+
+PHI safety: dirty field IDs and draft values exist only in React memory. No PHI was added to browser storage, logs, or audit payloads; backend assertions verify raw synthetic values are absent from the latest audit metadata. Verification used synthetic local development records only and exercised no external side effects.
+
+Files changed: backend/clinical/views.py, backend/tests/test_phase_1d_f.py, frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Migration status: NONE. Django check passed; makemigrations --check --dry-run reported No changes detected.
+
+Tests: focused Phase 1D-F backend 4 passed; full backend suite 39 passed and 7 skipped; existing Phase 1C-F PostgreSQL owner-role integrity suite 4 passed; frontend typecheck, lint, and production build passed. The documented non-bypass application-role pytest teardown limitation remains unchanged and no permissions were loosened.
+
+Authenticated browser verification: Phase 1D regression file 3 passed, including the two new race tests; existing Phase 1B and Phase 1C consultation regressions 2 passed. The in-app Chrome bridge was unavailable despite diagnostics, so the repository Playwright harness was used against the local development server.
+
+Scope and architecture: no canonical blueprint or backlog changes, no Phase 1E work, no new endpoint or model, no redesign, and no Phase 2/3 functionality. Existing service, authorization, tenant/facility, audit, signed-note, and PostgreSQL locking boundaries were preserved.
+
+Known limitations: PostgreSQL verification is the existing Phase 1C-F owner-role integrity suite; pytest teardown under the intentionally restricted application role remains a test-fixture privilege limitation. Optimistic locking/ETag conflict detection remains outside this slice.
+
+Next approved phase: NOT YET AUTHORISED

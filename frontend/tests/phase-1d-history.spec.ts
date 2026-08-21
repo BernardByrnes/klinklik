@@ -206,3 +206,123 @@ test("persists and isolates family and social history", async ({ page }) => {
   expect(consoleErrors).toEqual([]);
   expect(failedRequests).toEqual([]);
 });
+
+test("preserves both writers when stale clients edit different clinical fields", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1DF-Race-" + suffix, "0742" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const initial = {
+    family: "Phase 1D-F synthetic original family",
+    social: "Phase 1D-F synthetic original social",
+  };
+  await steadyFill(page, "Relevant Family History", initial.family);
+  await steadyFill(page, "Relevant Social History", initial.social);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientName);
+    await expectHistory(stalePage, {
+      complaint: "",
+      hpi: "",
+      pmh: "",
+      psh: "",
+      family: initial.family,
+      social: initial.social,
+    });
+
+    const updatedFamily = "Phase 1D-F synthetic updated family";
+    const updatedSocial = "Phase 1D-F synthetic updated social";
+    const familyRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await steadyFill(page, "Relevant Family History", updatedFamily);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    const familyBody = JSON.parse((await familyRequest).postData() ?? "{}") as { content?: unknown };
+    expect(familyBody.content).toEqual({ family_history: updatedFamily });
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    const socialRequest = stalePage.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await steadyFill(stalePage, "Relevant Social History", updatedSocial);
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    const socialBody = JSON.parse((await socialRequest).postData() ?? "{}") as { content?: unknown };
+    expect(socialBody.content).toEqual({ social_history: updatedSocial });
+    await expect(stalePage.getByText("Consultation draft saved.")).toBeVisible();
+
+    await page.reload();
+    await openHistory(page, patientName);
+    await expectHistory(page, {
+      complaint: "",
+      hpi: "",
+      pmh: "",
+      psh: "",
+      family: updatedFamily,
+      social: updatedSocial,
+    });
+  } finally {
+    await stalePage.close();
+  }
+});
+
+test("retains a second edit made while the first draft save is in flight", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1DF-InFlight-" + suffix, "0743" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  let delayFirstSave = true;
+  await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
+    if (route.request().method() === "POST" && delayFirstSave) {
+      delayFirstSave = false;
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    await route.continue();
+  });
+
+  try {
+    const family = "Phase 1D-F synthetic in-flight family";
+    const social = "Phase 1D-F synthetic in-flight social";
+    const firstRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await steadyFill(page, "Relevant Family History", family);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await firstRequest;
+
+    await steadyFill(page, "Relevant Social History", social);
+    await expect(page.getByText(/Not saved/)).toBeVisible();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+    await expect(page.getByText(/Not saved/)).toBeVisible();
+
+    const secondRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Save draft" }).click();
+    const secondBody = JSON.parse((await secondRequest).postData() ?? "{}") as { content?: unknown };
+    expect(secondBody.content).toEqual({ social_history: social });
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/*/notes/");
+  }
+});
