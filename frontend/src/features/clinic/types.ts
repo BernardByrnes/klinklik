@@ -32,6 +32,24 @@ export type QueueEntry = {
   claimed_by: string | null;
 };
 
+export type ClinicalNoteContent = {
+  consultation?: string;
+  presenting_complaint?: string;
+  hpi?: string;
+  [key: string]: unknown;
+};
+
+export type ClinicalNote = {
+  id: string;
+  note_type: string;
+  content: ClinicalNoteContent;
+  status: string;
+  author: string;
+  signed_by: string | null;
+  signed_at: string | null;
+  current_version: number;
+};
+
 export type Encounter = {
   id: string;
   encounter_no: string;
@@ -39,6 +57,7 @@ export type Encounter = {
   patient_name: string;
   queue_entry: string;
   status: string;
+  notes?: ClinicalNote[];
 };
 
 export type Service = {

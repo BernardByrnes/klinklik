@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest } from "../../../lib/api";
 import { useSession } from "../../../lib/session";
-import { Encounter, QueueEntry } from "../../../features/clinic";
+import { ClinicalNoteContent, Encounter, QueueEntry } from "../../../features/clinic";
 import { IconAlertTriangle, IconCheckCircle, IconConsultation } from "../../../components/icons";
 import {
   Button,
@@ -47,17 +47,47 @@ type WorkspaceSectionId = (typeof WORKSPACE_SECTIONS)[number]["id"];
 type FoundationSectionId = Exclude<WorkspaceSectionId, "notes">;
 const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
 
-function consultationNoteText(encounter: Encounter) {
-  const notes = (encounter as Encounter & {
-    notes?: Array<{ note_type: string; content: Record<string, unknown> }>;
-  }).notes;
-  const consultation = notes?.find((entry) => entry.note_type === "CONSULTATION")?.content.consultation;
-  return typeof consultation === "string" ? consultation : null;
+type ConsultationDraft = {
+  content: ClinicalNoteContent;
+  presentingComplaint: string;
+  hpi: string;
+  consultation: string;
+};
+
+function consultationContent(encounter: Encounter): ClinicalNoteContent {
+  return encounter.notes?.find((entry) => entry.note_type === "CONSULTATION")?.content ?? {};
 }
 
+function contentText(content: ClinicalNoteContent, key: string): string {
+  const value = content[key];
+  return typeof value === "string" ? value : "";
+}
+
+function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft {
+  const content = consultationContent(encounter);
+  const consultation = contentText(content, "consultation");
+  const assessment = contentText(content, "assessment");
+  const plan = contentText(content, "plan");
+  const assessmentPlan = assessment || plan ? "Assessment: " + assessment + "\nPlan: " + plan : DEFAULT_CONSULTATION_NOTE;
+  return {
+    content,
+    presentingComplaint: contentText(content, "presenting_complaint"),
+    hpi: contentText(content, "hpi"),
+    consultation: consultation || assessmentPlan,
+  };
+}
+
+function noteContentForSave(baseContent: ClinicalNoteContent, draft: Pick<ConsultationDraft, "presentingComplaint" | "hpi" | "consultation">): ClinicalNoteContent {
+  return {
+    ...baseContent,
+    presenting_complaint: draft.presentingComplaint,
+    hpi: draft.hpi,
+    consultation: draft.consultation,
+  };
+}
 const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
   summary: "Additional summary information is not available from the current consultation data.",
-  history: "History capture is reserved for a later consultation phase.",
+  history: "Start the encounter to capture the presenting complaint and HPI.",
   examination: "Examination capture is reserved for a later consultation phase.",
   investigations: "Investigations are not implemented in this foundation phase.",
   diagnosis: "Diagnosis capture is reserved for a later consultation phase.",
@@ -133,6 +163,93 @@ function FoundationSection({ section }: { section: FoundationSectionId }) {
     </div>
   );
 }
+type HistorySectionProps = {
+  status: string;
+  presentingComplaint: string;
+  hpi: string;
+  onPresentingComplaintChange: (value: string) => void;
+  onHpiChange: (value: string) => void;
+  onSave: () => void;
+  savePending: boolean;
+  saveState: "idle" | "unsaved" | "saved";
+};
+
+function HistorySection({
+  status,
+  presentingComplaint,
+  hpi,
+  onPresentingComplaintChange,
+  onHpiChange,
+  onSave,
+  savePending,
+  saveState,
+}: HistorySectionProps) {
+  if (status === "SIGNED") {
+    return (
+      <div className="space-y-4">
+        <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
+          <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+          This History section is signed and immutable.
+        </p>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Presenting complaint</h3>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+            {presentingComplaint || "Not recorded."}
+          </p>
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">History of present illness (HPI)</h3>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+            {hpi || "Not recorded."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[12.5px] font-medium text-secondary">
+        Record the patient&apos;s presenting complaint and history of this illness. This section does not add a diagnosis or treatment.
+      </p>
+      <Field
+        label="Presenting complaint"
+        htmlFor="presenting-complaint"
+        hint="Patient-reported reason for the visit (500 characters maximum)."
+      >
+        <Textarea
+          id="presenting-complaint"
+          maxLength={500}
+          value={presentingComplaint}
+          onChange={(event) => onPresentingComplaintChange(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="History of present illness (HPI)"
+        htmlFor="history-of-present-illness"
+        hint="Current illness history in the patient&apos;s account (4,000 characters maximum)."
+      >
+        <Textarea
+          id="history-of-present-illness"
+          className="min-h-[180px]"
+          maxLength={4000}
+          value={hpi}
+          onChange={(event) => onHpiChange(event.target.value)}
+        />
+      </Field>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" disabled={savePending} onClick={onSave}>
+          {savePending ? "Saving…" : "Save draft"}
+        </Button>
+        {saveState === "saved" ? (
+          <span role="status" className="text-[12px] font-medium text-accent-teal">Draft saved.</span>
+        ) : saveState === "unsaved" ? (
+          <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function ConsultationsWorkspace() {
   const { can } = useSession();
@@ -142,6 +259,10 @@ function ConsultationsWorkspace() {
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
   const [encounter, setEncounter] = useState<Encounter | null>(null);
   const [note, setNote] = useState(DEFAULT_CONSULTATION_NOTE);
+  const [noteContent, setNoteContent] = useState<ClinicalNoteContent>({});
+  const [presentingComplaint, setPresentingComplaint] = useState("");
+  const [hpi, setHpi] = useState("");
+  const [draftSaveState, setDraftSaveState] = useState<"idle" | "unsaved" | "saved">("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
   const [notice, setNotice] = useState("");
@@ -157,11 +278,27 @@ function ConsultationsWorkspace() {
     () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
     [queue.data, selectedId],
   );
+  function hydrateNote(created: Encounter) {
+    const draft = consultationDraftFromEncounter(created);
+    setNoteContent(draft.content);
+    setPresentingComplaint(draft.presentingComplaint);
+    setHpi(draft.hpi);
+    setNote(draft.consultation);
+    setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
+  }
+
+  function buildNoteContent() {
+    return noteContentForSave(noteContent, { presentingComplaint, hpi, consultation: note });
+  }
 
   function selectEntry(entry: QueueEntry) {
     setSelectedId(entry.id);
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
+    setNoteContent({});
+    setPresentingComplaint("");
+    setHpi("");
+    setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
     setNotice("");
@@ -176,7 +313,7 @@ function ConsultationsWorkspace() {
       }),
     onSuccess: (created) => {
       setEncounter(created);
-      setNote(consultationNoteText(created) ?? DEFAULT_CONSULTATION_NOTE);
+      hydrateNote(created);
       setActiveSection("notes");
       setError("");
       queryClient.invalidateQueries({ queryKey: ["queue"] });
@@ -184,14 +321,36 @@ function ConsultationsWorkspace() {
     onError: (reason) => setError(errorMessage(reason)),
   });
 
+  const saveDraft = useMutation({
+    mutationFn: () =>
+      apiRequest<{ note: string; status: string; content: ClinicalNoteContent }>(
+        "/api/v1/clinic/encounters/" + encounter?.id + "/notes/",
+        {
+          method: "POST",
+          body: JSON.stringify({ content: buildNoteContent() }),
+        },
+      ),
+    onSuccess: (saved) => {
+      setNoteContent(saved.content);
+      setDraftSaveState("saved");
+      setNotice("Consultation draft saved.");
+      setError("");
+    },
+    onError: (reason) => {
+      setDraftSaveState("unsaved");
+      setError(errorMessage(reason));
+    },
+  });
+
   const signNote = useMutation({
     mutationFn: () =>
       apiRequest(`/api/v1/clinic/encounters/${encounter?.id}/sign/`, {
         method: "POST",
-        body: JSON.stringify({ content: { consultation: note } }),
+        body: JSON.stringify({ content: buildNoteContent() }),
       }),
     onSuccess: () => {
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
+      setDraftSaveState("saved");
       setConfirmingSign(false);
       setNotice(`Consultation signed for ${selected?.patient_name ?? "the patient"}.`);
       setError("");
@@ -317,7 +476,37 @@ function ConsultationsWorkspace() {
                 aria-labelledby={`consultation-tab-${activeSection}`}
                 className="min-w-0"
               >
-                {activeSection !== "notes" ? (
+                {activeSection === "history" ? (
+                  !encounter ? (
+                    <div className="space-y-3">
+                      <p className="text-[12.5px] font-medium text-secondary">
+                        Not recorded yet. Start the encounter to capture the presenting complaint and HPI.
+                      </p>
+                      <Button disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
+                        {startEncounter.isPending ? "Starting…" : "Start encounter"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <HistorySection
+                      status={encounter.status}
+                      presentingComplaint={presentingComplaint}
+                      hpi={hpi}
+                      onPresentingComplaintChange={(value) => {
+                        setPresentingComplaint(value);
+                        setDraftSaveState("unsaved");
+                        setNotice("");
+                      }}
+                      onHpiChange={(value) => {
+                        setHpi(value);
+                        setDraftSaveState("unsaved");
+                        setNotice("");
+                      }}
+                      onSave={() => saveDraft.mutate()}
+                      savePending={saveDraft.isPending}
+                      saveState={draftSaveState}
+                    />
+                  )
+                ) : activeSection !== "notes" ? (
                   activeSection === "summary" && !encounter ? (
                     <div className="space-y-3">
                       <p className="text-[12.5px] font-medium text-secondary">
@@ -366,10 +555,24 @@ function ConsultationsWorkspace() {
                         id="consultation-note"
                         className="min-h-[220px]"
                         value={note}
-                        onChange={(event) => setNote(event.target.value)}
+                        onChange={(event) => {
+                          setNote(event.target.value);
+                          setDraftSaveState("unsaved");
+                          setNotice("");
+                        }}
                       />
                     </Field>
 
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button variant="secondary" disabled={saveDraft.isPending} onClick={() => saveDraft.mutate()}>
+                        {saveDraft.isPending ? "Saving…" : "Save draft"}
+                      </Button>
+                      {draftSaveState === "saved" ? (
+                        <span role="status" className="text-[12px] font-medium text-accent-teal">Draft saved.</span>
+                      ) : draftSaveState === "unsaved" ? (
+                        <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>
+                      ) : null}
+                    </div>
                     {confirmingSign ? (
                       <div role="alert" className="flex flex-wrap items-center gap-3 rounded-[14px] bg-accent-orange-soft px-4 py-3">
                         <IconAlertTriangle className="h-[18px] w-[18px] text-accent-orange shrink-0" />

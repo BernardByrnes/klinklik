@@ -17,13 +17,33 @@ class ClinicalNoteSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "status", "author", "signed_by", "signed_at", "current_version"]
 
 
+def validate_note_content(value):
+    for field_name, max_length in {
+        "presenting_complaint": 500,
+        "hpi": 4000,
+    }.items():
+        if field_name not in value:
+            continue
+        if not isinstance(value[field_name], str):
+            raise serializers.ValidationError({field_name: "This field must be text."})
+        if len(value[field_name]) > max_length:
+            raise serializers.ValidationError({field_name: f"This field must be {max_length} characters or fewer."})
+    return value
+
+
 class NoteWriteSerializer(serializers.Serializer):
-    content = serializers.JSONField()
+    content = serializers.DictField()
+
+    def validate_content(self, value):
+        return validate_note_content(value)
 
 
 class NoteAmendSerializer(serializers.Serializer):
-    content = serializers.JSONField()
+    content = serializers.DictField()
     reason = serializers.CharField(min_length=3)
+
+    def validate_content(self, value):
+        return validate_note_content(value)
 
 
 class EncounterSerializer(serializers.ModelSerializer):

@@ -100,6 +100,16 @@ def record_triage(*, organisation, facility, actor, queue_entry_id, data, reques
     return assessment
 
 
+def _note_audit_metadata(content):
+    return {
+        "note_type": "CONSULTATION",
+        "fields": sorted(
+            field for field in ("presenting_complaint", "hpi", "consultation", "assessment", "plan")
+            if field in content
+        ),
+    }
+
+
 @transaction.atomic
 def save_note(*, organisation, facility, actor, encounter, content, request=None):
     if encounter.organisation_id != organisation.id or encounter.facility_id != facility.id:
@@ -107,6 +117,7 @@ def save_note(*, organisation, facility, actor, encounter, content, request=None
     if encounter.status in {"CLOSED", "CANCELLED"}:
         raise ValueError("This encounter is closed.")
     note = encounter.notes.filter(note_type="CONSULTATION").first()
+    previous_status = note.status if note is not None else None
     if note is None:
         note = ClinicalNote.objects.create(
             organisation=organisation,
@@ -121,6 +132,17 @@ def save_note(*, organisation, facility, actor, encounter, content, request=None
     else:
         note.content = content
         note.save(update_fields=["content", "updated_at"])
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="CREATE" if previous_status is None else "UPDATE",
+        entity_type="ClinicalNote",
+        entity_id=note.id,
+        before={"status": previous_status} if previous_status is not None else None,
+        after={**_note_audit_metadata(content), "status": note.status},
+    )
     return note
 
 

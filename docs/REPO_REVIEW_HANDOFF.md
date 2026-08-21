@@ -163,3 +163,25 @@ Tests were not feature-regression changes: YES. Django check, backend tests, fro
 Next phase: Phase 1B — NOT YET AUTHORISED
 
 Current Git status: clean `main` branch tracking the public `origin/main` baseline. No merge, deployment, or pull request was performed.
+
+### Phase 1B — Presenting Complaint + HPI
+
+Status: VERIFIED / PASS.
+
+Objective: Add Presenting Complaint and History of Present Illness capture to the existing History section of the consultation workflow, using the existing Encounter and ClinicalNote persistence path.
+
+Scope: Added only clinician-authored Presenting Complaint and HPI fields. Assessment/Plan remains available and is preserved through draft save, signing, reload, and patient switching. No diagnosis, treatment, medication, allergy, review-of-systems, examination, investigation, laboratory, payment, referral, follow-up, CDS, AI, interpretation, dosing, interaction checking, or risk-scoring workflow was added.
+
+Files changed: backend/clinical/serializers.py, backend/clinical/services.py, backend/tests/test_phase_1b.py, frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, frontend/tests/phase-1b-history.spec.ts, and this handoff document.
+
+Migration: none. The existing JSON ClinicalNote content is extended in place; manage.py migrate --plan reported no planned migration operations.
+
+API/data contract: The existing note endpoint accepts presenting_complaint text up to 500 characters and hpi text up to 4000 characters. Existing consultation content remains supported. Signed notes remain immutable through the ordinary save path. Audit metadata records field presence and status transitions only; raw complaint/HPI values are not written to audit payloads.
+
+Tests: Django check passed. Full backend suite passed with 23 passed and 5 PostgreSQL-only tests skipped. Focused Phase 1B backend coverage passed with 4 tests. Frontend typecheck, lint, and production build passed. No migration operations were pending.
+
+Authenticated browser verification: The local Playwright Phase 1B test passed with 1 passed. Using synthetic local development patients, it verified real note POST persistence, section switching, Assessment/Plan retention, signing, patient isolation, reload read-back, signed read-only behavior, narrow viewport width 768 layout, and clean authenticated API/console diagnostics. No payment or external side effect was exercised.
+
+Limitations: Verification used local SQLite synthetic data only; PostgreSQL/RLS-specific tests remain skipped pending a PostgreSQL environment. The in-app browser-control bridge was unavailable on this host, so the repository's authenticated local Playwright harness was used for the browser pass. The canonical blueprint and frozen backlog were not modified.
+
+Next approved phase: NOT YET AUTHORISED
