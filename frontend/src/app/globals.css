@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/*
+  KlinKlik design tokens — translated from the approved visual reference
+  (K:\new\clinic.html). Keep this list authoritative: no new arbitrary
+  colours elsewhere in the app.
+*/
+
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  /* Surfaces and text */
+  --color-canvas: #f8f9fc;
+  --color-surface: #ffffff;
+  --color-surface-muted: #fbfbfd;
+  --color-ink: #15172b;
+  --color-secondary: #667085;
+  --color-muted: #98a2b3;
+  --color-line: #e7e9f1;
+  --color-line-soft: #f1f2f7;
+
+  /* Primary purple */
+  --color-primary: #6d4aff;
+  --color-primary-strong: #5b3ae0;
+  --color-primary-text: #6846e8;
+  --color-primary-soft: #f1edff;
+  --color-primary-hover: #f6f5fb;
+
+  /* Accents (solid, soft surface, accessible text) */
+  --color-accent-blue: #3478f6;
+  --color-accent-blue-soft: #edf4ff;
+  --color-accent-pink: #f43f8c;
+  --color-accent-pink-soft: #fff0f6;
+  --color-accent-orange: #f59e0b;
+  --color-accent-orange-soft: #fff6e8;
+  --color-accent-orange-text: #b45309;
+  --color-accent-teal: #12b886;
+  --color-accent-teal-text: #0e9f73;
+  --color-accent-teal-soft: #eafbf5;
+
+  /* Shadows */
+  --shadow-card: 0 4px 18px rgba(31, 35, 55, 0.045);
+  --shadow-card-hover: 0 8px 26px rgba(31, 35, 55, 0.08);
+  --shadow-elevated: 0 10px 35px rgba(31, 35, 55, 0.08);
+  --shadow-primary: 0 6px 18px rgba(109, 74, 255, 0.28);
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+}
+
+/* Receipt printing: only the receipt sheet prints, never the app shell. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  [data-print-sheet],
+  [data-print-sheet] * {
+    visibility: visible;
+  }
+
+  [data-print-sheet] {
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    width: 100%;
+    box-shadow: none !important;
+    border: none !important;
+  }
+}

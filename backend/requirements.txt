@@ -1,0 +1,9 @@
+Django>=5.2,<6
+djangorestframework>=3.17,<4
+django-cors-headers>=4.7,<5
+argon2-cffi>=23.1
+psycopg[binary]>=3.2
+pytest>=9,<10
+pytest-django>=4.11,<5
+factory-boy>=3.3,<4
+hypothesis>=6.131,<7

@@ -1,0 +1,165 @@
+# KlinKlik Repository Review Handoff
+
+## 1. Project Identity
+
+Product: KlinKlik.
+
+Legacy technical identifiers intentionally retained: the repository directory is `clinicopus`; the Django settings/package is `backend/clinicopus`; the frontend package is `clinicopus-web`; and the local SQLite file is `backend/db.sqlite3`. These are technical compatibility names, not a product rename decision.
+
+Canonical functional specification: `KlinKlik-V1-Canonical-Backlog.md`.
+
+Canonical product and architecture blueprint: `K:\new\clinicopus2.md`.
+
+## 2. Current Stack
+
+Frontend: Next.js 15.5.23, React 19, TypeScript, Tailwind CSS 4, and TanStack Query. The client uses in-memory access tokens with an httpOnly rotating refresh-cookie session.
+
+Backend: Django 5.2.17 with Django REST Framework 3.18.0, organised as a modular monolith. The dependency definition is `backend/requirements.txt`.
+
+Database: SQLite for local development and tests (`backend/db.sqlite3`); PostgreSQL is the deployment database and carries the RLS design.
+
+Other infrastructure: Docker Compose provides optional local PostgreSQL and Redis support. No external services, payments, messages, webhooks, or production infrastructure were used for Phase 1A-V.
+
+## 3. Repository Structure
+
+- `backend/`: Django project and domain apps, including `accounts`, `audit`, `billing`, `clinical`, `core`, `patients`, `scheduling`, and `tenancy`, plus the current app seams for inventory, laboratory, maternity, pharmacy, reporting, and platform administration.
+- `frontend/`: Next.js client, shared shell/components, route screens, generated-build output, and Playwright tests.
+- `docs/`: architecture notes, ADRs, product references, implementation notes, and this handoff.
+- `docker/`: local infrastructure support.
+- `.github/`: CI configuration.
+- `artifacts/`: repository-local review/build artifacts.
+
+## 4. Current Working Product Journey
+
+The implemented and verified clinic vertical slice is:
+
+Patient registration → Check-in → Queue → Claim → Triage → Consultation → Service charge → Invoice → Payment → Receipt.
+
+The authenticated Phase 1A-V E2E run completed this journey with synthetic development data. The consultation foundation exposes Summary, History, Examination, Investigations, Diagnosis, Treatment, and Notes. Only the existing consultation note/sign flow is functional in this foundation; the other sections are explicit empty/foundation states. Investigations contains no laboratory workflow.
+
+Signed consultation notes are immutable in the UI and backend correction is through the existing amendment path. No patient data from outside the local development database was used.
+
+## 5. Current Roles
+
+Implemented role templates are `OWNER_ADMIN`, `RECEPTION_CASHIER`, `NURSE_TRIAGE`, and `CLINICIAN`. The development seed maps these to administrator, reception/cashier, triage nurse, and clinician workflows. Server-side capability checks remain authoritative.
+
+## 6. Current Routes
+
+Frontend routes:
+
+- `/login`
+- `/overview`
+- `/patients`
+- `/queue`
+- `/triage`
+- `/consultations`
+- `/billing`
+
+Relevant API families:
+
+- `/api/v1/health/`
+- `/api/v1/auth/`
+- `/api/v1/tenancy/`
+- `/api/v1/patients/`
+- `/api/v1/clinic/`
+- `/api/v1/billing/`
+- `/api/schema/`
+
+## 7. Current Backend Domains
+
+- Tenancy and facility context: `tenancy`, `core`.
+- Authentication, roles, capabilities, sessions, and credentials: `accounts`.
+- Patient identity and demographics: `patients`.
+- Queue/check-in: `scheduling` and related clinic services.
+- Clinical workflow: `clinical` models and services for `Encounter`, `ClinicalNote`, `ClinicalNoteVersion`, `TriageAssessment`, and `VitalsObservation`.
+- Billing: `billing` services and models for service catalogue, prices, invoices, invoice items, payments, and receipts.
+- Audit: append-only audit services and records in `audit`.
+
+Business workflows are implemented in service modules; views authorize/orchestrate; serializers validate input shape; models persist data and local invariants.
+
+## 8. Visual System
+
+The current canonical KlinKlik styles live in `frontend/src/app/globals.css`. Shared controls and visual patterns live in `frontend/src/components/ui.tsx`; the authenticated shell, sidebar, facility switcher, and topbar live in `frontend/src/components/shell/AppShell.tsx`.
+
+The current system uses the repository theme tokens for the purple primary, canvas/surface colors, muted text, borders, accent states, focus rings, rounded cards, badges, and button hierarchy. Typography, spacing, cards, buttons, forms, tables/lists, and tabs are composed from these shared utilities and components.
+
+**Existing KlinKlik CSS/UI is canonical. New phases extend this visual system; they do not redesign it.**
+
+## 9. Completed Build Phases
+
+### Phase 1A — Doctor Consultation Workspace Foundation
+
+Status: VERIFIED.
+
+Objective: provide the doctor consultation workspace foundation without implementing later clinical modules or redesigning the existing shell.
+
+Files changed: `frontend/src/app/(app)/consultations/page.tsx` and `frontend/tests/clinic-slice.spec.ts`.
+
+Functionality: seven reachable semantic tabs; visible active state; mouse and keyboard navigation with ArrowLeft, ArrowRight, Home, and End; context strip; existing Start Encounter action; existing Assessment/Plan note field; section-switch draft retention; immutable sign confirmation; explicit empty states for foundation sections.
+
+Tests: authenticated browser verification and the relevant clinic vertical-slice E2E test passed. Frontend typecheck, lint, and production build passed. Backend checks and tests passed.
+
+Known limitations: History, Examination, Diagnosis, Treatment, and laboratory-related work remain foundation placeholders. No clinical interpretation, dosing, interaction checking, risk scoring, or laboratory workflow was added.
+
+### Phase 1A-V — Environment + Verification
+
+Status: PASS.
+
+Environment correction: created `K:\clinicopus\.venv` with the only available local Python interpreter (3.14.6), installed the existing `backend/requirements.txt`, and changed no dependency files. CI still targets Python 3.12; that interpreter was not available on this host.
+
+Verification: Django imported and ran; the backend started on localhost; authenticated clinician browser verification exercised the real `/consultations` route; synthetic note entry, section switching, signing, and read-back after reload were verified; desktop and narrow viewport screenshots were captured and checked for overflow; browser diagnostics were clean.
+
+Correction made: the consultation page now hydrates the existing note content returned by the encounter API and resets the note draft when switching patients. This fixes the observed post-reload display defect without changing the API, signing workflow, or backend schema.
+
+Files changed: `frontend/src/app/(app)/consultations/page.tsx`, `frontend/tests/clinic-slice.spec.ts`, and this handoff document. The `.venv` is a local environment artifact, not an application source change.
+
+Migrations: none; `manage.py migrate --plan` reported no planned operations.
+
+APIs: no new endpoints. The correction consumes the existing encounter `notes` response and existing consultation sign endpoint.
+
+Tests: `19 passed, 5 skipped, 0 failed` backend tests; the five skips are PostgreSQL-only authentication/RLS tests. The relevant Playwright test reported `1 passed`; frontend typecheck, lint, and build passed. The local synthetic browser run reported no Phase 1A console errors or failed Phase 1A requests.
+
+## 10. Current Known Issues
+
+- Local verification used Python 3.14.6 because Python 3.12 was unavailable; CI remains the Python-version parity check.
+- PostgreSQL/RLS-specific tests are skipped by design in the SQLite-only local verification; they must be run against PostgreSQL before infrastructure approval.
+- The sandbox could not fetch the external Inter font during development, so the dev server used its existing fallback font. This did not affect the Phase 1A functional or layout checks.
+- The local SQLite database contains development/test records from the verification runs. They are synthetic local records only and must not be treated as production data.
+
+No unresolved Phase 1A application defect remains from the authenticated verification.
+
+## 11. Frozen / Do-Not-Reopen Decisions
+
+- The canonical backlog is frozen and was not modified.
+- The current CSS/UI system is canonical.
+- The same long-lived Encounter supports the Doctor → Lab → Doctor journey; do not introduce a separate lab consultation model.
+- V1 provides no clinical decision support, diagnosis suggestions, dosing, interaction checking, allergy checking, or automatic risk scoring.
+- Expired medicine is absolutely blocked; controlled/Class A medicines remain blocked in baseline V1.
+- Stock changes are append-only movements; final clinical, financial, stock, payment, and audit records use immutable correction, reversal, amendment, or versioning paths.
+- Organisation is the tenant root and Facility is a branch; PostgreSQL RLS must fail closed and use FORCE RLS under a non-bypass application role.
+- Final stock, money, dispensing, and clinical sign-off operations are not offline-completable.
+
+## 12. Next Approved Phase
+
+**Phase 1B — NOT YET AUTHORISED**
+
+## 13. Review Notes
+
+Independent reviewers should inspect the current repository, this handoff, `KlinKlik-V1-Canonical-Backlog.md`, and the authoritative blueprint at `K:\new\clinicopus2.md`. Verify the code and tests directly rather than treating this document as the sole source of truth.
+
+### Phase G0 — Public GitHub Repository Bootstrap
+
+Status: IN PROGRESS — baseline commit and public-repository publication pending.
+
+Repository initialised: YES
+GitHub repository name: `klinklik`
+Visibility: PUBLIC (pending creation)
+Initial baseline commit SHA: pending
+Public remote URL: pending
+Security scan result: Pre-init and staged-tree scans passed. No private keys, real data, browser auth/session state, local databases, or runtime/build artifacts are candidates for publication. Synthetic development fixtures and environment templates were reviewed; Docker credentials were converted to environment-bound bootstrap values.
+Any intentionally ignored local files/categories: local SQLite database, Python virtualenv/cache files, Node modules/Next build output, browser test output, logs, private keys/certificates, local environment files, and review artifacts.
+Any publication-related adjustments: expanded `.gitignore`; removed committed Docker development credentials; added an environment-bound Docker bootstrap script; retained clearly synthetic seed/test fixture credentials.
+Tests were not feature-regression changes: YES
+Next phase: Phase 1B — NOT YET AUTHORISED
+
+Current Git status: repository initialised on `main`; baseline commit pending. No GitHub repository has been created and nothing has been committed, pushed, merged, deployed, or submitted for review.
