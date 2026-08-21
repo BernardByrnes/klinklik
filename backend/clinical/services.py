@@ -113,13 +113,40 @@ def _note_audit_metadata(content):
     }
 
 
+def _lock_encounter_for_note(*, organisation, facility, encounter):
+    locked_encounter = Encounter.objects.select_for_update().filter(
+        id=encounter.id,
+        organisation=organisation,
+        facility=facility,
+    ).first()
+    if locked_encounter is None:
+        raise ValueError("Encounter is outside the active facility.")
+    return locked_encounter
+
+
+def _lock_consultation_note(*, organisation, facility, encounter):
+    return ClinicalNote.objects.select_for_update().filter(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+        note_type="CONSULTATION",
+    ).first()
+
+
 @transaction.atomic
 def save_note(*, organisation, facility, actor, encounter, content, request=None):
-    if encounter.organisation_id != organisation.id or encounter.facility_id != facility.id:
-        raise ValueError("Encounter is outside the active facility.")
+    encounter = _lock_encounter_for_note(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+    )
     if encounter.status in {"CLOSED", "CANCELLED"}:
         raise ValueError("This encounter is closed.")
-    note = encounter.notes.filter(note_type="CONSULTATION").first()
+    note = _lock_consultation_note(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+    )
     previous_status = note.status if note is not None else None
     if note is None:
         note = ClinicalNote.objects.create(
@@ -151,9 +178,16 @@ def save_note(*, organisation, facility, actor, encounter, content, request=None
 
 @transaction.atomic
 def sign_note(*, organisation, facility, actor, encounter, content=None, request=None):
-    note = encounter.notes.select_for_update().filter(
-        organisation=organisation, facility=facility, note_type="CONSULTATION"
-    ).first()
+    encounter = _lock_encounter_for_note(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+    )
+    note = _lock_consultation_note(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+    )
     if note is None:
         note = save_note(
             organisation=organisation, facility=facility, actor=actor, encounter=encounter,
@@ -195,9 +229,16 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, request
 
 @transaction.atomic
 def amend_note(*, organisation, facility, actor, encounter, content, reason, request=None):
-    note = encounter.notes.select_for_update().filter(
-        organisation=organisation, facility=facility, note_type="CONSULTATION"
-    ).first()
+    encounter = _lock_encounter_for_note(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+    )
+    note = _lock_consultation_note(
+        organisation=organisation,
+        facility=facility,
+        encounter=encounter,
+    )
     if note is None or note.status not in {"SIGNED", "AMENDED"}:
         raise ValueError("Only a signed clinical note can be amended.")
     version = ClinicalNoteVersion.objects.create(

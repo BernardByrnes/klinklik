@@ -53,6 +53,11 @@ class ClinicalNote(FacilityScopedModel):
     signed_at = models.DateTimeField(null=True, blank=True)
     current_version = models.PositiveIntegerField(default=0)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["encounter", "note_type"], name="uniq_clinical_note_encounter_type")
+        ]
+
 
 class ClinicalNoteVersion(OrganisationScopedModel):
     note = models.ForeignKey(ClinicalNote, on_delete=models.PROTECT, related_name="versions")

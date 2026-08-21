@@ -207,3 +207,25 @@ Authenticated browser verification: The local Playwright Phase 1C test passed wi
 Known limitations: Verification used local SQLite synthetic data only; five PostgreSQL/RLS-specific tests remain skipped pending a PostgreSQL environment. The in-app browser-control bridge was unavailable on this host, so the repository Playwright harness was used for the authenticated browser pass. No family, social, medication, allergy, ROS, examination, diagnosis, laboratory, billing, payment, pharmacy, queue, CDS, AI, interpretation, or Phase 1D functionality was added. The canonical blueprint and frozen backlog were not modified.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1C-F - Clinical Note Concurrency Integrity
+
+Result: PASS WITH VALIDATION LIMITATION.
+
+Objective: close the ClinicalNote save-versus-sign race and prevent duplicate first consultation-note creation without changing the Phase 1B/1C data contract or adding frontend scope.
+
+Correction: note write paths now acquire locks in one order, Encounter first and then the consultation ClinicalNote. The signed-state check occurs after the locks are held. This serializes save, sign, and amend operations for an Encounter. A database UniqueConstraint on (encounter, note_type) provides the durable one-note invariant; the migration is backend/clinical/migrations/0003_clinicalnote_unique_encounter_type.py.
+
+Files changed: backend/clinical/models.py, backend/clinical/services.py, backend/clinical/migrations/0003_clinicalnote_unique_encounter_type.py, backend/tests/test_phase_1c_f.py, and this handoff document. No frontend files or canonical backlog files changed.
+
+Data and audit safety: existing tenant/facility authorization filters, signed-note immutability, amendment/version behavior, content merging, and metadata-only audit behavior were preserved. The synthetic tests contain no real patient data and no raw clinical content is added to audit payloads.
+
+Migration verification: duplicate preflight groups were zero in local SQLite and local PostgreSQL. The uniqueness migration applied successfully to both local databases; makemigrations --check --dry-run reported No changes detected, and migrate --plan reported no pending operations after application.
+
+Concurrency verification: the real PostgreSQL suite passed with 4 passed, including save-versus-sign serialization and concurrent first-save creation. The SQLite-focused run reported 2 passed, 2 skipped; the two skips are the PostgreSQL-only row-lock tests and are not treated as concurrency evidence.
+
+PostgreSQL limitation: the same test module could not complete under the non-bypass application role because pytest-django fixture teardown requires table truncate/ownership privileges that role intentionally does not have. No database permissions were changed. The passing PostgreSQL owner-role run exercised the actual PostgreSQL row-lock and uniqueness behavior; the application-role fixture limitation is recorded rather than treated as an application failure.
+
+Regression verification: full backend suite 28 passed, 7 skipped; focused Phase 1B suite 4 passed; focused Phase 1C suite 3 passed; Django check passed; frontend typecheck, lint, and production build passed. The existing safe authenticated synthetic Phase 1C browser regression passed with 1 passed using the repository Playwright harness. No payment or external side effect was exercised.
+
+Next approved phase: NOT YET AUTHORISED. Phase 1D was not started.
