@@ -55,7 +55,7 @@ def _required_if_match(request):
     return expected_etag, None
 
 
-def _revision_conflict_response(exc):
+def _revision_conflict_response(exc, http_status=status.HTTP_409_CONFLICT):
     response = Response(
         {
             "code": "CLINICAL_NOTE_REVISION_CONFLICT",
@@ -66,7 +66,7 @@ def _revision_conflict_response(exc):
             "content": exc.current_content,
             "saved_at": exc.current_saved_at,
         },
-        status=status.HTTP_409_CONFLICT,
+        status=http_status,
     )
     response["ETag"] = exc.current_etag
     return response
@@ -132,7 +132,7 @@ class EncounterDetailView(TenantAPIView):
 class EncounterNoteView(TenantAPIView):
     capability = "clinical.note.create"
 
-    def post(self, request, pk):
+    def _save(self, request, pk, conflict_status):
         encounter = get_object_or_404(
             Encounter, id=pk, organisation=request.organisation, facility=request.facility
         )
@@ -152,11 +152,16 @@ class EncounterNoteView(TenantAPIView):
                 request=request,
             )
         except ClinicalNoteRevisionConflict as exc:
-            return _revision_conflict_response(exc)
+            return _revision_conflict_response(exc, http_status=conflict_status)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return _note_response(encounter=encounter, note=note)
 
+    def post(self, request, pk):
+        return self._save(request, pk, conflict_status=status.HTTP_409_CONFLICT)
+
+    def patch(self, request, pk):
+        return self._save(request, pk, conflict_status=status.HTTP_412_PRECONDITION_FAILED)
 
 class EncounterSignView(TenantAPIView):
     capability = "clinical.note.sign"

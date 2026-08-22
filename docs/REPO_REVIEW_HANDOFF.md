@@ -624,3 +624,31 @@ Security and scope: verification used synthetic local SQLite development data on
 Files changed: backend/clinical/services.py, backend/tests/test_phase_1k_g.py, and this handoff document. Migration status: NONE.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1K-H — ENC-015 PATCH / 412 Contract Alignment
+
+Status: IMPLEMENTED / VERIFIED / PASS.
+
+Baseline: e7f99b8b64be0da51a0e961e910dfb914d9c57c3 on main, aligned with origin/main before implementation.
+
+Objective: align the canonical clinical draft-write transport with the ENC-015 PATCH / 412 precondition contract while retaining legacy POST compatibility and preserving the Phase 1J/1K save, conflict, retry, rebase, audit, and session-isolation architecture. Phase 1L was not started.
+
+Canonical draft contract: mutable ClinicalNote draft writes now use PATCH /api/v1/clinic/encounters/{id}/notes/ with If-Match. A current ETag returns 200 with the existing note response and authoritative saved_at plus the ETag response header. Missing If-Match remains 428. A stale PATCH ETag returns 412; its reconciliation body remains the existing exact field set: code, detail, etag, status, encounter_status, content, and saved_at, with the current ETag response header. The legacy POST note handler remains available with identical save semantics and missing-precondition behavior, and a stale POST remains 409. Start Encounter, Sign, and Amend remain POST workflows.
+
+Backend implementation: EncounterNoteView now routes POST and PATCH through one local _save path, the existing NoteWriteSerializer, and the authoritative save_note service. Only the conflict HTTP status is selected by the handler: POST uses 409 and PATCH uses 412. No backend model, serializer workflow, migration, or canonical architecture redesign was introduced. Phase 1K-G examination normalization remains in the shared service path for save, sign, and amend, including populated-only clear semantics.
+
+Frontend contract: the shared consultation draft mutation uses PATCH for both explicit Save draft and autosave. Start Encounter and Sign continue to use POST, and no Amend transport was changed. The conflict parser accepts both legacy 409 and canonical 412 reconciliation responses. A 412 is treated as a non-retryable revision conflict, so the existing true-conflict blocking, explicit-save resolution, non-overlap rebase, retry/backoff, patient/session guards, and signed immutability remain authoritative. Autosave and retry requests retain the existing dirty-field-only body, If-Match header, and X-KlinKlik-Autosave marker.
+
+Conflict and lost-response safety: a PATCH request that reaches the server but loses its response can retry with the stale ETag and receive 412. The existing content-based already-applied reconciliation adopts the authoritative content and latest ETag when it equals the current local dirty value, clears only still-equal dirty fields, and avoids a false same-field conflict. A differing overlapping value remains a true conflict and stops automatic retry. Non-overlap rebase preserves both writers and retries once with the latest ETag/current dirty values.
+
+Audit and privacy: PATCH and legacy POST use the same service audit behavior. Autosave retries remain autosave-originated and do not create an ordinary ClinicalNote audit event per attempt; safe per-Encounter/actor/minute summary semantics remain unchanged and no raw clinical text is added to audit payloads. Verification used synthetic local SQLite development data only. No browser PHI persistence, localStorage, IndexedDB, offline queue, service worker, persistent draft cache, credentials, seed passwords, secrets, real patient data, PHI, email, SMS, payment, webhook, or other external side effect was introduced or exposed. The canonical backlog was not modified.
+
+Files changed: backend/clinical/views.py, backend/tests/test_phase_1k_h.py, frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Validation: focused Phase 1K-H backend coverage passed 6 tests; Phase 1K-G regression passed 9 tests; Phase 1J regression passed 6 tests. Full backend pytest passed 136 tests with 7 documented PostgreSQL-only skips (5 PostgreSQL authentication/RLS tests and 2 PostgreSQL row-lock tests). Django check reported no issues; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations. Frontend typecheck, lint, and production build passed. Focused Phase 1J/1K Playwright coverage passed 12/12 tests in 3.9 minutes. The full authenticated local consultation Playwright file passed 40/40 tests in 11.3 minutes, including PATCH request assertions, 412 stale-note conflicts, retry/current-draft behavior, manual-save timer cancellation, offline/online behavior, lost-response reconciliation, true-conflict blocking, patient switching, section switching, and Phase 1D-F through 1I consultation regressions.
+
+Migration status: NONE. No database schema, generated client type, or backend endpoint workflow beyond the requested draft-note method/status contract changed.
+
+Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the existing PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. The retry draft remains in React memory only and is intentionally not recoverable after reload or close. No new blueprint decision was made.
+
+Next approved phase: NOT YET AUTHORISED

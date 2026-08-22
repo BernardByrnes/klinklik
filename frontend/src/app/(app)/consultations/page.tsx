@@ -213,7 +213,12 @@ type ConflictComparisonValues = Partial<
 >;
 
 function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
-  if (!(error instanceof ApiRequestError) || error.status !== 409 || typeof error.data !== "object" || error.data === null) {
+  if (
+    !(error instanceof ApiRequestError) ||
+    ![409, 412].includes(error.status) ||
+    typeof error.data !== "object" ||
+    error.data === null
+  ) {
     return null;
   }
   const data = error.data as Record<string, unknown>;
@@ -1317,7 +1322,7 @@ function ConsultationsWorkspace() {
       apiRequest<NoteSaveResponse>(
         "/api/v1/clinic/encounters/" + encounterId + "/notes/",
         {
-          method: "POST",
+          method: "PATCH",
           headers: {
             "If-Match": etag,
             ...(origin === "autosave" ? { "X-KlinKlik-Autosave": "1" } : {}),

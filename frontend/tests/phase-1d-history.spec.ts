@@ -135,7 +135,7 @@ test("persists and isolates family and social history", async ({ page }) => {
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST",
+      response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   expect((await saveResponse).status()).toBe(200);
@@ -245,7 +245,7 @@ test("preserves both writers when stale clients edit different clinical fields",
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await steadyFill(page, "Relevant Family History", updatedFamily);
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -257,14 +257,14 @@ test("preserves both writers when stale clients edit different clinical fields",
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const retryResponse = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await steadyFill(stalePage, "Relevant Social History", updatedSocial);
@@ -306,7 +306,7 @@ test("retains a second edit made while the first draft save is in flight", async
 
   let delayFirstSave = true;
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && delayFirstSave) {
+    if (route.request().method() === "PATCH" && delayFirstSave) {
       delayFirstSave = false;
       await new Promise((resolve) => setTimeout(resolve, 800));
     }
@@ -320,7 +320,7 @@ test("retains a second edit made while the first draft save is in flight", async
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await steadyFill(page, "Relevant Family History", family);
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -335,7 +335,7 @@ test("retains a second edit made while the first draft save is in flight", async
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await page.getByRole("button", { name: "Save draft" }).click();
     const secondBody = JSON.parse((await secondRequest).postData() ?? "{}") as { content?: unknown };
@@ -375,8 +375,8 @@ test("preserves same-field local draft until explicit retry", async ({ page }) =
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     await steadyFill(stalePage, "Relevant Family History", updatedFamilyB);
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -395,7 +395,7 @@ test("preserves same-field local draft until explicit retry", async ({ page }) =
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -523,8 +523,8 @@ test("clears conflict comparison when switching patients", async ({ page }) => {
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     await steadyFill(stalePage, "Relevant Family History", "Phase 1D-F3 synthetic local family");
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -574,7 +574,7 @@ test("persists, isolates, reloads, signs, and locks general examination", async 
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "General Examination", examination);
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -648,8 +648,8 @@ test("rebases a stale general examination client after an HPI update", async ({ 
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
     const updatedExamination = "Phase 1E verification - synthetic examination from writer B.";
@@ -707,7 +707,7 @@ test("persists, isolates, reloads, signs, and locks cardiovascular and respirato
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "General Examination", general);
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -719,7 +719,7 @@ test("persists, isolates, reloads, signs, and locks cardiovascular and respirato
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "Cardiovascular Examination", cardiovascular);
   await steadyFill(page, "Respiratory Examination", respiratory);
@@ -819,14 +819,14 @@ test("rebases a stale respiratory examination after a general examination update
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const retryResponse = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     const updatedRespiratory = "Phase 1F verification - synthetic respiratory examination from writer B.";
@@ -884,7 +884,7 @@ test("preserves same-field cardiovascular draft until explicit retry", async ({ 
       if (
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() !== 401
       ) {
         nonAuthWrites += 1;
@@ -894,8 +894,8 @@ test("preserves same-field cardiovascular draft until explicit retry", async ({ 
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const updatedCardiovascularB = "Phase 1F verification - synthetic local cardiovascular examination.";
     await steadyFill(stalePage, "Cardiovascular Examination", updatedCardiovascularB);
@@ -913,7 +913,7 @@ test("preserves same-field cardiovascular draft until explicit retry", async ({ 
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -942,7 +942,7 @@ test("retains a respiratory edit made while a cardiovascular save is in flight",
 
   let delayFirstSave = true;
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && delayFirstSave) {
+    if (route.request().method() === "PATCH" && delayFirstSave) {
       delayFirstSave = false;
       await new Promise((resolve) => setTimeout(resolve, 800));
     }
@@ -956,13 +956,13 @@ test("retains a respiratory edit made while a cardiovascular save is in flight",
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     const firstResponse = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await steadyFill(page, "Cardiovascular Examination", cardiovascular);
@@ -981,7 +981,7 @@ test("retains a respiratory edit made while a cardiovascular save is in flight",
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await page.getByRole("button", { name: "Save draft" }).click();
     const second = await secondRequest;
@@ -1029,7 +1029,7 @@ test("persists, isolates, reloads, signs, and locks abdominal and neurological e
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "General Examination", general);
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -1041,7 +1041,7 @@ test("persists, isolates, reloads, signs, and locks abdominal and neurological e
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "Abdominal / Gastrointestinal Examination", abdominal);
   await steadyFill(page, "Neurological / CNS Examination", neurological);
@@ -1172,14 +1172,14 @@ test("rebases a stale neurological examination after a respiratory examination u
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const retryResponse = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     const updatedNeurological = "Phase 1G verification - synthetic neurological CNS examination from writer B.";
@@ -1238,7 +1238,7 @@ test("preserves same-field abdominal draft until explicit retry", async ({ page 
       if (
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() !== 401
       ) {
         nonAuthWrites += 1;
@@ -1248,8 +1248,8 @@ test("preserves same-field abdominal draft until explicit retry", async ({ page 
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const updatedAbdominalB = "Phase 1G verification - synthetic local abdominal examination.";
     await steadyFill(stalePage, "Abdominal / Gastrointestinal Examination", updatedAbdominalB);
@@ -1267,7 +1267,7 @@ test("preserves same-field abdominal draft until explicit retry", async ({ page 
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -1295,7 +1295,7 @@ test("retains a neurological edit made while an abdominal save is in flight", as
 
   let delayFirstSave = true;
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && delayFirstSave) {
+    if (route.request().method() === "PATCH" && delayFirstSave) {
       delayFirstSave = false;
       await new Promise((resolve) => setTimeout(resolve, 800));
     }
@@ -1309,13 +1309,13 @@ test("retains a neurological edit made while an abdominal save is in flight", as
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     const firstResponse = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await steadyFill(page, "Abdominal / Gastrointestinal Examination", abdominal);
@@ -1334,7 +1334,7 @@ test("retains a neurological edit made while an abdominal save is in flight", as
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await page.getByRole("button", { name: "Save draft" }).click();
     const second = await secondRequest;
@@ -1382,7 +1382,7 @@ test("persists, isolates, reloads, signs, and locks genitourinary and musculoske
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "General Examination", general);
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -1394,7 +1394,7 @@ test("persists, isolates, reloads, signs, and locks genitourinary and musculoske
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await steadyFill(page, "Genitourinary Examination", genitourinary);
   await steadyFill(page, "Musculoskeletal Examination", musculoskeletal);
@@ -1527,14 +1527,14 @@ test("rebases a stale musculoskeletal examination after a neurological examinati
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const retryResponse = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     const updatedMusculoskeletal = "Phase 1H verification - synthetic musculoskeletal CNS examination from writer B.";
@@ -1595,7 +1595,7 @@ test("preserves same-field genitourinary draft until explicit retry", async ({ p
       if (
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() !== 401
       ) {
         nonAuthWrites += 1;
@@ -1605,8 +1605,8 @@ test("preserves same-field genitourinary draft until explicit retry", async ({ p
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const updatedAbdominalB = "Phase 1H verification - synthetic local genitourinary examination.";
     await steadyFill(stalePage, "Genitourinary Examination", updatedAbdominalB);
@@ -1624,7 +1624,7 @@ test("preserves same-field genitourinary draft until explicit retry", async ({ p
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -1654,7 +1654,7 @@ test("retains a musculoskeletal edit made while an genitourinary save is in flig
 
   let delayFirstSave = true;
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && delayFirstSave) {
+    if (route.request().method() === "PATCH" && delayFirstSave) {
       delayFirstSave = false;
       await new Promise((resolve) => setTimeout(resolve, 800));
     }
@@ -1668,13 +1668,13 @@ test("retains a musculoskeletal edit made while an genitourinary save is in flig
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     const firstResponse = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await steadyFill(page, "Genitourinary Examination", genitourinary);
@@ -1693,7 +1693,7 @@ test("retains a musculoskeletal edit made while an genitourinary save is in flig
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await page.getByRole("button", { name: "Save draft" }).click();
     const second = await secondRequest;
@@ -1839,8 +1839,8 @@ test("inserts only explicitly selected reviewed normal findings as an editable u
   page.on("request", (request) => {
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
-      (request.url().endsWith("/notes/") || request.url().endsWith("/sign/")) &&
-      request.method() === "POST"
+      ((request.url().endsWith("/notes/") && request.method() === "PATCH") ||
+        (request.url().endsWith("/sign/") && request.method() === "POST"))
     ) {
       noteMutationRequests += 1;
     }
@@ -1864,13 +1864,13 @@ test("inserts only explicitly selected reviewed normal findings as an editable u
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   const saveResponse = page.waitForResponse(
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST" &&
+      response.request().method() === "PATCH" &&
       response.status() === 200,
   );
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -1929,7 +1929,7 @@ test("protects existing and locally dirty examination text from reviewed-normal 
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   const savedBody = JSON.parse((await saveRequest).postData() ?? "{}") as { content?: unknown };
@@ -2019,14 +2019,14 @@ test("handles same-field stale conflicts for a template-inserted examination fie
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const conflictRequest = stalePage.waitForRequest(
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
     const conflict = await conflictResponse;
@@ -2040,14 +2040,14 @@ test("handles same-field stale conflicts for a template-inserted examination fie
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     const retryRequest = stalePage.waitForRequest(
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
     const retry = await retryResponse;
@@ -2093,21 +2093,21 @@ test("rebases a template-inserted field after a non-overlapping examination upda
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const retryResponse = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     const staleRequest = stalePage.waitForRequest(
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await stalePage.getByRole("button", { name: "Save draft", exact: true }).click();
     const conflict = await conflictResponse;
@@ -2160,7 +2160,7 @@ test("retains a reviewed-normal insertion made while another examination save is
 
   let delayFirstSave = true;
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && delayFirstSave) {
+    if (route.request().method() === "PATCH" && delayFirstSave) {
       delayFirstSave = false;
       await new Promise((resolve) => setTimeout(resolve, 800));
     }
@@ -2174,13 +2174,13 @@ test("retains a reviewed-normal insertion made while another examination save is
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     const firstResponse = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -2197,7 +2197,7 @@ test("retains a reviewed-normal insertion made while another examination save is
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await page.getByRole("button", { name: "Save draft" }).click();
     const secondBody = JSON.parse((await secondRequest).postData() ?? "{}") as { content?: unknown };
@@ -2221,7 +2221,7 @@ test("Phase 1J debounces edits, sends dirty-only autosave, and shows persisted s
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       noteRequests.push(request.headers()["x-klinklik-autosave"] ?? "manual");
     }
@@ -2231,13 +2231,13 @@ test("Phase 1J debounces edits, sends dirty-only autosave, and shows persisted s
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   const autosaveResponsePromise = page.waitForResponse(
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST" &&
+      response.request().method() === "PATCH" &&
       response.status() === 200,
   );
   await steadyFill(page, "History of present illness (HPI)", firstValue);
@@ -2278,7 +2278,7 @@ test("Phase 1J manual Save cancels the debounce and does not duplicate the reque
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       noteRequests.push(request.headers()["x-klinklik-autosave"] ?? "manual");
     }
@@ -2288,7 +2288,7 @@ test("Phase 1J manual Save cancels the debounce and does not duplicate the reque
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   const request = await requestPromise;
@@ -2316,7 +2316,7 @@ test("Phase 1J preserves edits during an in-flight autosave without overlap", as
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       inFlight += 1;
       maximumInFlight = Math.max(maximumInFlight, inFlight);
@@ -2330,13 +2330,13 @@ test("Phase 1J preserves edits during an in-flight autosave without overlap", as
     if (
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST"
+      response.request().method() === "PATCH"
     ) {
       inFlight = Math.max(0, inFlight - 1);
     }
   });
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && delayFirstSave) {
+    if (route.request().method() === "PATCH" && delayFirstSave) {
       delayFirstSave = false;
       await new Promise((resolve) => setTimeout(resolve, 1200));
     }
@@ -2350,7 +2350,7 @@ test("Phase 1J preserves edits during an in-flight autosave without overlap", as
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await steadyFill(page, "Cardiovascular Examination", firstValue);
     await firstRequest;
@@ -2358,7 +2358,7 @@ test("Phase 1J preserves edits during an in-flight autosave without overlap", as
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await steadyFill(page, "Respiratory Examination", secondValue);
     await page.waitForTimeout(1500);
@@ -2405,7 +2405,7 @@ test("Phase 1K preserves Phase 1J true same-field conflict blocking until explic
       if (
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() !== 401
       ) {
         requestMarkers.push(response.request().headers()["x-klinklik-autosave"] ?? "manual");
@@ -2415,8 +2415,8 @@ test("Phase 1K preserves Phase 1J true same-field conflict blocking until explic
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const localValue = "Phase 1J verification — synthetic local conflict HPI";
     await steadyFill(stalePage, "History of present illness (HPI)", localValue);
@@ -2433,13 +2433,13 @@ test("Phase 1K preserves Phase 1J true same-field conflict blocking until explic
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     const explicitResponsePromise = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await stalePage.getByRole("button", { name: "Save draft" }).click();
@@ -2454,7 +2454,7 @@ test("Phase 1K preserves Phase 1J true same-field conflict blocking until explic
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     const resumedValue = "Phase 1J verification — synthetic resumed autosave HPI";
     await steadyFill(stalePage, "History of present illness (HPI)", resumedValue);
@@ -2496,7 +2496,7 @@ test("Phase 1J rebases a non-overlapping stale autosave and retries once safely"
       if (
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() !== 401
       ) {
         const request = response.request();
@@ -2508,14 +2508,14 @@ test("Phase 1J rebases a non-overlapping stale autosave and retries once safely"
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     const retryResponse = stalePage.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await steadyFill(stalePage, "General Examination", localGeneral);
@@ -2550,7 +2550,7 @@ test("Phase 1K patient switch confirmation preserves or discards local draft saf
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       noteRequests.push(request.url());
     }
@@ -2665,7 +2665,7 @@ test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce 
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       const body = JSON.parse(request.postData() ?? "{}") as { content?: unknown };
       noteRequests.push({ content: body.content, autosave: request.headers()["x-klinklik-autosave"] });
@@ -2677,13 +2677,13 @@ test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce 
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   const hpiResponsePromise = page.waitForResponse(
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST" &&
+      response.request().method() === "PATCH" &&
       response.status() === 200,
   );
   await steadyFill(page, "History of present illness (HPI)", hpi);
@@ -2700,13 +2700,13 @@ test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce 
     (request) =>
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST",
+      request.method() === "PATCH",
   );
   const reviewedResponsePromise = page.waitForResponse(
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST" &&
+      response.request().method() === "PATCH" &&
       response.status() === 200,
   );
   await page.getByRole("button", { name: "Insert selected findings" }).click();
@@ -2745,7 +2745,7 @@ test("Phase 1K retries transient autosave failures with current dirty fields", a
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       inFlight += 1;
       maximumInFlight = Math.max(maximumInFlight, inFlight);
@@ -2760,14 +2760,14 @@ test("Phase 1K retries transient autosave failures with current dirty fields", a
     if (
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST"
+      response.request().method() === "PATCH"
     ) {
       inFlight = Math.max(0, inFlight - 1);
     }
   });
 
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && failFirstRequest) {
+    if (route.request().method() === "PATCH" && failFirstRequest) {
       failFirstRequest = false;
       await route.fulfill({
         status: 503,
@@ -2784,7 +2784,7 @@ test("Phase 1K retries transient autosave failures with current dirty fields", a
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 503,
     );
     await steadyFill(page, "History of present illness (HPI)", firstHpi);
@@ -2797,7 +2797,7 @@ test("Phase 1K retries transient autosave failures with current dirty fields", a
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("offline")));
@@ -2834,13 +2834,13 @@ test("Phase 1K manual Save cancels the pending retry timer", async ({ page }) =>
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       requestMarkers.push(request.headers()["x-klinklik-autosave"] ?? "manual");
     }
   });
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && failFirstRequest) {
+    if (route.request().method() === "PATCH" && failFirstRequest) {
       failFirstRequest = false;
       await route.fulfill({
         status: 503,
@@ -2857,7 +2857,7 @@ test("Phase 1K manual Save cancels the pending retry timer", async ({ page }) =>
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 503,
     );
     await steadyFill(page, "History of present illness (HPI)", "Phase 1K verification — synthetic manual retry");
@@ -2868,7 +2868,7 @@ test("Phase 1K manual Save cancels the pending retry timer", async ({ page }) =>
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
+        response.request().method() === "PATCH" &&
         response.status() === 200,
     );
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -2893,7 +2893,7 @@ test("Phase 1K suppresses autosave while offline, retries online, and protects u
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       noteRequests += 1;
     }
@@ -2916,7 +2916,7 @@ test("Phase 1K suppresses autosave while offline, retries online, and protects u
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST" &&
+      response.request().method() === "PATCH" &&
       response.status() === 200,
   );
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
@@ -2944,7 +2944,7 @@ test("Phase 1K reconciles a lost autosave response without a false conflict", as
     if (
       request.url().includes("/api/v1/clinic/encounters/") &&
       request.url().endsWith("/notes/") &&
-      request.method() === "POST"
+      request.method() === "PATCH"
     ) {
       requests.push({
         body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>,
@@ -2954,7 +2954,7 @@ test("Phase 1K reconciles a lost autosave response without a false conflict", as
   });
 
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST" && firstRequest) {
+    if (route.request().method() === "PATCH" && firstRequest) {
       firstRequest = false;
       await route.fetch();
       await route.abort("failed");
@@ -2968,7 +2968,7 @@ test("Phase 1K reconciles a lost autosave response without a false conflict", as
       (request) =>
         request.url().includes("/api/v1/clinic/encounters/") &&
         request.url().endsWith("/notes/") &&
-        request.method() === "POST",
+        request.method() === "PATCH",
     );
     await steadyFill(page, "History of present illness (HPI)", "Phase 1K verification — synthetic lost-response HPI");
     await firstRequestObserved;
@@ -2978,8 +2978,8 @@ test("Phase 1K reconciles a lost autosave response without a false conflict", as
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
-        response.request().method() === "POST" &&
-        response.status() === 409,
+        response.request().method() === "PATCH" &&
+        response.status() === 412,
     );
     await reconciliation;
     expect(requests).toHaveLength(2);
