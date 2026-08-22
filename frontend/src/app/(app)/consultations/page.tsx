@@ -47,6 +47,10 @@ type WorkspaceSectionId = (typeof WORKSPACE_SECTIONS)[number]["id"];
 type FoundationSectionId = Exclude<WorkspaceSectionId, "notes">;
 const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
 const AUTOSAVE_DELAY_MS = 3000;
+const RETRY_BACKOFF_MS = [2000, 5000, 10000, 20000, 30000] as const;
+const TERMINAL_ENCOUNTER_STATUSES = ["SIGNED", "CLOSED", "CANCELLED"] as const;
+
+type DraftSaveState = "idle" | "unsaved" | "saved" | "retrying";
 
 type ConsultationDraft = {
   content: ClinicalNoteContent;
@@ -197,6 +201,7 @@ type ClinicalNoteConflictData = {
   status: string;
   encounter_status: string;
   content: ClinicalNoteContent;
+  saved_at: string | null;
 };
 
 type ConflictComparisonValues = Partial<
@@ -222,7 +227,23 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
     status: data.status,
     encounter_status: data.encounter_status,
     content: data.content as ClinicalNoteContent,
+    saved_at: typeof data.saved_at === "string" ? data.saved_at : null,
   };
+}
+
+function isRetryableDraftFailure(error: unknown) {
+  if (error instanceof ApiRequestError) {
+    return error.status >= 500 && error.status <= 599;
+  }
+  return error instanceof TypeError || (
+    typeof DOMException !== "undefined" &&
+    error instanceof DOMException &&
+    error.name === "NetworkError"
+  );
+}
+
+function isTerminalEncounterStatus(status: string) {
+  return TERMINAL_ENCOUNTER_STATUSES.some((terminalStatus) => terminalStatus === status);
 }
 
 function emptyDraftValues(): EditableDraftValues {
@@ -321,6 +342,19 @@ function savedTimeLabel(savedAt: string | null) {
     second: "2-digit",
     hour12: false,
   });
+}
+
+function DraftSaveStatus({ saveState, savedAt }: { saveState: DraftSaveState; savedAt: string | null }) {
+  if (saveState === "saved") {
+    return <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>;
+  }
+  if (saveState === "retrying") {
+    return <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — retrying</span>;
+  }
+  if (saveState === "unsaved") {
+    return <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>;
+  }
+  return null;
 }
 
 function ConflictComparisonPanel({ values }: { values: ConflictComparisonValues }) {
@@ -458,7 +492,7 @@ type ExaminationSectionProps = {
   onMusculoskeletalExaminationChange: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
-  saveState: "idle" | "unsaved" | "saved";
+  saveState: DraftSaveState;
   savedAt: string | null;
   reviewedNormalActionOpen: boolean;
   reviewedNormalSelection: ExaminationField[];
@@ -768,11 +802,7 @@ function ExaminationSection({
         <Button variant="secondary" disabled={savePending} onClick={onSave}>
           {savePending ? "Saving..." : "Save draft"}
         </Button>
-        {saveState === "saved" ? (
-          <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>
-        ) : saveState === "unsaved" ? (
-          <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved - use Save draft.</span>
-        ) : null}
+        <DraftSaveStatus saveState={saveState} savedAt={savedAt} />
       </div>
     </div>
   );
@@ -794,7 +824,7 @@ type HistorySectionProps = {
   onSocialHistoryChange: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
-  saveState: "idle" | "unsaved" | "saved";
+  saveState: DraftSaveState;
   savedAt: string | null;
 };
 
@@ -950,11 +980,7 @@ function HistorySection({
         <Button variant="secondary" disabled={savePending} onClick={onSave}>
           {savePending ? "Saving…" : "Save draft"}
         </Button>
-        {saveState === "saved" ? (
-          <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>
-        ) : saveState === "unsaved" ? (
-          <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>
-        ) : null}
+        <DraftSaveStatus saveState={saveState} savedAt={savedAt} />
       </div>
     </div>
   );
@@ -983,7 +1009,7 @@ function ConsultationsWorkspace() {
   const [neurologicalExamination, setNeurologicalExamination] = useState("");
   const [genitourinaryExamination, setGenitourinaryExamination] = useState("");
   const [musculoskeletalExamination, setMusculoskeletalExamination] = useState("");
-  const [draftSaveState, setDraftSaveState] = useState<"idle" | "unsaved" | "saved">("idle");
+  const [draftSaveState, setDraftSaveState] = useState<DraftSaveState>("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
   const [notice, setNotice] = useState("");
@@ -993,6 +1019,11 @@ function ConsultationsWorkspace() {
   const [reviewedNormalSelection, setReviewedNormalSelection] = useState<ExaminationField[]>([]);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttemptRef = useRef(0);
+  const retryActiveRef = useRef(false);
+  const retryAttemptRunnerRef = useRef<() => void>(() => undefined);
+  const offlineRef = useRef(false);
   const autosaveBlockedRef = useRef(false);
   const autosaveDeferredRef = useRef(false);
   const clinicalMutationInFlightRef = useRef(false);
@@ -1005,6 +1036,12 @@ function ConsultationsWorkspace() {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    retryActiveRef.current = false;
+    retryAttemptRef.current = 0;
   }, []);
 
   const queue = useQuery({
@@ -1029,14 +1066,41 @@ function ConsultationsWorkspace() {
     }
   }
 
+  function cancelRetryTimer() {
+    if (retryTimerRef.current !== null) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }
+
+  function resetRetryState() {
+    cancelRetryTimer();
+    retryActiveRef.current = false;
+    retryAttemptRef.current = 0;
+  }
+
+  function markRetrying() {
+    retryActiveRef.current = true;
+    setDraftSaveState("retrying");
+    setNotice("");
+    setError("");
+  }
+
   function scheduleAutosave() {
+    if (retryActiveRef.current) return;
     cancelAutosaveTimer();
     if (
       !encounter?.id ||
       dirtyFieldsRef.current.size === 0 ||
       autosaveBlockedRef.current ||
-      ["SIGNED", "CLOSED", "CANCELLED"].includes(encounter.status)
+      isTerminalEncounterStatus(encounter.status)
     ) {
+      return;
+    }
+    if (offlineRef.current) {
+      retryActiveRef.current = true;
+      retryAttemptRef.current = 0;
+      markRetrying();
       return;
     }
     const session = draftSessionRef.current;
@@ -1048,8 +1112,13 @@ function ConsultationsWorkspace() {
         encounter?.id !== encounterId ||
         dirtyFieldsRef.current.size === 0 ||
         autosaveBlockedRef.current ||
-        ["SIGNED", "CLOSED", "CANCELLED"].includes(encounter.status)
+        isTerminalEncounterStatus(encounter.status)
       ) {
+        return;
+      }
+      if (offlineRef.current) {
+        retryActiveRef.current = true;
+        markRetrying();
         return;
       }
       if (clinicalMutationInFlightRef.current) {
@@ -1063,6 +1132,7 @@ function ConsultationsWorkspace() {
   }
   function hydrateNote(created: Encounter) {
     cancelAutosaveTimer();
+    resetRetryState();
     autosaveBlockedRef.current = false;
     autosaveDeferredRef.current = false;
     clinicalMutationInFlightRef.current = false;
@@ -1155,7 +1225,17 @@ function ConsultationsWorkspace() {
   }
 
   function selectEntry(entry: QueueEntry) {
+    if (
+      entry.id !== selectedId &&
+      dirtyFieldsRef.current.size > 0 &&
+      encounter &&
+      !isTerminalEncounterStatus(encounter.status) &&
+      !window.confirm("This consultation has unsaved changes. Leave and discard them?")
+    ) {
+      return;
+    }
     cancelAutosaveTimer();
+    resetRetryState();
     autosaveBlockedRef.current = false;
     autosaveDeferredRef.current = false;
     clinicalMutationInFlightRef.current = false;
@@ -1228,6 +1308,7 @@ function ConsultationsWorkspace() {
       if (variables.session !== draftSessionRef.current) return;
       clinicalMutationInFlightRef.current = false;
       autosaveDeferredRef.current = false;
+      resetRetryState();
       if (variables.origin === "manual") autosaveBlockedRef.current = false;
       noteContentRef.current = saved.content;
       encounterEtagRef.current = saved.etag;
@@ -1249,47 +1330,192 @@ function ConsultationsWorkspace() {
       clinicalMutationInFlightRef.current = false;
       const conflict = clinicalNoteConflict(reason);
       if (!conflict) {
-        const followUpAutosave = autosaveDeferredRef.current;
         autosaveDeferredRef.current = false;
-        setDraftSaveState("unsaved");
+        if (isRetryableDraftFailure(reason) && dirtyFieldsRef.current.size > 0) {
+          continueRetryAfterFailure();
+          return;
+        }
+        resetRetryState();
+        setDraftSaveState(dirtyFieldsRef.current.size > 0 ? "unsaved" : "idle");
         setError(errorMessage(reason));
-        if (followUpAutosave) scheduleAutosave();
         return;
       }
+
+      const remoteValues = editableDraftValuesFromContent(conflict.content);
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      const alreadyAppliedFields = overlappingFields.filter((field) => {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        return draftValuesRef.current[draftKey] === remoteValues[draftKey];
+      });
+      const trueOverlappingFields = overlappingFields.filter((field) => !alreadyAppliedFields.includes(field));
+
       noteContentRef.current = conflict.content;
       encounterEtagRef.current = conflict.etag;
-      if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
+      for (const field of alreadyAppliedFields) {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        if (draftValuesRef.current[draftKey] === remoteValues[draftKey]) {
+          dirtyFieldsRef.current.delete(field);
+        }
+      }
+
+      if (isTerminalEncounterStatus(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
+        resetRetryState();
         cancelAutosaveTimer();
         autosaveDeferredRef.current = false;
       }
-      rebaseVisibleDraft(conflict.content, remoteFields);
-      if (variables.origin === "autosave" && overlappingFields.length > 0) {
+      rebaseVisibleDraft(conflict.content, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
+
+      if (trueOverlappingFields.length > 0) {
+        resetRetryState();
         autosaveBlockedRef.current = true;
         cancelAutosaveTimer();
         autosaveDeferredRef.current = false;
       }
+
+      if (dirtyFieldsRef.current.size === 0) {
+        resetRetryState();
+        setSavedAt(conflict.saved_at);
+        setDraftSaveState("saved");
+        setNotice("Consultation draft reconciled with the latest saved record.");
+        setError("");
+        return;
+      }
+
       if (
-        overlappingFields.length === 0 &&
+        trueOverlappingFields.length === 0 &&
         variables.rebaseAttempt < 1 &&
         conflict.status === "DRAFT" &&
         conflict.encounter_status === "OPEN"
       ) {
-        setError("");
-        saveDraft.mutate({
-          ...variables,
-          etag: conflict.etag,
-          rebaseAttempt: variables.rebaseAttempt + 1,
-        });
-        return;
+        const rebasedMutation = currentDraftMutation(variables.rebaseAttempt + 1, variables.origin);
+        if (rebasedMutation) {
+          setError("");
+          saveDraft.mutate(rebasedMutation);
+          return;
+        }
       }
+
+      if (trueOverlappingFields.length === 0) resetRetryState();
       setDraftSaveState("unsaved");
       setNotice("");
-      setError(conflictMessage(remoteFields, overlappingFields, "save"));
+      setError(conflictMessage(remoteFields, trueOverlappingFields, "save"));
     },
   });
+  function attemptRetryNow() {
+    if (
+      !retryActiveRef.current ||
+      offlineRef.current ||
+      clinicalMutationInFlightRef.current ||
+      !encounter?.id ||
+      dirtyFieldsRef.current.size === 0 ||
+      autosaveBlockedRef.current ||
+      isTerminalEncounterStatus(encounter.status)
+    ) {
+      if (retryActiveRef.current && dirtyFieldsRef.current.size === 0) {
+        resetRetryState();
+        setDraftSaveState("saved");
+      }
+      return;
+    }
+    autosaveDeferredRef.current = false;
+    const mutation = currentDraftMutation(0, "autosave");
+    if (mutation) saveDraft.mutate(mutation);
+  }
+
+  retryAttemptRunnerRef.current = attemptRetryNow;
+
+  function scheduleRetry() {
+    if (
+      !retryActiveRef.current ||
+      offlineRef.current ||
+      !encounter?.id ||
+      dirtyFieldsRef.current.size === 0 ||
+      autosaveBlockedRef.current ||
+      isTerminalEncounterStatus(encounter.status)
+    ) {
+      return;
+    }
+    if (retryTimerRef.current !== null) return;
+    const session = draftSessionRef.current;
+    const encounterId = encounter.id;
+    const delay = RETRY_BACKOFF_MS[Math.min(retryAttemptRef.current, RETRY_BACKOFF_MS.length - 1)];
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      if (
+        session !== draftSessionRef.current ||
+        encounter?.id !== encounterId ||
+        dirtyFieldsRef.current.size === 0 ||
+        autosaveBlockedRef.current ||
+        isTerminalEncounterStatus(encounter.status)
+      ) {
+        return;
+      }
+      if (offlineRef.current || clinicalMutationInFlightRef.current) return;
+      attemptRetryNow();
+    }, delay);
+  }
+
+  function continueRetryAfterFailure() {
+    const wasRetrying = retryActiveRef.current;
+    retryActiveRef.current = true;
+    if (wasRetrying) {
+      retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, RETRY_BACKOFF_MS.length - 1);
+    } else {
+      retryAttemptRef.current = 0;
+    }
+    markRetrying();
+    scheduleRetry();
+  }
+
+  useEffect(() => {
+    offlineRef.current = typeof navigator !== "undefined" && !navigator.onLine;
+    function handleOffline() {
+      offlineRef.current = true;
+      if (
+        dirtyFieldsRef.current.size > 0 &&
+        encounter?.id &&
+        !autosaveBlockedRef.current &&
+        !isTerminalEncounterStatus(encounter.status)
+      ) {
+        cancelAutosaveTimer();
+        cancelRetryTimer();
+        if (!retryActiveRef.current) retryAttemptRef.current = 0;
+        markRetrying();
+      }
+    }
+    function handleOnline() {
+      offlineRef.current = false;
+      if (
+        retryActiveRef.current &&
+        dirtyFieldsRef.current.size > 0 &&
+        !autosaveBlockedRef.current &&
+        !clinicalMutationInFlightRef.current &&
+        encounter?.id &&
+        !isTerminalEncounterStatus(encounter.status)
+      ) {
+        cancelRetryTimer();
+        retryAttemptRunnerRef.current();
+      }
+    }
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [encounter]);
+
+  useEffect(() => {
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      if (dirtyFieldsRef.current.size === 0) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, []);
   const signNote = useMutation<NoteSignResponse, unknown, DraftMutationVariables>({
     mutationFn: ({ content, encounterId, etag }) =>
       apiRequest<NoteSignResponse>("/api/v1/clinic/encounters/" + encounterId + "/sign/", {
@@ -1305,6 +1531,8 @@ function ConsultationsWorkspace() {
     onSuccess: (signed, variables) => {
       if (variables.session !== draftSessionRef.current) return;
       clinicalMutationInFlightRef.current = false;
+      resetRetryState();
+      cancelAutosaveTimer();
       const signedDraft = editableDraftValuesFromContent(signed.content);
       noteContentRef.current = signed.content;
       encounterEtagRef.current = signed.etag;
@@ -1337,6 +1565,7 @@ function ConsultationsWorkspace() {
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;
       clinicalMutationInFlightRef.current = false;
+      resetRetryState();
       const conflict = clinicalNoteConflict(reason);
       setConfirmingSign(false);
       if (!conflict) {
@@ -1347,8 +1576,9 @@ function ConsultationsWorkspace() {
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
       noteContentRef.current = conflict.content;
       encounterEtagRef.current = conflict.etag;
-      if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
+      if (isTerminalEncounterStatus(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
+        resetRetryState();
         cancelAutosaveTimer();
         autosaveDeferredRef.current = false;
       }
@@ -1376,9 +1606,9 @@ function ConsultationsWorkspace() {
         : current;
     });
     dirtyFieldsRef.current.add(field);
-    setDraftSaveState("unsaved");
+    setDraftSaveState(retryActiveRef.current ? "retrying" : "unsaved");
     setNotice("");
-    scheduleAutosave();
+    if (!retryActiveRef.current) scheduleAutosave();
   }
 
   function isExaminationFieldUnavailable(field: ExaminationField) {
@@ -1423,18 +1653,20 @@ function ConsultationsWorkspace() {
   }
 
   function saveCurrentDraft() {
-    cancelAutosaveTimer();
-    autosaveDeferredRef.current = false;
     if (clinicalMutationInFlightRef.current) return;
+    cancelAutosaveTimer();
+    resetRetryState();
+    autosaveDeferredRef.current = false;
     autosaveBlockedRef.current = false;
     const mutation = currentDraftMutation(0, "manual");
     if (mutation) saveDraft.mutate(mutation);
   }
 
   function signCurrentDraft() {
-    cancelAutosaveTimer();
-    autosaveDeferredRef.current = false;
     if (clinicalMutationInFlightRef.current) return;
+    cancelAutosaveTimer();
+    resetRetryState();
+    autosaveDeferredRef.current = false;
     autosaveBlockedRef.current = false;
     const mutation = currentDraftMutation(0, "manual");
     if (mutation) signNote.mutate(mutation);
@@ -1687,11 +1919,7 @@ function ConsultationsWorkspace() {
                       <Button variant="secondary" disabled={saveDraft.isPending || signNote.isPending} onClick={saveCurrentDraft}>
                         {saveDraft.isPending ? "Saving…" : "Save draft"}
                       </Button>
-                      {draftSaveState === "saved" ? (
-                        <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>
-                      ) : draftSaveState === "unsaved" ? (
-                        <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>
-                      ) : null}
+                      <DraftSaveStatus saveState={draftSaveState} savedAt={savedAt} />
                     </div>
                     {confirmingSign ? (
                       <div role="alert" className="flex flex-wrap items-center gap-3 rounded-[14px] bg-accent-orange-soft px-4 py-3">

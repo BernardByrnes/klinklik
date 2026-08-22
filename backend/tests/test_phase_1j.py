@@ -222,6 +222,7 @@ def test_phase_1j_stale_autosave_conflict_does_not_write_audit(tenant, authed_cl
 
     assert rejected.status_code == 409
     assert rejected.data["content"]["hpi"] == SYNTHETIC_HPI
+    assert rejected.data["saved_at"] == ClinicalNote.objects.get(id=initial.data["note"]).updated_at.isoformat()
     summary_events = AuditEvent.objects.filter(
         organisation=tenant.organisation,
         entity_type="Encounter",

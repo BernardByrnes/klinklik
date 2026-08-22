@@ -64,6 +64,7 @@ def _revision_conflict_response(exc):
             "status": exc.current_status,
             "encounter_status": exc.current_encounter_status,
             "content": exc.current_content,
+            "saved_at": exc.current_saved_at,
         },
         status=status.HTTP_409_CONFLICT,
     )

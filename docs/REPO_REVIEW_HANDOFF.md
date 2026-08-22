@@ -534,3 +534,43 @@ Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-onl
 Files changed for Phase 1J: backend/clinical/services.py, backend/clinical/views.py, backend/clinicopus/settings.py, backend/tests/test_phase_1j.py, frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1K — Network Retry + Unsaved Navigation Protection
+
+Status: IMPLEMENTED / VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Objective: continue ENC-015 by adding bounded retry for transient clinical draft-save failures and protecting in-memory unsaved consultation drafts during reconnects, browser unloads, and patient switches. Phase 1L was not started.
+
+Retryable failure classification: automatic retry applies only to HTTP 5xx ApiRequestError responses and browser network failures represented by TypeError or NetworkError. HTTP 400 validation failures, 401/403 authorization failures, 409 revision conflicts, 428 missing If-Match, signed/closed/cancelled encounters, and other permanent failures stop background retry and remain truthful to the clinician.
+
+Backoff: one consultation-local retry timer uses 2 seconds, 5 seconds, 10 seconds, 20 seconds, and 30 seconds, then continues at the bounded 30-second interval while the draft remains dirty and the failure remains retryable. Editing during retry updates the current React draft and does not create another timer or overlapping mutation.
+
+Connectivity: the offline browser event retains the dirty draft in React memory, shows Not saved — retrying, cancels pending autosave/retry timers, and prevents repeated requests while offline. The online event is only a prompt; it does not prove server reachability. When the encounter is mutable, dirty, unblocked, and idle, one prompt retry uses the normal response/error path and resumes backoff if the request fails.
+
+Persistent unsaved warning: retryable failures remain visibly labelled Not saved — retrying until success, conflict resolution, session/patient change, or a terminal encounter state. Successful responses continue to use the authoritative server saved_at and render Saved HH:MM:SS. Non-retryable failures remain Not saved — use Save draft with the existing truthful error.
+
+Current-draft retry behaviour: every retry builds a dirty-field-only payload from the current draft refs and current dirty-field set, carries the current ETag through If-Match, and carries the existing X-KlinKlik-Autosave marker. Edits made after a failed request are therefore included in the next attempt without freezing the failed payload.
+
+Lost-response reconciliation: the existing 409 response now includes the authoritative saved_at from the current ClinicalNote revision; no model or migration changed. On recovery 409, overlapping fields whose authoritative server content equals the current local dirty value are treated as already applied, adopt the latest content/ETag, clear only still-equal dirty fields, and do not show a false same-field conflict. If all dirty fields match, the draft becomes Saved. Non-overlap changes retain the Phase 1J visible rebase and one retry with the latest ETag/current dirty values.
+
+True conflict behaviour: when an overlapping authoritative value differs from the current local dirty value, the local draft and server comparison remain visible, automatic retry stops, autosave is blocked, and explicit Save draft is required. Further typing does not restart background retry while the conflict remains unresolved. No authorship or provenance inference was added.
+
+Manual Save and sign behaviour: Save draft remains available during retry; it cancels the pending retry timer and uses the current dirty values immediately. A successful manual save clears retry mode and adopts the authoritative saved timestamp. A retryable manual-save failure re-enters bounded retry; a true 409 retains the existing explicit conflict workflow. Sign and draft-save mutations cannot overlap; explicit sign cancels a pending retry timer, uses current dirty values/current ETag, and has no automatic sign retry. Successful sign and terminal states clear retry state and timers.
+
+Patient-switch and unload protection: changing patients with dirty mutable content requires the browser-native confirmation, “This consultation has unsaved changes. Leave and discard them?”. Cancel leaves the patient, draft, retry state, and timer intact. Confirm cancels timers, invalidates the draft session, clears all in-memory draft refs/state, and switches without late writes crossing into the next patient. Section switching remains within the same Encounter and does not warn. beforeunload blocks browser reload/close while dirty using only the native browser mechanism; no PHI is placed in the warning.
+
+Timer/session cleanup: autosave and retry timers are cleared on success, explicit sign, patient switch, terminal encounter state, true conflict, and component unmount. Session and encounter guards reject late responses from an old patient/session.
+
+Audit behaviour: the existing safe autosave audit summarisation remains unchanged. Retries remain autosave-originated, do not create an ordinary ClinicalNote audit event per attempt, and do not add raw clinical text to audit payloads. Rejected requests do not create false success audit events.
+
+Files changed: backend/clinical/concurrency.py, backend/clinical/views.py, backend/tests/test_phase_1j.py, frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document. No canonical backlog file was changed.
+
+Validation: Django check passed with no issues; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations. Focused Phase 1J backend coverage passed 6 tests in 4.82 seconds. Full backend pytest passed 121 tests with 7 documented PostgreSQL-only skips in 38.43 seconds: five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests. Frontend typecheck passed, lint passed, and production build passed. Focused Phase 1K Playwright coverage passed 6 tests in 3.1 minutes. The final full authenticated local consultation Playwright file passed 39 tests in 15.4 minutes.
+
+Migration status: NONE. The only backend adjustment adds saved_at to the existing revision-conflict response needed for authoritative lost-response reconciliation; no model, endpoint workflow, database column, generated client type, or migration was introduced.
+
+Security and verification: verification used synthetic local SQLite development data only. No credentials, seed passwords, secrets, real patient data, PHI, email, SMS, payment, webhook, or other external side effect was used or exposed. No browser PHI persistence was introduced: no localStorage, IndexedDB, offline queue, service worker, background sync, persistent draft cache, or browser session state was added. No unsafe runtime artifact was added to the repository.
+
+Known limitations: retry state is intentionally limited to the active consultation React session; there is no offline recovery after reload/close and navigator.onLine is only a helpful trigger. PostgreSQL-only tests were not rerun in this local SQLite-only verification; the existing PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. No new blueprint decision was made, and no canonical architecture redesign was performed.
+
+Next approved phase: NOT YET AUTHORISED

@@ -532,6 +532,9 @@ test("clears conflict comparison when switching patients", async ({ page }) => {
     await expect(stalePage.getByTestId("conflict-server-value-family_history")).toHaveText(serverFamily);
 
     await stalePage.locator('nav a[href="/consultations"]').click();
+    stalePage.once("dialog", async (dialog) => {
+      await dialog.accept();
+    });
     await stalePage.getByRole("listitem").filter({ hasText: patientB }).click();
     await stalePage.getByRole("tab", { name: "History", exact: true }).click();
     await stalePage.getByRole("button", { name: "Start encounter" }).click();
@@ -1959,6 +1962,8 @@ test("closes and clears reviewed-normal state across sections and patients witho
   await page.getByLabel("Cardiovascular", { exact: true }).check();
   await page.getByRole("button", { name: "Insert selected findings", exact: true }).click();
   await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(PHASE_1I_CARDIO_NORMAL);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
 
   await page.getByRole("button", { name: "Insert reviewed normal findings", exact: true }).click();
   await page.getByLabel("Respiratory", { exact: true }).check();
@@ -1979,7 +1984,7 @@ test("closes and clears reviewed-normal state across sections and patients witho
 
   await openHistory(page, patientA);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
-  await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(PHASE_1I_CARDIO_NORMAL);
   await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue("");
   const persistedState = await page.evaluate(() => Object.values(localStorage).concat(Object.values(sessionStorage)).join("\n"));
   expect(persistedState).not.toContain(PHASE_1I_CARDIO_NORMAL);
@@ -2372,7 +2377,7 @@ test("Phase 1J preserves edits during an in-flight autosave without overlap", as
     await page.unroute("**/api/v1/clinic/encounters/*/notes/");
   }
 });
-test("Phase 1J blocks same-field autosave conflicts until explicit Save", async ({ page }) => {
+test("Phase 1K preserves Phase 1J true same-field conflict blocking until explicit Save", async ({ page }) => {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
   const patientName = await registerAndCheckIn(page, "Phase1J-SameField-" + suffix, "0783" + suffix);
@@ -2530,15 +2535,16 @@ test("Phase 1J rebases a non-overlapping stale autosave and retries once safely"
     await stalePage.close();
   }
 });
-test("Phase 1J cancels a pending timer on patient switch", async ({ page }) => {
+test("Phase 1K patient switch confirmation preserves or discards local draft safely", async ({ page }) => {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
-  const patientA = await registerAndCheckIn(page, "Phase1J-SwitchA-" + suffix, "0785" + suffix);
-  const patientB = await registerAndCheckIn(page, "Phase1J-SwitchB-" + suffix, "0786" + suffix);
+  const patientA = await registerAndCheckIn(page, "Phase1K-SwitchA-" + suffix, "0794" + suffix);
+  const patientB = await registerAndCheckIn(page, "Phase1K-SwitchB-" + suffix, "0795" + suffix);
   await triageFromQueue(page, patientA);
   await triageFromQueue(page, patientB);
   await openHistory(page, patientA);
 
+  const abandonedValue = "Phase 1K verification — synthetic patient A unsaved draft";
   const noteRequests: string[] = [];
   page.on("request", (request) => {
     if (
@@ -2549,18 +2555,29 @@ test("Phase 1J cancels a pending timer on patient switch", async ({ page }) => {
       noteRequests.push(request.url());
     }
   });
-  await steadyFill(page, "History of present illness (HPI)", "Phase 1J verification — abandoned synthetic patient A edit");
+  await steadyFill(page, "History of present illness (HPI)", abandonedValue);
   await page.waitForTimeout(700);
 
-  await page.locator('nav a[href="/consultations"]').click();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe("This consultation has unsaved changes. Leave and discard them?");
+    await dialog.dismiss();
+  });
+  await page.getByRole("listitem").filter({ hasText: patientB }).click();
+  await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue(abandonedValue);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe("This consultation has unsaved changes. Leave and discard them?");
+    await dialog.accept();
+  });
   await page.getByRole("listitem").filter({ hasText: patientB }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await page.getByRole("button", { name: "Start encounter" }).click();
   await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
   await page.waitForTimeout(3500);
   expect(noteRequests).toHaveLength(0);
 
-  await page.locator('nav a[href="/consultations"]').click();
   await page.getByRole("listitem").filter({ hasText: patientA }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await page.getByRole("button", { name: "Start encounter" }).click();
@@ -2568,7 +2585,6 @@ test("Phase 1J cancels a pending timer on patient switch", async ({ page }) => {
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
 });
-
 test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce state intact", async ({ page }) => {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
@@ -2638,21 +2654,57 @@ test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce 
   await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
 });
 
-test("Phase 1J leaves ordinary autosave failures unsaved without background retry", async ({ page }) => {
+test("Phase 1K retries transient autosave failures with current dirty fields", async ({ page }) => {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
-  const patientName = await registerAndCheckIn(page, "Phase1J-Failure-" + suffix, "0788" + suffix);
+  const patientName = await registerAndCheckIn(page, "Phase1K-Retry-" + suffix, "0790" + suffix);
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
 
-  let failedRequests = 0;
+  const firstHpi = "Phase 1K verification — synthetic first failed HPI";
+  const currentHpi = "Phase 1K verification — synthetic current HPI";
+  const currentGeneral = "Phase 1K verification — synthetic current general examination";
+  const requests: Array<{
+    body: Record<string, unknown>;
+    etag: string | undefined;
+    autosave: string | undefined;
+  }> = [];
+  let inFlight = 0;
+  let maximumInFlight = 0;
+  let failFirstRequest = true;
+
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      inFlight += 1;
+      maximumInFlight = Math.max(maximumInFlight, inFlight);
+      requests.push({
+        body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>,
+        etag: request.headers()["if-match"],
+        autosave: request.headers()["x-klinklik-autosave"],
+      });
+    }
+  });
+  page.on("response", (response) => {
+    if (
+      response.url().includes("/api/v1/clinic/encounters/") &&
+      response.url().endsWith("/notes/") &&
+      response.request().method() === "POST"
+    ) {
+      inFlight = Math.max(0, inFlight - 1);
+    }
+  });
+
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
-    if (route.request().method() === "POST") {
-      failedRequests += 1;
+    if (route.request().method() === "POST" && failFirstRequest) {
+      failFirstRequest = false;
       await route.fulfill({
         status: 503,
         contentType: "application/json",
-        body: JSON.stringify({ detail: "Synthetic local autosave failure" }),
+        body: JSON.stringify({ detail: "Synthetic local transient failure" }),
       });
       return;
     }
@@ -2660,20 +2712,214 @@ test("Phase 1J leaves ordinary autosave failures unsaved without background retr
   });
 
   try {
-    const failureResponse = page.waitForResponse(
+    const firstFailure = page.waitForResponse(
       (response) =>
         response.url().includes("/api/v1/clinic/encounters/") &&
         response.url().endsWith("/notes/") &&
         response.request().method() === "POST" &&
         response.status() === 503,
     );
-    await steadyFill(page, "History of present illness (HPI)", "Phase 1J verification — synthetic failed autosave");
-    await failureResponse;
-    await expect(page.getByText(/Not saved/)).toBeVisible();
-    await expect(page.getByText(/Retrying/)).toHaveCount(0);
-    await page.waitForTimeout(3500);
-    expect(failedRequests).toBe(1);
-    await expect(page.getByText(/Not saved/)).toBeVisible();
+    await steadyFill(page, "History of present illness (HPI)", firstHpi);
+    await firstFailure;
+    await expect(page.getByText("Not saved — retrying", { exact: true })).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(requests).toHaveLength(1);
+
+    const retrySuccess = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+    await steadyFill(page, "History of present illness (HPI)", currentHpi);
+    await page.getByRole("tab", { name: "Examination", exact: true }).click();
+    await steadyFill(page, "General Examination", currentGeneral);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await retrySuccess;
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].body.content).toEqual({ hpi: firstHpi });
+    expect(requests[1].body.content).toEqual({ hpi: currentHpi, general_examination: currentGeneral });
+    expect(requests[0].autosave).toBe("1");
+    expect(requests[1].autosave).toBe("1");
+    expect(requests[0].etag).toBeTruthy();
+    expect(requests[1].etag).toBe(requests[0].etag);
+    expect(maximumInFlight).toBe(1);
+    await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/*/notes/");
+  }
+});
+
+test("Phase 1K manual Save cancels the pending retry timer", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1K-Manual-" + suffix, "0791" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  let failFirstRequest = true;
+  const requestMarkers: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      requestMarkers.push(request.headers()["x-klinklik-autosave"] ?? "manual");
+    }
+  });
+  await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
+    if (route.request().method() === "POST" && failFirstRequest) {
+      failFirstRequest = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Synthetic local transient failure" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  try {
+    const firstFailure = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 503,
+    );
+    await steadyFill(page, "History of present illness (HPI)", "Phase 1K verification — synthetic manual retry");
+    await firstFailure;
+    await expect(page.getByText("Not saved — retrying", { exact: true })).toBeVisible();
+
+    const manualResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await manualResponse;
+    await page.waitForTimeout(2500);
+    expect(requestMarkers).toEqual(["1", "manual"]);
+    await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/*/notes/");
+  }
+});
+
+test("Phase 1K suppresses autosave while offline, retries online, and protects unload", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1K-Online-" + suffix, "0792" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  let noteRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      noteRequests += 1;
+    }
+  });
+
+  await steadyFill(page, "History of present illness (HPI)", "Phase 1K verification — synthetic offline draft");
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await expect(page.getByText("Not saved — retrying", { exact: true })).toBeVisible();
+  await page.waitForTimeout(3500);
+  expect(noteRequests).toBe(0);
+
+  const blockedUnload = await page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(blockedUnload).toBe(true);
+
+  const retryResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/clinic/encounters/") &&
+      response.url().endsWith("/notes/") &&
+      response.request().method() === "POST" &&
+      response.status() === 200,
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await retryResponse;
+  await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+
+  const cleanUnload = await page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(cleanUnload).toBe(false);
+});
+
+test("Phase 1K reconciles a lost autosave response without a false conflict", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1K-Lost-" + suffix, "0793" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  let firstRequest = true;
+  const requests: Array<{ body: Record<string, unknown>; etag: string | undefined }> = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      requests.push({
+        body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>,
+        etag: request.headers()["if-match"],
+      });
+    }
+  });
+
+  await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
+    if (route.request().method() === "POST" && firstRequest) {
+      firstRequest = false;
+      await route.fetch();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  try {
+    const firstRequestObserved = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await steadyFill(page, "History of present illness (HPI)", "Phase 1K verification — synthetic lost-response HPI");
+    await firstRequestObserved;
+    await expect(page.getByText("Not saved — retrying", { exact: true })).toBeVisible();
+
+    const reconciliation = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    await reconciliation;
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.content).toEqual(requests[0].body.content);
+    expect(requests[1].etag).toBe(requests[0].etag);
+    await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+    await expect(page.getByText("Latest saved values from another update")).toHaveCount(0);
+    await expect(page.getByText(/Not saved/)).toHaveCount(0);
   } finally {
     await page.unroute("**/api/v1/clinic/encounters/*/notes/");
   }

@@ -13,6 +13,7 @@ class ClinicalNoteRevisionConflict(ValueError):
         self.current_status = note.status if note is not None else "ABSENT"
         self.current_encounter_status = encounter.status
         self.current_content = dict(note.content or {}) if note is not None else {}
+        self.current_saved_at = note.updated_at.isoformat() if note is not None else None
         super().__init__("Clinical note revision is stale.")
 
 
