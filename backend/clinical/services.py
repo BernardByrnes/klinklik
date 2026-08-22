@@ -107,7 +107,7 @@ def _note_audit_metadata(content):
         "fields": sorted(
             field for field in (
                 "presenting_complaint", "hpi", "past_medical_history", "past_surgical_history",
-                "family_history", "social_history",
+                "family_history", "social_history", "general_examination",
                 "consultation", "assessment", "plan",
             )
             if field in content

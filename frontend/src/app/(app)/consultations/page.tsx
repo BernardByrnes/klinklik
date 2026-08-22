@@ -55,6 +55,7 @@ type ConsultationDraft = {
   pastSurgicalHistory: string;
   familyHistory: string;
   socialHistory: string;
+  generalExamination: string;
   consultation: string;
 };
 
@@ -65,11 +66,12 @@ type ClinicalNoteField =
   | "past_surgical_history"
   | "family_history"
   | "social_history"
+  | "general_examination"
   | "consultation";
 
 type EditableDraftValues = Pick<
   ConsultationDraft,
-  "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "consultation"
+  "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "consultation"
 >;
 
 type DraftMutationVariables = {
@@ -100,6 +102,7 @@ const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues>
   past_surgical_history: "pastSurgicalHistory",
   family_history: "familyHistory",
   social_history: "socialHistory",
+  general_examination: "generalExamination",
   consultation: "consultation",
 };
 
@@ -110,6 +113,7 @@ const CLINICAL_NOTE_FIELDS: ClinicalNoteField[] = [
   "past_surgical_history",
   "family_history",
   "social_history",
+  "general_examination",
   "consultation",
 ];
 
@@ -120,6 +124,7 @@ const CLINICAL_FIELD_LABELS: Record<ClinicalNoteField, string> = {
   past_surgical_history: "Past surgical history",
   family_history: "Family history",
   social_history: "Social history",
+  general_examination: "General examination",
   consultation: "Consultation note",
 };
 
@@ -164,6 +169,7 @@ function emptyDraftValues(): EditableDraftValues {
     pastSurgicalHistory: "",
     familyHistory: "",
     socialHistory: "",
+    generalExamination: "",
     consultation: DEFAULT_CONSULTATION_NOTE,
   };
 }
@@ -189,6 +195,7 @@ function editableDraftValuesFromContent(content: ClinicalNoteContent): EditableD
     pastSurgicalHistory: contentText(content, "past_surgical_history"),
     familyHistory: contentText(content, "family_history"),
     socialHistory: contentText(content, "social_history"),
+    generalExamination: contentText(content, "general_examination"),
     consultation: consultation || assessmentPlan,
   };
 }
@@ -268,7 +275,7 @@ function ConflictComparisonPanel({ values }: { values: ConflictComparisonValues 
 const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
   summary: "Additional summary information is not available from the current consultation data.",
   history: "Start the encounter to capture the presenting complaint, HPI, and relevant past history.",
-  examination: "Examination capture is reserved for a later consultation phase.",
+  examination: "Record the general physical examination in the clinician-authored note.",
   investigations: "Investigations are not implemented in this foundation phase.",
   diagnosis: "Diagnosis capture is reserved for a later consultation phase.",
   treatment: "Treatment capture is reserved for a later consultation phase.",
@@ -343,6 +350,77 @@ function FoundationSection({ section }: { section: FoundationSectionId }) {
     </div>
   );
 }
+
+
+type ExaminationSectionProps = {
+  status: string;
+  generalExamination: string;
+  onGeneralExaminationChange: (value: string) => void;
+  onSave: () => void;
+  savePending: boolean;
+  saveState: "idle" | "unsaved" | "saved";
+};
+
+function ExaminationSection({
+  status,
+  generalExamination,
+  onGeneralExaminationChange,
+  onSave,
+  savePending,
+  saveState,
+}: ExaminationSectionProps) {
+  if (status === "SIGNED") {
+    return (
+      <div className="space-y-4">
+        <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
+          <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+          This Examination section is signed and immutable.
+        </p>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">General Examination</h3>
+          <p
+            data-testid="general-examination-read-only"
+            className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
+          >
+            {generalExamination || "Not recorded."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[12.5px] font-medium text-secondary">
+        Record general physical examination findings in the clinician-authored narrative. No automated interpretation or normal-exam template is applied.
+      </p>
+      <Field
+        label="General Examination"
+        htmlFor="general-examination"
+        hint="General physical examination findings (2,000 characters maximum)."
+      >
+        <Textarea
+          id="general-examination"
+          className="min-h-[220px]"
+          maxLength={2000}
+          value={generalExamination}
+          onChange={(event) => onGeneralExaminationChange(event.target.value)}
+        />
+      </Field>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" disabled={savePending} onClick={onSave}>
+          {savePending ? "Saving..." : "Save draft"}
+        </Button>
+        {saveState === "saved" ? (
+          <span role="status" className="text-[12px] font-medium text-accent-teal">Draft saved.</span>
+        ) : saveState === "unsaved" ? (
+          <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved - use Save draft.</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 type HistorySectionProps = {
   status: string;
   presentingComplaint: string;
@@ -539,6 +617,7 @@ function ConsultationsWorkspace() {
   const [pastSurgicalHistory, setPastSurgicalHistory] = useState("");
   const [familyHistory, setFamilyHistory] = useState("");
   const [socialHistory, setSocialHistory] = useState("");
+  const [generalExamination, setGeneralExamination] = useState("");
   const [draftSaveState, setDraftSaveState] = useState<"idle" | "unsaved" | "saved">("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
@@ -573,6 +652,7 @@ function ConsultationsWorkspace() {
     setPastSurgicalHistory(values.pastSurgicalHistory);
     setFamilyHistory(values.familyHistory);
     setSocialHistory(values.socialHistory);
+    setGeneralExamination(values.generalExamination);
     setNote(values.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
     setConflictComparison({});
@@ -585,6 +665,7 @@ function ConsultationsWorkspace() {
     if (field === "past_surgical_history") setPastSurgicalHistory(value);
     if (field === "family_history") setFamilyHistory(value);
     if (field === "social_history") setSocialHistory(value);
+    if (field === "general_examination") setGeneralExamination(value);
     if (field === "consultation") setNote(value);
   }
 
@@ -643,6 +724,7 @@ function ConsultationsWorkspace() {
     setPastSurgicalHistory("");
     setFamilyHistory("");
     setSocialHistory("");
+    setGeneralExamination("");
     setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
@@ -746,6 +828,7 @@ function ConsultationsWorkspace() {
       setPastSurgicalHistory(signedDraft.pastSurgicalHistory);
       setFamilyHistory(signedDraft.familyHistory);
       setSocialHistory(signedDraft.socialHistory);
+      setGeneralExamination(signedDraft.generalExamination);
       setNote(signedDraft.consultation);
       setConflictComparison({});
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
@@ -944,6 +1027,26 @@ function ConsultationsWorkspace() {
                       onPastSurgicalHistoryChange={(value) => updateClinicalField("past_surgical_history", value, setPastSurgicalHistory)}
                       onFamilyHistoryChange={(value) => updateClinicalField("family_history", value, setFamilyHistory)}
                       onSocialHistoryChange={(value) => updateClinicalField("social_history", value, setSocialHistory)}
+                      onSave={saveCurrentDraft}
+                      savePending={saveDraft.isPending || signNote.isPending}
+                      saveState={draftSaveState}
+                    />
+                  )
+                ) : activeSection === "examination" ? (
+                  !encounter ? (
+                    <div className="space-y-3">
+                      <p className="text-[12.5px] font-medium text-secondary">
+                        Not recorded yet. Start the encounter to capture the general examination.
+                      </p>
+                      <Button disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
+                        {startEncounter.isPending ? "Starting..." : "Start encounter"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <ExaminationSection
+                      status={encounter.status}
+                      generalExamination={generalExamination}
+                      onGeneralExaminationChange={(value) => updateClinicalField("general_examination", value, setGeneralExamination)}
                       onSave={saveCurrentDraft}
                       savePending={saveDraft.isPending || signNote.isPending}
                       saveState={draftSaveState}

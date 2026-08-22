@@ -344,3 +344,33 @@ Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-onl
 Security and scope: no backend architecture, canonical backlog, blueprint, new clinical field, persistent PHI storage, or Phase 1E functionality was introduced. Conflict comparison values exist only in authenticated React memory and rendered clinical workspace state. No credentials, secrets, PHI, database, browser state, or runtime artifacts were added.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1E — General Examination
+
+Status: VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Objective: implement only the first ENC-014 slice: clinician-authored multiline General Examination narrative with a 2,000-character maximum. Per-system examination fields, normal-exam quick action, ROS, clinical interpretation, and Phase 1F work were not added.
+
+ClinicalNote key: general_examination in the existing Encounter -> ClinicalNote.content JSON document. No new model, column, endpoint, or migration was introduced.
+
+Persistence: existing Encounter-first / ClinicalNote-second locking, partial content merge, dirty-field-only submission, authoritative consultation ETag, If-Match/428/409 conflict handling, one-time non-overlap rebase, signed-note immutability, ClinicalNoteVersion, and amendment paths all include the new key. Reload, section switching, correct-Encounter association, and patient isolation were verified.
+
+Validation: backend rejects non-string values and values over 2,000 characters without truncation; exactly 2,000 characters round-trip unchanged. The frontend presents a multiline field with the same maximum.
+
+Frontend files: frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, frontend/tests/phase-1d-history.spec.ts.
+
+Backend files: backend/clinical/serializers.py, backend/clinical/services.py, backend/tests/test_phase_1e.py.
+
+Migration status: NONE. Django check passed; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations.
+
+Concurrency regression: focused backend coverage passed same-field stale-write rejection, HPI-versus-General Examination stale-client retry, current-value conflict response, and post-sign protection. Browser coverage passed representative HPI-versus-General Examination stale-client rebase with both values retained. Existing Encounter-first / ClinicalNote-second lock order and ETag contract were unchanged.
+
+Security/PHI: verification used synthetic local SQLite development data only. Audit metadata records field names without raw examination text. No raw note text was added to logs, telemetry, URLs, browser persistent storage, or audit payloads. Existing clinical-note capability, tenant, facility, session, and patient guards remain authoritative. No external side effects occurred.
+
+Tests: focused Phase 1E backend 13 passed; full backend suite 58 passed and 7 skipped for the documented PostgreSQL-only auth/RLS and row-lock checks; focused clinical regression group 44 passed and 2 skipped; frontend typecheck passed; lint passed; production build passed.
+
+Browser verification: the two new Phase 1E Playwright tests passed; the full authenticated consultation regression file passed 8/8 in 2.1 minutes. Coverage included synthetic encounter creation, dirty-only request payload, save/reload, section switching, patient A/B isolation, signing, exact signed read-only rendering, stale-client rebase, and no captured console errors or failed API requests in the new persistence/isolation test. The in-app browser bridge was unavailable, so the repository Playwright harness was used.
+
+Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the prior owner-role PostgreSQL integrity baseline and restricted application-role pytest teardown limitation remain unchanged. The canonical blueprint and backlog were not modified. Phase 1F and later phases remain out of scope.
+
+Next approved phase: NOT YET AUTHORISED

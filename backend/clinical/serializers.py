@@ -26,6 +26,7 @@ def validate_note_content(value):
         "past_surgical_history": 4000,
         "family_history": 4000,
         "social_history": 4000,
+        "general_examination": 2000,
     }.items():
         if field_name not in value:
             continue

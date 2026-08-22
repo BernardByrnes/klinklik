@@ -543,3 +543,131 @@ test("clears conflict comparison when switching patients", async ({ page }) => {
     await stalePage.close();
   }
 });
+
+
+test("persists, isolates, reloads, signs, and locks general examination", async ({ page }) => {
+  await login(page);
+  const consoleErrors: string[] = [];
+  const failedRequests: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/api/")) failedRequests.push(request.url());
+  });
+
+  const suffix = Date.now().toString().slice(-6);
+  const patientA = await registerAndCheckIn(page, "Phase1E-A-" + suffix, "0750" + suffix);
+  const patientB = await registerAndCheckIn(page, "Phase1E-B-" + suffix, "0751" + suffix);
+  await triageFromQueue(page, patientA);
+  await triageFromQueue(page, patientB);
+
+  const examination = "Phase 1A verification - synthetic development record: general examination.";
+  await openHistory(page, patientA);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
+
+  const saveRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  await steadyFill(page, "General Examination", examination);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const request = await saveRequest;
+  const requestBody = JSON.parse(request.postData() ?? "{}") as { content?: unknown };
+  expect(requestBody.content).toEqual({ general_examination: examination });
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(examination);
+
+  await page.reload();
+  await openHistory(page, patientA);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(examination);
+
+  await page.locator('nav a[href="/consultations"]').click();
+  await page.getByRole("listitem").filter({ hasText: patientB }).click();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
+
+  await openHistory(page, patientA);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(examination);
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByRole("button", { name: "Sign consultation" }).click();
+  await page.getByRole("button", { name: "Confirm signature" }).click();
+  await expect(page.getByText(new RegExp("Consultation signed for " + patientA))).toBeVisible();
+
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("general-examination-read-only")).toHaveText(examination);
+  await expect(page.getByText("This Examination section is signed and immutable.")).toBeVisible();
+
+  expect(consoleErrors).toEqual([]);
+  expect(failedRequests).toEqual([]);
+});
+
+test("rebases a stale general examination client after an HPI update", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1E-Concurrency-" + suffix, "0752" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const baselineExamination = "Phase 1E verification - synthetic baseline examination.";
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await steadyFill(page, "General Examination", baselineExamination);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientName);
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(stalePage.getByLabel("General Examination", { exact: true })).toHaveValue(baselineExamination);
+
+    const updatedHpi = "Phase 1E verification - synthetic HPI from writer A.";
+    await page.getByRole("tab", { name: "History", exact: true }).click();
+    await steadyFill(page, "History of present illness (HPI)", updatedHpi);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    const conflictResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    const updatedExamination = "Phase 1E verification - synthetic examination from writer B.";
+    await steadyFill(stalePage, "General Examination", updatedExamination);
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    const conflict = await conflictResponse;
+    const conflictBody = JSON.parse(conflict.request().postData() ?? "{}") as { content?: unknown };
+    expect(conflictBody.content).toEqual({ general_examination: updatedExamination });
+    await expect(stalePage.getByText("Consultation draft saved.")).toBeVisible();
+
+    await stalePage.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(stalePage.getByLabel("History of present illness (HPI)", { exact: true })).toHaveValue(updatedHpi);
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(stalePage.getByLabel("General Examination", { exact: true })).toHaveValue(updatedExamination);
+
+    await page.reload();
+    await openHistory(page, patientName);
+    await expect(page.getByLabel("History of present illness (HPI)", { exact: true })).toHaveValue(updatedHpi);
+    await page.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(updatedExamination);
+  } finally {
+    await stalePage.close();
+  }
+});

@@ -40,6 +40,7 @@ export type ClinicalNoteContent = {
   past_surgical_history?: string;
   family_history?: string;
   social_history?: string;
+  general_examination?: string;
   [key: string]: unknown;
 };
 
