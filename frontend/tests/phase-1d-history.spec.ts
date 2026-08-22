@@ -279,6 +279,8 @@ test("preserves both writers when stale clients edit different clinical fields",
     expect(conflict.request().headers()["if-match"]).toBeTruthy();
     expect(retry.request().headers()["if-match"]).toBe(conflict.headers()["etag"]);
     expect(retry.headers()["etag"]).toBeTruthy();
+    await expect(stalePage.getByLabel("Relevant Family History")).toHaveValue(updatedFamily);
+    await expect(stalePage.getByLabel("Relevant Social History")).toHaveValue(updatedSocial);
 
     await page.reload();
     await openHistory(page, patientName);
@@ -385,6 +387,7 @@ test("preserves same-field local draft until explicit retry", async ({ page }) =
     expect(conflict.request().headers()["if-match"]).toBeTruthy();
     expect(conflict.headers()["etag"]).toBeTruthy();
     await expect(stalePage.getByRole("alert").filter({ hasText: "This consultation changed" })).toContainText("preserved");
+    await expect(stalePage.getByTestId("conflict-server-value-family_history")).toHaveText(updatedFamilyA);
     await expect(stalePage.getByLabel("Relevant Family History")).toHaveValue(updatedFamilyB);
     await expect(stalePage.getByText(/Not saved/)).toBeVisible();
 
@@ -425,6 +428,17 @@ test("preserves a draft and requires explicit retry after a stale sign", async (
     await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
     await openHistory(stalePage, patientName);
 
+    let signResponses = 0;
+    stalePage.on("response", (response) => {
+      if (
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/sign/") &&
+        response.request().method() === "POST" &&
+        response.status() !== 401
+      ) {
+        signResponses += 1;
+      }
+    });
     const updatedHpi = "Phase 1D-F2 synthetic writer A HPI";
     await steadyFill(page, "History of present illness (HPI)", updatedHpi);
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -444,10 +458,15 @@ test("preserves a draft and requires explicit retry after a stale sign", async (
     await stalePage.getByRole("button", { name: "Confirm signature" }).click();
     const conflict = await conflictResponse;
     await expect(stalePage.getByRole("alert").filter({ hasText: "This consultation changed" })).toContainText("History of present illness");
+    expect(signResponses).toBe(1);
     const conflictBody = JSON.parse((await conflict.request().postData()) ?? "{}") as { content?: unknown };
     expect(conflictBody.content).toEqual({ consultation: staleDraft });
     expect(conflict.request().headers()["if-match"]).toBeTruthy();
     expect(conflict.headers()["etag"]).toBeTruthy();
+    await expect(stalePage.getByTestId("conflict-server-value-hpi")).toHaveText(updatedHpi);
+    await stalePage.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(stalePage.getByLabel("History of present illness (HPI)")).toHaveValue(updatedHpi);
+    await stalePage.getByRole("tab", { name: "Notes", exact: true }).click();
     await expect(stalePage.getByLabel("Consultation note")).toHaveValue(staleDraft);
     await expect(stalePage.getByRole("button", { name: "Sign consultation" })).toBeVisible();
     await expect(stalePage.getByText(/Not saved/)).toBeVisible();
@@ -462,8 +481,64 @@ test("preserves a draft and requires explicit retry after a stale sign", async (
     );
     await stalePage.getByRole("button", { name: "Sign consultation" }).click();
     await stalePage.getByRole("button", { name: "Confirm signature" }).click();
-    expect((await retryResponse).status()).toBe(200);
+    const retry = await retryResponse;
+    expect(retry.status()).toBe(200);
+    expect(signResponses).toBe(2);
+    const signedBody = await retry.json() as { current_version?: number; content?: Record<string, string> };
+    expect(signedBody.current_version).toBe(1);
+    expect(signedBody.content?.hpi).toBe(updatedHpi);
+    expect(signedBody.content?.consultation).toBe(staleDraft);
     await expect(stalePage.getByText("This consultation is signed and immutable.")).toBeVisible();
+  } finally {
+    await stalePage.close();
+  }
+});
+
+test("clears conflict comparison when switching patients", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientA = await registerAndCheckIn(page, "Phase1DF-ConflictA-" + suffix, "0746" + suffix);
+  const patientB = await registerAndCheckIn(page, "Phase1DF-ConflictB-" + suffix, "0747" + suffix);
+  await triageFromQueue(page, patientA);
+  await triageFromQueue(page, patientB);
+  await openHistory(page, patientA);
+
+  const baseline = "Phase 1D-F3 synthetic conflict baseline";
+  await steadyFill(page, "Relevant Family History", baseline);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientA);
+
+    const serverFamily = "Phase 1D-F3 synthetic server family";
+    await steadyFill(page, "Relevant Family History", serverFamily);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    const conflictResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    await steadyFill(stalePage, "Relevant Family History", "Phase 1D-F3 synthetic local family");
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    await conflictResponse;
+    await expect(stalePage.getByTestId("conflict-server-value-family_history")).toHaveText(serverFamily);
+
+    await stalePage.locator('nav a[href="/consultations"]').click();
+    await stalePage.getByRole("listitem").filter({ hasText: patientB }).click();
+    await stalePage.getByRole("tab", { name: "History", exact: true }).click();
+    await stalePage.getByRole("button", { name: "Start encounter" }).click();
+    await stalePage.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(stalePage.getByTestId("conflict-server-value-family_history")).toHaveCount(0);
+    await expect(stalePage.getByText("This consultation changed elsewhere")).toHaveCount(0);
+    await expect(stalePage.getByLabel("Relevant Family History")).toHaveValue("");
   } finally {
     await stalePage.close();
   }

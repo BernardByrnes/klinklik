@@ -130,6 +130,10 @@ type ClinicalNoteConflictData = {
   content: ClinicalNoteContent;
 };
 
+type ConflictComparisonValues = Partial<
+  Record<ClinicalNoteField, { serverValue: string; localDirty: boolean }>
+>;
+
 function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
   if (!(error instanceof ApiRequestError) || error.status !== 409 || typeof error.data !== "object" || error.data === null) {
     return null;
@@ -222,6 +226,43 @@ function conflictMessage(remoteFields: ClinicalNoteField[], overlappingFields: C
   const remoteLabel = remoteFields.length > 0 ? fieldNames(remoteFields) : "the latest record";
   return "This consultation changed elsewhere in " + remoteLabel +
     ". Review the latest record before " + actionLabel + " again.";
+}
+
+function ConflictComparisonPanel({ values }: { values: ConflictComparisonValues }) {
+  const fields = CLINICAL_NOTE_FIELDS.filter((field) => values[field]);
+  if (fields.length === 0) return null;
+
+  return (
+    <div
+      role="status"
+      aria-label="Latest saved conflict values"
+      className="space-y-3 rounded-[14px] border border-accent-orange/40 bg-accent-orange-soft px-4 py-3"
+    >
+      <p className="text-[12.5px] font-semibold text-ink">Latest saved values from another update</p>
+      {fields.map((field) => {
+        const comparison = values[field];
+        if (!comparison) return null;
+        return (
+          <div key={field} className="rounded-[10px] border border-accent-orange/25 bg-white/70 px-3 py-2">
+            <p className="text-[11.5px] font-semibold text-ink">
+              Current saved value — {CLINICAL_FIELD_LABELS[field]}
+            </p>
+            <pre
+              data-testid={"conflict-server-value-" + field}
+              className="mt-1 whitespace-pre-wrap font-sans text-[12px] leading-relaxed text-secondary"
+            >
+              {comparison.serverValue || "Not recorded."}
+            </pre>
+            <p className="mt-1 text-[11.5px] font-medium text-muted">
+              {comparison.localDirty
+                ? "Your unsaved value remains in the editable field."
+                : "This latest saved value is now reflected in the field."}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
@@ -503,6 +544,7 @@ function ConsultationsWorkspace() {
   const [confirmingSign, setConfirmingSign] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [conflictComparison, setConflictComparison] = useState<ConflictComparisonValues>({});
   const dirtyFieldsRef = useRef<Set<ClinicalNoteField>>(new Set());
   const draftValuesRef = useRef<EditableDraftValues>(emptyDraftValues());
   const draftSessionRef = useRef(0);
@@ -533,6 +575,37 @@ function ConsultationsWorkspace() {
     setSocialHistory(values.socialHistory);
     setNote(values.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
+    setConflictComparison({});
+  }
+
+  function setVisibleDraftValue(field: ClinicalNoteField, value: string) {
+    if (field === "presenting_complaint") setPresentingComplaint(value);
+    if (field === "hpi") setHpi(value);
+    if (field === "past_medical_history") setPastMedicalHistory(value);
+    if (field === "past_surgical_history") setPastSurgicalHistory(value);
+    if (field === "family_history") setFamilyHistory(value);
+    if (field === "social_history") setSocialHistory(value);
+    if (field === "consultation") setNote(value);
+  }
+
+  function rebaseVisibleDraft(content: ClinicalNoteContent, remoteFields: ClinicalNoteField[]) {
+    const remoteValues = editableDraftValuesFromContent(content);
+    const nextDraftValues = { ...draftValuesRef.current };
+    const comparison: ConflictComparisonValues = {};
+
+    for (const field of remoteFields) {
+      const draftKey = FIELD_TO_DRAFT_VALUE[field];
+      const serverValue = remoteValues[draftKey];
+      const localDirty = dirtyFieldsRef.current.has(field);
+      comparison[field] = { serverValue, localDirty };
+      if (!localDirty) {
+        nextDraftValues[draftKey] = serverValue;
+        setVisibleDraftValue(field, serverValue);
+      }
+    }
+
+    draftValuesRef.current = nextDraftValues;
+    setConflictComparison(comparison);
   }
 
   function currentDraftMutation(rebaseAttempt = 0): DraftMutationVariables | null {
@@ -558,6 +631,7 @@ function ConsultationsWorkspace() {
     draftSessionRef.current += 1;
     noteContentRef.current = {};
     encounterEtagRef.current = null;
+    setConflictComparison({});
     draftValuesRef.current = emptyDraftValues();
     dirtyFieldsRef.current = new Set();
     setSelectedId(entry.id);
@@ -606,6 +680,7 @@ function ConsultationsWorkspace() {
       if (variables.session !== draftSessionRef.current) return;
       noteContentRef.current = saved.content;
       encounterEtagRef.current = saved.etag;
+      setConflictComparison({});
       for (const field of variables.fields) {
         const draftKey = FIELD_TO_DRAFT_VALUE[field];
         if (draftValuesRef.current[draftKey] === variables.values[draftKey]) {
@@ -631,6 +706,7 @@ function ConsultationsWorkspace() {
       if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
       }
+      rebaseVisibleDraft(conflict.content, remoteFields);
       if (
         overlappingFields.length === 0 &&
         variables.rebaseAttempt < 1 &&
@@ -671,6 +747,7 @@ function ConsultationsWorkspace() {
       setFamilyHistory(signedDraft.familyHistory);
       setSocialHistory(signedDraft.socialHistory);
       setNote(signedDraft.consultation);
+      setConflictComparison({});
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
       setDraftSaveState("saved");
       setConfirmingSign(false);
@@ -693,6 +770,7 @@ function ConsultationsWorkspace() {
       if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
       }
+      rebaseVisibleDraft(conflict.content, remoteFields);
       setDraftSaveState("unsaved");
       setNotice("");
       setError(conflictMessage(remoteFields, overlappingFields, "sign"));
@@ -704,6 +782,12 @@ function ConsultationsWorkspace() {
       ...draftValuesRef.current,
       [FIELD_TO_DRAFT_VALUE[field]]: value,
     };
+    setConflictComparison((current) => {
+      const comparison = current[field];
+      return comparison && !comparison.localDirty
+        ? { ...current, [field]: { ...comparison, localDirty: true } }
+        : current;
+    });
     dirtyFieldsRef.current.add(field);
     setDraftSaveState("unsaved");
     setNotice("");
@@ -826,6 +910,8 @@ function ConsultationsWorkspace() {
               </div>
 
               <WorkspaceSectionTabs activeSection={activeSection} onChange={setActiveSection} />
+
+              <ConflictComparisonPanel values={conflictComparison} />
 
               <div
                 id={WORKSPACE_PANEL_ID}

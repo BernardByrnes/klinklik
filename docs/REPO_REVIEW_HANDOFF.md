@@ -314,3 +314,33 @@ PostgreSQL limitation: the current local verification run does not provision or 
 Security and scope: verification and browser data were synthetic local development data only. No credentials, seed passwords, secrets, PHI, local database, browser session state, or runtime artifacts were added or exposed. ETags contain no raw clinical values; conflict state is returned only through the authorized clinical API response, and audit/log assertions continue to exclude raw note content. No email, SMS, payment, webhook, or other external side effect occurred. The canonical blueprint and backlog were not modified. Phase 1E and later phases were not started.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1D-F3 — Conflict Rebase Visibility
+
+Status: VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Original issue: Phase 1D-F2 updated the authoritative content ref and ETag after a 409 conflict but did not reliably rehydrate visible React fields. A clinician could therefore see stale remote clinical content, including stale HPI content before a stale-sign retry.
+
+Rebase behaviour: for all seven editable fields (presenting_complaint, hpi, past_medical_history, past_surgical_history, family_history, social_history, and consultation), remote-changed non-dirty values now update the visible React field and draft ref immediately. Locally dirty values remain unchanged. The canonical content ref and current ETag are updated from the server response. Non-overlapping save conflicts retain the existing safe one-time retry.
+
+Same-field comparison behaviour: same-field conflicts preserve the local textarea value, remain unsaved, and show an in-memory comparison panel with the current saved server value and the affected field name. The comparison clears after explicit save success. No comparison content is written to logs, telemetry, audit, URLs, or browser persistent storage.
+
+Stale-sign review behaviour: a stale sign conflict closes confirmation without retrying, visibly hydrates remote non-dirty fields such as HPI, preserves the local Consultation Note draft, and leaves the Encounter unsigned. The clinician must explicitly retry using the latest ETag. The browser regression verifies the final signed content contains the latest remote HPI and local Consultation Note, with ClinicalNoteVersion 1.
+
+Patient isolation: selecting another patient clears prior dirty fields, comparison values, draft state, ETag, and conflict messaging. No conflict comparison from the prior patient is rendered for the next patient.
+
+Backend changes: NONE. ETag HMAC generation, If-Match/428/409 contract, Encounter-first and ClinicalNote-second locking, unique note invariant, sign/version logic, amendment logic, and signed immutability were not changed.
+
+Files changed: frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Migration status: NONE. Django check passed; makemigrations --check --dry-run reported No changes detected; migrate --plan reported no planned migration operations.
+
+Tests: full backend suite 45 passed and 7 skipped; the seven skips are the documented PostgreSQL-only auth/RLS and row-lock tests in the local SQLite environment. The focused Phase 1B/1C/1C-F/1D/1D-F/1D-F2/vertical regression group passed 31 with 2 PostgreSQL-only row-lock skips. Frontend typecheck, lint, and production build passed.
+
+Authenticated browser verification: the full local Playwright consultation file passed 6/6 in 2.6 minutes. It covered existing persistence/isolation, non-overlapping visible rebase, same-field comparison and explicit retry, in-flight editing, stale-sign remote-field visibility and no automatic sign retry, final signed content/version, and patient conflict-state isolation. Synthetic local development data only was used; no external side effects occurred.
+
+Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the prior Phase 1C-F owner-role PostgreSQL baseline remains 4/4 passing, with the documented restricted application-role pytest teardown limitation unchanged. The in-app browser bridge was unavailable, so the repository Playwright harness was used.
+
+Security and scope: no backend architecture, canonical backlog, blueprint, new clinical field, persistent PHI storage, or Phase 1E functionality was introduced. Conflict comparison values exist only in authenticated React memory and rendered clinical workspace state. No credentials, secrets, PHI, database, browser state, or runtime artifacts were added.
+
+Next approved phase: NOT YET AUTHORISED
