@@ -133,6 +133,10 @@ type DraftMutationVariables = {
   origin: "manual" | "autosave";
 };
 
+type StartEncounterVariables = {
+  queueEntryId: string;
+  session: number;
+};
 type NoteSaveResponse = {
   note: string;
   status: string;
@@ -992,6 +996,7 @@ function ConsultationsWorkspace() {
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("entry");
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
+  const selectedQueueEntryIdRef = useRef<string | null>(preselectedId);
   const [encounter, setEncounter] = useState<Encounter | null>(null);
   const [note, setNote] = useState(DEFAULT_CONSULTATION_NOTE);
   const noteContentRef = useRef<ClinicalNoteContent>({});
@@ -1247,6 +1252,7 @@ function ConsultationsWorkspace() {
     setConflictComparison({});
     draftValuesRef.current = emptyDraftValues();
     dirtyFieldsRef.current = new Set();
+    selectedQueueEntryIdRef.current = entry.id;
     setSelectedId(entry.id);
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
@@ -1270,21 +1276,41 @@ function ConsultationsWorkspace() {
     setError("");
   }
 
-  const startEncounter = useMutation({
-    mutationFn: () =>
+  const startEncounter = useMutation<Encounter, unknown, StartEncounterVariables>({
+    mutationFn: ({ queueEntryId }) =>
       apiRequest<Encounter>("/api/v1/clinic/encounters/", {
         method: "POST",
-        body: JSON.stringify({ queue_entry_id: selected?.id }),
+        body: JSON.stringify({ queue_entry_id: queueEntryId }),
       }),
-    onSuccess: (created) => {
+    onSuccess: (created, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      if (
+        variables.session !== draftSessionRef.current ||
+        selectedQueueEntryIdRef.current !== variables.queueEntryId
+      ) {
+        return;
+      }
       setEncounter(created);
       hydrateNote(created);
       setActiveSection("notes");
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
     },
-    onError: (reason) => setError(errorMessage(reason)),
+    onError: (reason, variables) => {
+      if (
+        variables.session !== draftSessionRef.current ||
+        selectedQueueEntryIdRef.current !== variables.queueEntryId
+      ) {
+        return;
+      }
+      setError(errorMessage(reason));
+    },
   });
+
+  function startCurrentEncounter() {
+    const queueEntryId = selected?.id;
+    if (!queueEntryId) return;
+    startEncounter.mutate({ queueEntryId, session: draftSessionRef.current });
+  }
 
   const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
     mutationFn: ({ content, encounterId, etag, origin }) =>
@@ -1794,7 +1820,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the presenting complaint and HPI.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
+                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -1825,7 +1851,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the general examination.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
+                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting..." : "Start encounter"}
                       </Button>
                     </div>
@@ -1866,7 +1892,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Start the encounter to open the consultation note for this visit.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
+                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -1878,7 +1904,7 @@ function ConsultationsWorkspace() {
                     <p className="text-[12.5px] font-medium text-secondary">
                       Start the encounter to open the consultation note for this visit.
                     </p>
-                    <Button disabled={startEncounter.isPending} onClick={() => startEncounter.mutate()}>
+                    <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
                       {startEncounter.isPending ? "Starting…" : "Start encounter"}
                     </Button>
                   </div>

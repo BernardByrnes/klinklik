@@ -2585,6 +2585,74 @@ test("Phase 1K patient switch confirmation preserves or discards local draft saf
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
 });
+test("Phase 1K-F ignores a late Start Encounter response from the previous patient session", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientA = await registerAndCheckIn(page, "Phase1K-F-RaceA-" + suffix, "0796" + suffix);
+  const patientB = await registerAndCheckIn(page, "Phase1K-F-RaceB-" + suffix, "0797" + suffix);
+  await triageFromQueue(page, patientA);
+  await triageFromQueue(page, patientB);
+
+  await page.locator('nav a[href="/consultations"]').click();
+  await expect(page).toHaveURL(/\/consultations$/);
+  await page.getByRole("listitem").filter({ hasText: patientA }).click();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+
+  let releasePatientA: (() => void) | undefined;
+  const patientAResponseGate = new Promise<void>((resolve) => {
+    releasePatientA = resolve;
+  });
+  let delayFirstStart = true;
+  await page.route("**/api/v1/clinic/encounters/", async (route) => {
+    if (route.request().method() === "POST" && delayFirstStart) {
+      delayFirstStart = false;
+      await patientAResponseGate;
+    }
+    await route.continue();
+  });
+
+  try {
+    const patientARequest = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/api/v1/clinic/encounters/") &&
+        request.method() === "POST",
+    );
+    const patientAResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/v1/clinic/encounters/") &&
+        response.request().method() === "POST" &&
+        response.status() === 201,
+    );
+    await page.getByRole("button", { name: "Start encounter" }).click();
+    await patientARequest;
+
+    await page.getByRole("listitem").filter({ hasText: patientB }).click();
+    await expect(page.getByLabel("Patient and encounter context")).toContainText(patientB);
+    await expect(page.getByRole("button", { name: "Save draft" })).toHaveCount(0);
+
+    releasePatientA?.();
+    expect((await patientAResponse).status()).toBe(201);
+    await expect(page.getByLabel("Patient and encounter context")).toContainText(patientB);
+    await expect(page.getByRole("button", { name: "Start encounter" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save draft" })).toHaveCount(0);
+    await expect(page.getByLabel("History of present illness (HPI)")).toHaveCount(0);
+
+    const patientBResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/v1/clinic/encounters/") &&
+        response.request().method() === "POST" &&
+        response.status() === 201,
+    );
+    await page.getByRole("button", { name: "Start encounter" }).click();
+    expect((await patientBResponse).status()).toBe(201);
+    await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Notes", exact: true })).toHaveAttribute("aria-selected", "true");
+    await page.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/");
+  }
+});
 test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce state intact", async ({ page }) => {
   await login(page);
   const suffix = Date.now().toString().slice(-6);

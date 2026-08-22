@@ -574,3 +574,27 @@ Security and verification: verification used synthetic local SQLite development 
 Known limitations: retry state is intentionally limited to the active consultation React session; there is no offline recovery after reload/close and navigator.onLine is only a helpful trigger. PostgreSQL-only tests were not rerun in this local SQLite-only verification; the existing PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. No new blueprint decision was made, and no canonical architecture redesign was performed.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1K-F — Start Encounter Session Ownership Guard
+
+Status: VERIFIED / PASS.
+
+Objective: protect the active consultation workspace from a late Start Encounter response/error belonging to a prior patient/session while preserving the existing workflow.
+
+Problem and ownership capture: Start Encounter now captures the selected queue-entry ID and current draft session at click time, and sends that captured queue-entry ID to the existing endpoint. A selected queue-entry ref is updated immediately during patient switching so callbacks observe the current identity even before React state rerenders.
+
+Late success behavior: every successful server response still invalidates the queue. Hydration, encounter state, Notes section activation, and stale error clearing occur only when both captured session and current selected queue-entry ID still match. A late Patient-A success after switching to Patient B is ignored and cannot populate B.
+
+Late failure behavior: error display uses the same session and selected queue-entry guard, so a late Patient-A error cannot appear in Patient B’s workspace. Patient switching remains enabled and is not used as a workaround.
+
+Regression coverage: authenticated Playwright coverage uses synthetic local Patient A and Patient B records, delays Patient A’s Start Encounter response, switches to Patient B before completion, confirms B remains selected with no A encounter/note hydration, releases A successfully, and then starts B normally. The existing Phase 1K focused suite and full authenticated consultation regression also passed.
+
+Queue refresh and session safety: stale-session server success still refreshes the consultation queue. No backend or migration change was required; the existing Encounter endpoint and local session/draft protections remain authoritative. No delayed-error browser variant was added because the success race plus guarded error callback is covered by the same ownership logic and static validation.
+
+Files changed: frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document. No backend file, migration, canonical backlog, or Phase 1L file changed.
+
+Validation: focused Phase 1K-F race test passed 1 test. Focused Phase 1K Playwright suite passed 7 tests. Full authenticated consultation Playwright file passed 40 tests in 12.3 minutes. Frontend typecheck passed, lint passed, and production build passed. Backend checks were not rerun because no backend file or migration changed.
+
+Security and scope: verification used synthetic local SQLite development data only. No real patient data, PHI, credentials, seed passwords, secrets, emails, SMS, payments, webhooks, or other external side effect was used or exposed. No browser PHI persistence was introduced. Phase 1L was not started.
+
+Next approved phase: NOT YET AUTHORISED
