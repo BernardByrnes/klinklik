@@ -58,6 +58,8 @@ type ConsultationDraft = {
   generalExamination: string;
   cardiovascularExamination: string;
   respiratoryExamination: string;
+  abdominalExamination: string;
+  neurologicalExamination: string;
   consultation: string;
 };
 
@@ -71,11 +73,13 @@ type ClinicalNoteField =
   | "general_examination"
   | "cardiovascular_examination"
   | "respiratory_examination"
+  | "abdominal_examination"
+  | "neurological_examination"
   | "consultation";
 
 type EditableDraftValues = Pick<
   ConsultationDraft,
-  "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "cardiovascularExamination" | "respiratoryExamination" | "consultation"
+  "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "cardiovascularExamination" | "respiratoryExamination" | "abdominalExamination" | "neurologicalExamination" | "consultation"
 >;
 
 type DraftMutationVariables = {
@@ -109,6 +113,8 @@ const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues>
   general_examination: "generalExamination",
   cardiovascular_examination: "cardiovascularExamination",
   respiratory_examination: "respiratoryExamination",
+  abdominal_examination: "abdominalExamination",
+  neurological_examination: "neurologicalExamination",
   consultation: "consultation",
 };
 
@@ -122,6 +128,8 @@ const CLINICAL_NOTE_FIELDS: ClinicalNoteField[] = [
   "general_examination",
   "cardiovascular_examination",
   "respiratory_examination",
+  "abdominal_examination",
+  "neurological_examination",
   "consultation",
 ];
 
@@ -135,6 +143,8 @@ const CLINICAL_FIELD_LABELS: Record<ClinicalNoteField, string> = {
   general_examination: "General examination",
   cardiovascular_examination: "Cardiovascular examination",
   respiratory_examination: "Respiratory examination",
+  abdominal_examination: "Abdominal / Gastrointestinal examination",
+  neurological_examination: "Neurological / CNS examination",
   consultation: "Consultation note",
 };
 
@@ -182,6 +192,8 @@ function emptyDraftValues(): EditableDraftValues {
     generalExamination: "",
     cardiovascularExamination: "",
     respiratoryExamination: "",
+    abdominalExamination: "",
+    neurologicalExamination: "",
     consultation: DEFAULT_CONSULTATION_NOTE,
   };
 }
@@ -210,6 +222,8 @@ function editableDraftValuesFromContent(content: ClinicalNoteContent): EditableD
     generalExamination: contentText(content, "general_examination"),
     cardiovascularExamination: contentText(content, "cardiovascular_examination"),
     respiratoryExamination: contentText(content, "respiratory_examination"),
+    abdominalExamination: contentText(content, "abdominal_examination"),
+    neurologicalExamination: contentText(content, "neurological_examination"),
     consultation: consultation || assessmentPlan,
   };
 }
@@ -371,9 +385,13 @@ type ExaminationSectionProps = {
   generalExamination: string;
   cardiovascularExamination: string;
   respiratoryExamination: string;
+  abdominalExamination: string;
+  neurologicalExamination: string;
   onGeneralExaminationChange: (value: string) => void;
   onCardiovascularExaminationChange: (value: string) => void;
   onRespiratoryExaminationChange: (value: string) => void;
+  onAbdominalExaminationChange: (value: string) => void;
+  onNeurologicalExaminationChange: (value: string) => void;
   onSave: () => void;
   savePending: boolean;
   saveState: "idle" | "unsaved" | "saved";
@@ -384,9 +402,13 @@ function ExaminationSection({
   generalExamination,
   cardiovascularExamination,
   respiratoryExamination,
+  abdominalExamination,
+  neurologicalExamination,
   onGeneralExaminationChange,
   onCardiovascularExaminationChange,
   onRespiratoryExaminationChange,
+  onAbdominalExaminationChange,
+  onNeurologicalExaminationChange,
   onSave,
   savePending,
   saveState,
@@ -423,6 +445,24 @@ function ExaminationSection({
             className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
           >
             {respiratoryExamination || "Not recorded."}
+          </p>
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Abdominal / Gastrointestinal Examination</h3>
+          <p
+            data-testid="abdominal-examination-read-only"
+            className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
+          >
+            {abdominalExamination || "Not recorded."}
+          </p>
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Neurological / CNS Examination</h3>
+          <p
+            data-testid="neurological-examination-read-only"
+            className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
+          >
+            {neurologicalExamination || "Not recorded."}
           </p>
         </div>
       </div>
@@ -471,6 +511,32 @@ function ExaminationSection({
           maxLength={2000}
           value={respiratoryExamination}
           onChange={(event) => onRespiratoryExaminationChange(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="Abdominal / Gastrointestinal Examination"
+        htmlFor="abdominal-examination"
+        hint="Clinician-authored abdominal and gastrointestinal findings (2,000 characters maximum)."
+      >
+        <Textarea
+          id="abdominal-examination"
+          className="min-h-[220px]"
+          maxLength={2000}
+          value={abdominalExamination}
+          onChange={(event) => onAbdominalExaminationChange(event.target.value)}
+        />
+      </Field>
+      <Field
+        label="Neurological / CNS Examination"
+        htmlFor="neurological-examination"
+        hint="Clinician-authored neurological and CNS findings (2,000 characters maximum)."
+      >
+        <Textarea
+          id="neurological-examination"
+          className="min-h-[220px]"
+          maxLength={2000}
+          value={neurologicalExamination}
+          onChange={(event) => onNeurologicalExaminationChange(event.target.value)}
         />
       </Field>
       <div className="flex flex-wrap items-center gap-3">
@@ -686,6 +752,8 @@ function ConsultationsWorkspace() {
   const [generalExamination, setGeneralExamination] = useState("");
   const [cardiovascularExamination, setCardiovascularExamination] = useState("");
   const [respiratoryExamination, setRespiratoryExamination] = useState("");
+  const [abdominalExamination, setAbdominalExamination] = useState("");
+  const [neurologicalExamination, setNeurologicalExamination] = useState("");
   const [draftSaveState, setDraftSaveState] = useState<"idle" | "unsaved" | "saved">("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
@@ -723,6 +791,8 @@ function ConsultationsWorkspace() {
     setGeneralExamination(values.generalExamination);
     setCardiovascularExamination(values.cardiovascularExamination);
     setRespiratoryExamination(values.respiratoryExamination);
+    setAbdominalExamination(values.abdominalExamination);
+    setNeurologicalExamination(values.neurologicalExamination);
     setNote(values.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
     setConflictComparison({});
@@ -738,6 +808,8 @@ function ConsultationsWorkspace() {
     if (field === "general_examination") setGeneralExamination(value);
     if (field === "cardiovascular_examination") setCardiovascularExamination(value);
     if (field === "respiratory_examination") setRespiratoryExamination(value);
+    if (field === "abdominal_examination") setAbdominalExamination(value);
+    if (field === "neurological_examination") setNeurologicalExamination(value);
     if (field === "consultation") setNote(value);
   }
 
@@ -799,6 +871,8 @@ function ConsultationsWorkspace() {
     setGeneralExamination("");
     setCardiovascularExamination("");
     setRespiratoryExamination("");
+    setAbdominalExamination("");
+    setNeurologicalExamination("");
     setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
@@ -905,6 +979,8 @@ function ConsultationsWorkspace() {
       setGeneralExamination(signedDraft.generalExamination);
       setCardiovascularExamination(signedDraft.cardiovascularExamination);
       setRespiratoryExamination(signedDraft.respiratoryExamination);
+      setAbdominalExamination(signedDraft.abdominalExamination);
+      setNeurologicalExamination(signedDraft.neurologicalExamination);
       setNote(signedDraft.consultation);
       setConflictComparison({});
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
@@ -1124,9 +1200,13 @@ function ConsultationsWorkspace() {
                       generalExamination={generalExamination}
                       cardiovascularExamination={cardiovascularExamination}
                       respiratoryExamination={respiratoryExamination}
+                      abdominalExamination={abdominalExamination}
+                      neurologicalExamination={neurologicalExamination}
                       onGeneralExaminationChange={(value) => updateClinicalField("general_examination", value, setGeneralExamination)}
                       onCardiovascularExaminationChange={(value) => updateClinicalField("cardiovascular_examination", value, setCardiovascularExamination)}
                       onRespiratoryExaminationChange={(value) => updateClinicalField("respiratory_examination", value, setRespiratoryExamination)}
+                      onAbdominalExaminationChange={(value) => updateClinicalField("abdominal_examination", value, setAbdominalExamination)}
+                      onNeurologicalExaminationChange={(value) => updateClinicalField("neurological_examination", value, setNeurologicalExamination)}
                       onSave={saveCurrentDraft}
                       savePending={saveDraft.isPending || signNote.isPending}
                       saveState={draftSaveState}

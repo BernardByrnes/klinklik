@@ -108,6 +108,7 @@ def _note_audit_metadata(content):
             field for field in (
                 "presenting_complaint", "hpi", "past_medical_history", "past_surgical_history",
                 "family_history", "social_history", "general_examination", "cardiovascular_examination", "respiratory_examination",
+                "abdominal_examination", "neurological_examination",
                 "consultation", "assessment", "plan",
             )
             if field in content

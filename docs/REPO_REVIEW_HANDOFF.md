@@ -405,3 +405,38 @@ Browser verification: the full authenticated local Playwright consultation file 
 Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification. The prior owner-role PostgreSQL integrity baseline and restricted application-role pytest teardown limitation remain unchanged. The canonical blueprint and canonical backlog were not modified. No Phase 1G work was started.
 
 Next approved phase: NOT YET AUTHORISED
+
+
+### Phase 1G — Abdominal/Gastrointestinal + Neurological/CNS Examination
+
+Status: VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Objective: implement only the ENC-014 abdominal/gastrointestinal and neurological/CNS examination slice as clinician-authored multiline text. No normal-exam quick action, structured findings, body diagrams, automated interpretation, GUS, musculoskeletal examination, or Phase 1H work was added.
+
+ClinicalNote keys: abdominal_examination and neurological_examination in the existing Encounter -> ClinicalNote.content JSON document. The existing general_examination, cardiovascular_examination, and respiratory_examination keys remain unchanged.
+
+Persistence: the existing Encounter-first / ClinicalNote-second locking, partial content merge, dirty-field-only submission, authoritative ETag, If-Match precondition, 428/409 conflict handling, one-time non-overlap rebase, signed-note immutability, ClinicalNoteVersion, and amendment paths include both new keys. Reload, section switching, correct Encounter association, and patient A/B isolation were verified. No new model, endpoint, database column, or migration was introduced.
+
+Validation: backend rejects non-string values and values over 2,000 characters without truncation; exactly 2,000 characters are accepted and round-trip unchanged. The frontend presents two multiline fields with 2,000-character limits and clinician-authored-only guidance.
+
+Concurrency behaviour: non-overlapping stale neurological edits rebase after a respiratory examination update and preserve both writers. Same-field abdominal conflicts preserve the local draft, expose the current server comparison in authenticated React memory, and require an explicit retry. An in-flight abdominal save does not clear a later neurological edit; the second request contains only the neurological dirty field. ETag, If-Match, 428, 409, stale sign protection, and version consistency remain covered.
+
+Signed behaviour: signed notes render General Examination, Cardiovascular Examination, Respiratory Examination, Abdominal / Gastrointestinal Examination, and Neurological / CNS Examination as immutable read-only cards. Empty signed fields render Not recorded. Exact signed values were verified, and all five editable textboxes disappear after signing.
+
+Security/PHI: verification used synthetic local SQLite development data only. Audit metadata records field names without raw examination text. No raw note text was added to logs, telemetry, URLs, localStorage, sessionStorage, or audit payloads. Existing server-side tenant, facility, session, capability, and patient guards remain authoritative. No email, SMS, payment, webhook, or other external side effect occurred.
+
+Files changed: backend/clinical/serializers.py, backend/clinical/services.py, backend/tests/test_phase_1g.py, frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Migration status: NONE. Django check passed; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations.
+
+Tests: focused Phase 1G backend coverage passed 16 tests in 13.84 seconds. Full backend suite passed 90 tests with 7 documented PostgreSQL-only skips: five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests. The required focused clinical regression group passed 76 tests with 2 PostgreSQL row-lock skips. Frontend typecheck, lint, and production build passed.
+
+Browser verification: the focused Phase 1G Playwright run passed 4/4 in 2.5 minutes. The full authenticated local Playwright consultation file passed 16/16 in 5.4 minutes. Coverage included synthetic encounter creation, dirty-only payloads for existing and new fields, save/reload, section switching, patient isolation, empty and populated signed read-only rendering, non-overlapping rebase, same-field comparison and explicit retry, in-flight editing, exact ETag retry behaviour, and no captured console errors or failed API requests in the new persistence/isolation case. The repository Playwright harness was used because the in-app browser bridge was unavailable.
+
+PostgreSQL limitation: PostgreSQL-only tests were not rerun in this local SQLite-only verification. The prior owner-role PostgreSQL integrity baseline and restricted application-role pytest teardown limitation remain unchanged. No permissions were loosened.
+
+Security and scope: the canonical blueprint and canonical backlog were not modified. No Phase 1H work was started. No credentials, seed passwords, secrets, PHI, local database, browser session state, or runtime artifacts were added or exposed.
+
+Known limitations: this remains the explicitly authorized narrative-only abdominal/GI and neurological/CNS slice; structured examination findings, normal-exam quick action, clinical interpretation, body diagrams, GUS, musculoskeletal, and later phases remain outside scope.
+
+Next approved phase: NOT YET AUTHORISED

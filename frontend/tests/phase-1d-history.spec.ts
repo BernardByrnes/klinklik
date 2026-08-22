@@ -989,3 +989,356 @@ test("retains a respiratory edit made while a cardiovascular save is in flight",
     await page.unroute("**/api/v1/clinic/encounters/*/notes/");
   }
 });
+
+
+test("persists, isolates, reloads, signs, and locks abdominal and neurological examination", async ({ page }) => {
+  await login(page);
+  const consoleErrors: string[] = [];
+  const failedRequests: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/api/")) failedRequests.push(request.url());
+  });
+
+  const suffix = Date.now().toString().slice(-6);
+  const patientA = await registerAndCheckIn(page, "Phase1G-A-" + suffix, "0770" + suffix);
+  const patientB = await registerAndCheckIn(page, "Phase1G-B-" + suffix, "0771" + suffix);
+  await triageFromQueue(page, patientA);
+  await triageFromQueue(page, patientB);
+
+  const general = "Phase 1G verification - synthetic general examination.";
+  const cardiovascular = "Phase 1G verification - synthetic cardiovascular examination.";
+  const respiratory = "Phase 1G verification - synthetic respiratory examination.";
+  const abdominal = "Phase 1G verification - synthetic abdominal gastrointestinal examination.";
+  const neurological = "Phase 1G verification - synthetic neurological CNS examination.";
+
+  await openHistory(page, patientA);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveValue("");
+
+  const generalRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  await steadyFill(page, "General Examination", general);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const generalBody = JSON.parse((await generalRequest).postData() ?? "{}") as { content?: unknown };
+  expect(generalBody.content).toEqual({ general_examination: general });
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const systemsRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  await steadyFill(page, "Abdominal / Gastrointestinal Examination", abdominal);
+  await steadyFill(page, "Neurological / CNS Examination", neurological);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const systemsBody = JSON.parse((await systemsRequest).postData() ?? "{}") as { content?: unknown };
+  expect(systemsBody.content).toEqual({
+    abdominal_examination: abdominal,
+    neurological_examination: neurological,
+  });
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  await steadyFill(page, "Cardiovascular Examination", cardiovascular);
+  await steadyFill(page, "Respiratory Examination", respiratory);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(general);
+  await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(cardiovascular);
+  await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue(respiratory);
+  await expect(page.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue(abdominal);
+  await expect(page.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveValue(neurological);
+
+  await page.reload();
+  await openHistory(page, patientA);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(general);
+  await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(cardiovascular);
+  await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue(respiratory);
+  await expect(page.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue(abdominal);
+  await expect(page.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveValue(neurological);
+
+  await page.locator('nav a[href="/consultations"]').click();
+  await page.getByRole("listitem").filter({ hasText: patientB }).click();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  for (const label of [
+    "General Examination",
+    "Cardiovascular Examination",
+    "Respiratory Examination",
+    "Abdominal / Gastrointestinal Examination",
+    "Neurological / CNS Examination",
+  ]) {
+    await expect(page.getByLabel(label, { exact: true })).toHaveValue("");
+  }
+
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByRole("button", { name: "Sign consultation" }).click();
+  await page.getByRole("button", { name: "Confirm signature" }).click();
+  await expect(page.getByText(new RegExp("Consultation signed for " + patientB))).toBeVisible();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  for (const testId of [
+    "general-examination-read-only",
+    "cardiovascular-examination-read-only",
+    "respiratory-examination-read-only",
+    "abdominal-examination-read-only",
+    "neurological-examination-read-only",
+  ]) {
+    await expect(page.getByTestId(testId)).toHaveText("Not recorded.");
+  }
+  await expect(page.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveCount(0);
+
+  await openHistory(page, patientA);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue(general);
+  await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(cardiovascular);
+  await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue(respiratory);
+  await expect(page.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue(abdominal);
+  await expect(page.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveValue(neurological);
+
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByRole("button", { name: "Sign consultation" }).click();
+  await page.getByRole("button", { name: "Confirm signature" }).click();
+  await expect(page.getByText(new RegExp("Consultation signed for " + patientA))).toBeVisible();
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  for (const label of [
+    "General Examination",
+    "Cardiovascular Examination",
+    "Respiratory Examination",
+    "Abdominal / Gastrointestinal Examination",
+    "Neurological / CNS Examination",
+  ]) {
+    await expect(page.getByLabel(label, { exact: true })).toHaveCount(0);
+  }
+  await expect(page.getByTestId("general-examination-read-only")).toHaveText(general);
+  await expect(page.getByTestId("cardiovascular-examination-read-only")).toHaveText(cardiovascular);
+  await expect(page.getByTestId("respiratory-examination-read-only")).toHaveText(respiratory);
+  await expect(page.getByTestId("abdominal-examination-read-only")).toHaveText(abdominal);
+  await expect(page.getByTestId("neurological-examination-read-only")).toHaveText(neurological);
+  await expect(page.getByText("This Examination section is signed and immutable.")).toBeVisible();
+
+  expect(consoleErrors).toEqual([]);
+  expect(failedRequests).toEqual([]);
+});
+
+
+test("rebases a stale neurological examination after a respiratory examination update", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1G-Rebase-" + suffix, "0772" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const baselineRespiratory = "Phase 1G verification - synthetic baseline respiratory examination.";
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await steadyFill(page, "Respiratory Examination", baselineRespiratory);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientName);
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(stalePage.getByLabel("Respiratory Examination", { exact: true })).toHaveValue(baselineRespiratory);
+
+    const updatedRespiratory = "Phase 1G verification - synthetic respiratory examination from writer A.";
+    await steadyFill(page, "Respiratory Examination", updatedRespiratory);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    const conflictResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    const retryResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    const updatedNeurological = "Phase 1G verification - synthetic neurological CNS examination from writer B.";
+    await steadyFill(stalePage, "Neurological / CNS Examination", updatedNeurological);
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    const conflict = await conflictResponse;
+    const retry = await retryResponse;
+    const conflictBody = JSON.parse(conflict.request().postData() ?? "{}") as { content?: unknown };
+    const retryBody = JSON.parse(retry.request().postData() ?? "{}") as { content?: unknown };
+    expect(conflictBody.content).toEqual({ neurological_examination: updatedNeurological });
+    expect(retryBody.content).toEqual({ neurological_examination: updatedNeurological });
+    expect(retry.request().headers()["if-match"]).toBe(conflict.headers()["etag"]);
+    await expect(stalePage.getByText("Consultation draft saved.")).toBeVisible();
+    await expect(stalePage.getByLabel("Respiratory Examination", { exact: true })).toHaveValue(updatedRespiratory);
+    await expect(stalePage.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveValue(updatedNeurological);
+
+    await page.reload();
+    await openHistory(page, patientName);
+    await page.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue(updatedRespiratory);
+    await expect(page.getByLabel("Neurological / CNS Examination", { exact: true })).toHaveValue(updatedNeurological);
+  } finally {
+    await stalePage.close();
+  }
+});
+
+
+test("preserves same-field abdominal draft until explicit retry", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1G-SameField-" + suffix, "0773" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const baselineAbdominal = "Phase 1G verification - synthetic baseline abdominal examination.";
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await steadyFill(page, "Abdominal / Gastrointestinal Examination", baselineAbdominal);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientName);
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(stalePage.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue(baselineAbdominal);
+
+    const updatedAbdominalA = "Phase 1G verification - synthetic abdominal examination from writer A.";
+    await steadyFill(page, "Abdominal / Gastrointestinal Examination", updatedAbdominalA);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    let nonAuthWrites = 0;
+    stalePage.on("response", (response) => {
+      if (
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() !== 401
+      ) {
+        nonAuthWrites += 1;
+      }
+    });
+    const conflictResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    const updatedAbdominalB = "Phase 1G verification - synthetic local abdominal examination.";
+    await steadyFill(stalePage, "Abdominal / Gastrointestinal Examination", updatedAbdominalB);
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    const conflict = await conflictResponse;
+    await stalePage.waitForTimeout(250);
+    expect(nonAuthWrites).toBe(1);
+    const conflictBody = JSON.parse(conflict.request().postData() ?? "{}") as { content?: unknown };
+    expect(conflictBody.content).toEqual({ abdominal_examination: updatedAbdominalB });
+    await expect(stalePage.getByTestId("conflict-server-value-abdominal_examination")).toHaveText(updatedAbdominalA);
+    await expect(stalePage.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue(updatedAbdominalB);
+    await expect(stalePage.getByText(/Not saved/)).toBeVisible();
+
+    const retryResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    const retry = await retryResponse;
+    const retryBody = JSON.parse(retry.request().postData() ?? "{}") as { content?: unknown };
+    expect(retryBody.content).toEqual({ abdominal_examination: updatedAbdominalB });
+
+    await page.reload();
+    await openHistory(page, patientName);
+    await page.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(page.getByLabel("Abdominal / Gastrointestinal Examination", { exact: true })).toHaveValue(updatedAbdominalB);
+  } finally {
+    await stalePage.close();
+  }
+});
+
+
+test("retains a neurological edit made while an abdominal save is in flight", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1G-InFlight-" + suffix, "0774" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+
+  let delayFirstSave = true;
+  await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
+    if (route.request().method() === "POST" && delayFirstSave) {
+      delayFirstSave = false;
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    await route.continue();
+  });
+
+  try {
+    const abdominal = "Phase 1G verification - synthetic in-flight abdominal examination.";
+    const neurological = "Phase 1G verification - synthetic in-flight neurological CNS examination.";
+    const firstRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    const firstResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    await steadyFill(page, "Abdominal / Gastrointestinal Examination", abdominal);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    const first = await firstRequest;
+    const firstBody = JSON.parse(first.postData() ?? "{}") as { content?: unknown };
+    expect(firstBody.content).toEqual({ abdominal_examination: abdominal });
+
+    await steadyFill(page, "Neurological / CNS Examination", neurological);
+    await expect(page.getByText(/Not saved/)).toBeVisible();
+    await firstResponse;
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+    await expect(page.getByText(/Not saved/)).toBeVisible();
+
+    const secondRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Save draft" }).click();
+    const second = await secondRequest;
+    const secondBody = JSON.parse(second.postData() ?? "{}") as { content?: unknown };
+    expect(secondBody.content).toEqual({ neurological_examination: neurological });
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/*/notes/");
+  }
+});

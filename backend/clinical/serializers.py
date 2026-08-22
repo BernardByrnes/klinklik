@@ -29,6 +29,8 @@ def validate_note_content(value):
         "general_examination": 2000,
         "cardiovascular_examination": 2000,
         "respiratory_examination": 2000,
+        "abdominal_examination": 2000,
+        "neurological_examination": 2000,
     }.items():
         if field_name not in value:
             continue

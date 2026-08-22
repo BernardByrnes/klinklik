@@ -43,6 +43,8 @@ export type ClinicalNoteContent = {
   general_examination?: string;
   cardiovascular_examination?: string;
   respiratory_examination?: string;
+  abdominal_examination?: string;
+  neurological_examination?: string;
   [key: string]: unknown;
 };
 
