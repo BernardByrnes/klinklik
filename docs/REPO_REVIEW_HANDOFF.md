@@ -374,3 +374,34 @@ Browser verification: the two new Phase 1E Playwright tests passed; the full aut
 Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the prior owner-role PostgreSQL integrity baseline and restricted application-role pytest teardown limitation remain unchanged. The canonical blueprint and backlog were not modified. Phase 1F and later phases remain out of scope.
 
 Next approved phase: NOT YET AUTHORISED
+
+
+### Phase 1F — Cardiovascular + Respiratory Examination
+
+Status: VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Objective: implement only the ENC-014 cardiovascular and respiratory examination slice as clinician-authored multiline text. General Examination remains available. Abdominal, CNS, GUS, musculoskeletal, normal-exam quick action, ROS, automated interpretation, clinical decision support, and Phase 1G work were not added.
+
+ClinicalNote keys: cardiovascular_examination and respiratory_examination in the existing Encounter -> ClinicalNote.content JSON document. The existing general_examination key remains unchanged.
+
+Persistence: the existing Encounter-first / ClinicalNote-second locking, partial content merge, dirty-field-only submission, authoritative ETag, If-Match precondition, 428/409 conflict handling, one-time non-overlap rebase, signed-note immutability, ClinicalNoteVersion, and amendment paths include both new keys. Reload, section switching, correct Encounter association, and patient A/B isolation were verified.
+
+Validation: backend rejects non-string values and values over 2,000 characters without truncation; exactly 2,000 characters are accepted and round-trip unchanged. The frontend presents two multiline fields with 2,000-character limits and clear clinician-authored-only guidance.
+
+Concurrency behaviour: non-overlapping stale respiratory edits rebase after a general examination update and preserve both writers. Same-field cardiovascular conflicts preserve the local draft, expose the current server comparison in authenticated React memory, and require an explicit retry. An in-flight cardiovascular save does not clear a later respiratory edit; the second request contains only the respiratory dirty field.
+
+Signed behaviour: signed notes render General Examination, Cardiovascular Examination, and Respiratory Examination as immutable read-only cards. Empty signed fields render Not recorded. Exact signed values were verified, and all three editable textboxes disappear after signing.
+
+Security/PHI: verification used synthetic local SQLite development data only. Audit metadata records field names without raw examination text. No raw note text was added to logs, telemetry, URLs, localStorage, sessionStorage, or audit payloads. Existing server-side tenant, facility, session, capability, and patient guards remain authoritative. No email, SMS, payment, webhook, or other external side effect occurred.
+
+Files changed: backend/clinical/serializers.py, backend/clinical/services.py, backend/tests/test_phase_1f.py, frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Migration status: NONE. Django check passed; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations.
+
+Tests: focused Phase 1F backend coverage passed 16 tests. Full backend suite passed 74 tests with 7 documented PostgreSQL-only skips: five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests. The required focused clinical regression group passed 60 tests with 2 PostgreSQL row-lock skips. Frontend typecheck, lint, and production build passed.
+
+Browser verification: the full authenticated local Playwright consultation file passed 12/12 in 4.6 minutes. It covered Phase 1D/1E regressions plus Phase 1F persistence, dirty-only payloads, reload, section switching, patient isolation, empty and populated signed read-only rendering, non-overlapping rebase, same-field conflict and explicit retry, in-flight editing, and no captured console errors or failed API requests in the new persistence/isolation case. Synthetic local development data only was used; the repository Playwright harness was used because the in-app browser bridge was unavailable.
+
+Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification. The prior owner-role PostgreSQL integrity baseline and restricted application-role pytest teardown limitation remain unchanged. The canonical blueprint and canonical backlog were not modified. No Phase 1G work was started.
+
+Next approved phase: NOT YET AUTHORISED

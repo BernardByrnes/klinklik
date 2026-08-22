@@ -41,6 +41,8 @@ export type ClinicalNoteContent = {
   family_history?: string;
   social_history?: string;
   general_examination?: string;
+  cardiovascular_examination?: string;
+  respiratory_examination?: string;
   [key: string]: unknown;
 };
 
