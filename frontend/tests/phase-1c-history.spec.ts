@@ -105,7 +105,7 @@ test("persists and isolates relevant past medical and surgical history", async (
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST",
+      response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   expect((await firstSave).status()).toBe(200);
@@ -117,11 +117,11 @@ test("persists and isolates relevant past medical and surgical history", async (
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST",
+      response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   expect((await secondSave).status()).toBe(200);
-  await expect(page.getByLabel("Presenting complaint")).toHaveValue(SYNTHETIC_COMPLAINT);
+  await expect(page.getByLabel("Presenting complaint", { exact: true })).toHaveValue(SYNTHETIC_COMPLAINT);
   await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue(SYNTHETIC_HPI);
   await expect(page.getByLabel("Relevant Past Surgical History")).toHaveValue(SYNTHETIC_PSH);
 
@@ -147,7 +147,7 @@ test("persists and isolates relevant past medical and surgical history", async (
 
   await page.getByRole("button", { name: "Start encounter" }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
-  await expect(page.getByLabel("Presenting complaint")).toHaveValue("");
+  await expect(page.getByLabel("Presenting complaint", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
   await expect(page.getByLabel("Relevant Past Medical History")).toHaveValue("");
   await expect(page.getByLabel("Relevant Past Surgical History")).toHaveValue("");

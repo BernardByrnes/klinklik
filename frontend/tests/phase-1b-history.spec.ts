@@ -95,7 +95,7 @@ test("persists History fields, isolates patient drafts, and hydrates after reloa
     (response) =>
       response.url().includes("/api/v1/clinic/encounters/") &&
       response.url().endsWith("/notes/") &&
-      response.request().method() === "POST",
+      response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   expect((await saveResponse).status()).toBe(200);
@@ -104,7 +104,7 @@ test("persists History fields, isolates patient drafts, and hydrates after reloa
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(page.getByLabel("Consultation note")).toBeVisible();
   await page.getByRole("tab", { name: "History", exact: true }).click();
-  await expect(page.getByLabel("Presenting complaint")).toHaveValue(SYNTHETIC_COMPLAINT);
+  await expect(page.getByLabel("Presenting complaint", { exact: true })).toHaveValue(SYNTHETIC_COMPLAINT);
   await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue(SYNTHETIC_HPI);
 
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
@@ -117,12 +117,12 @@ test("persists History fields, isolates patient drafts, and hydrates after reloa
   await secondRow.click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await expect(page.getByRole("button", { name: "Start encounter" })).toBeVisible();
-  await expect(page.getByLabel("Presenting complaint")).toHaveCount(0);
+  await expect(page.getByLabel("Presenting complaint", { exact: true })).toHaveCount(0);
   await expect(page.getByText(SYNTHETIC_COMPLAINT)).toHaveCount(0);
 
   await page.getByRole("button", { name: "Start encounter" }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
-  await expect(page.getByLabel("Presenting complaint")).toHaveValue("");
+  await expect(page.getByLabel("Presenting complaint", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
 
   await page.reload();

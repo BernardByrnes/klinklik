@@ -50,6 +50,14 @@ export type ClinicalNoteContent = {
   [key: string]: unknown;
 };
 
+export type ComplaintDurationUnit = "HOURS" | "DAYS" | "WEEKS" | "MONTHS";
+
+export type PresentingComplaint = {
+  text: string;
+  duration_value: number | null;
+  duration_unit: ComplaintDurationUnit | null;
+};
+
 export type ClinicalNote = {
   id: string;
   note_type: string;
@@ -69,6 +77,8 @@ export type Encounter = {
   queue_entry: string;
   status: string;
   consultation_etag?: string;
+  complaints: PresentingComplaint[];
+  triage_complaint: string | null;
   notes?: ClinicalNote[];
 };
 

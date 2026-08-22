@@ -680,3 +680,46 @@ Validation: focused Phase 1L-A backend coverage passed 22 tests. Focused Phase 1
 Known limitations: PostgreSQL-only validation remains limited to the documented skips in this local SQLite environment. The migration has been validated by plan and direct migration-function tests but was not applied to the development database during this implementation turn. Phase 1L-B remains outside scope and unauthorised.
 
 Next approved phase: NOT YET AUTHORISED
+### Phase 1L-B — Structured Presenting Complaints UI + Reliability Integration
+
+Status: COMPLETE
+
+Objective: Complete ENC-005 with a structured, ordered presenting-complaint editor integrated with the existing Phase 1J/1K draft-save reliability model.
+
+Implementation:
+- Structured `Encounter.complaints[]` editor with ordered rows, verbatim text, 500-character max, paired positive duration value/unit, add/remove/reorder controls, inline validation, and signed read-only rendering.
+- Triage complaint remains separately visible as context; only an explicit `Copy from triage` appends a new complaint. No NLP or automatic copy was introduced.
+- Legacy `content.presenting_complaint` remains historical and is not actively written or synchronised by the new UI.
+- Complaint-only dirty state uses the same in-memory dirty/save/retry/session isolation protections as clinical note fields.
+- Complaint-only autosave/manual save sends `{content:{}, complaints:[...]}` with current ETag and autosave marker only for autosave; invalid rows do not send requests.
+- Current complaint drafts are used for retries; in-flight newer edits remain dirty and are preserved.
+- 409/412 reconciliation adopts already-applied identical authoritative content without a false conflict, preserves true structured conflicts for explicit resolution, and retains non-overlap rebase behavior.
+- Offline/online retry, bounded backoff, beforeunload, patient-switch confirmation, timer/session cleanup, sign gating, signed immutability, and safe autosave audit summarisation remain in-memory and session-scoped.
+- No browser PHI persistence was introduced.
+
+Validation:
+- Focused Phase 1L-B Playwright: 20 passed.
+- Existing Phase 1J/1K consultation regressions: 12 passed.
+- Existing History persistence regressions: 2 passed after aligning stale POST assertions and complaint locators with the established PATCH endpoint and structured editor.
+- Focused Phase 1L-A/1K/1J backend: 43 passed.
+- Full backend suite: 158 passed, 7 skipped (PostgreSQL-only checks).
+- Django check, makemigrations --check --dry-run, migrate --plan: PASS; no new migration.
+- Frontend typecheck, lint, production build: PASS.
+- Migration file status: NONE; pre-existing Phase 1L-A migration was applied to local SQLite for verification only.
+
+Files changed:
+- `frontend/src/features/clinic/types.ts`
+- `frontend/src/app/(app)/consultations/page.tsx`
+- `frontend/tests/phase-1l-b-complaints.spec.ts`
+- `frontend/tests/phase-1b-history.spec.ts`
+- `frontend/tests/phase-1c-history.spec.ts`
+- `docs/REPO_REVIEW_HANDOFF.md`
+
+Known limitations:
+- Browser connectivity events are advisory; server reachability remains authoritative.
+- Drafts remain React memory only and are lost on full tab close/reload after any native browser warning is dismissed.
+- Existing PostgreSQL-only checks were skipped because local verification uses SQLite.
+
+ENC-005 status: COMPLETE
+
+Next approved phase: NOT YET AUTHORISED

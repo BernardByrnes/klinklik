@@ -7,7 +7,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest } from "../../../lib/api";
 import { useSession } from "../../../lib/session";
-import { ClinicalNoteContent, Encounter, QueueEntry } from "../../../features/clinic";
+import {
+  ClinicalNoteContent,
+  ComplaintDurationUnit,
+  Encounter,
+  PresentingComplaint,
+  QueueEntry,
+} from "../../../features/clinic";
 import { IconAlertTriangle, IconCheckCircle, IconConsultation } from "../../../components/icons";
 import {
   Button,
@@ -54,7 +60,8 @@ type DraftSaveState = "idle" | "unsaved" | "saved" | "retrying";
 
 type ConsultationDraft = {
   content: ClinicalNoteContent;
-  presentingComplaint: string;
+  complaints: PresentingComplaint[];
+  triageComplaint: string | null;
   hpi: string;
   pastMedicalHistory: string;
   pastSurgicalHistory: string;
@@ -71,7 +78,6 @@ type ConsultationDraft = {
 };
 
 type ClinicalNoteField =
-  | "presenting_complaint"
   | "hpi"
   | "past_medical_history"
   | "past_surgical_history"
@@ -119,13 +125,14 @@ const REVIEWED_NORMAL_TEMPLATES: Record<ExaminationField, string> = {
 
 type EditableDraftValues = Pick<
   ConsultationDraft,
-  "presentingComplaint" | "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "cardiovascularExamination" | "respiratoryExamination" | "abdominalExamination" | "neurologicalExamination" | "genitourinaryExamination" | "musculoskeletalExamination" | "consultation"
+  "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "cardiovascularExamination" | "respiratoryExamination" | "abdominalExamination" | "neurologicalExamination" | "genitourinaryExamination" | "musculoskeletalExamination" | "consultation"
 >;
 
 type DraftMutationVariables = {
   content: ClinicalNoteContent;
   fields: ClinicalNoteField[];
   values: EditableDraftValues;
+  complaintSnapshot?: PresentingComplaint[];
   encounterId: string;
   session: number;
   etag: string;
@@ -141,6 +148,7 @@ type NoteSaveResponse = {
   note: string;
   status: string;
   content: ClinicalNoteContent;
+  complaints: PresentingComplaint[];
   etag: string;
   saved_at: string;
 };
@@ -150,7 +158,6 @@ type NoteSignResponse = NoteSaveResponse & {
 };
 
 const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues> = {
-  presenting_complaint: "presentingComplaint",
   hpi: "hpi",
   past_medical_history: "pastMedicalHistory",
   past_surgical_history: "pastSurgicalHistory",
@@ -167,7 +174,6 @@ const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues>
 };
 
 const CLINICAL_NOTE_FIELDS: ClinicalNoteField[] = [
-  "presenting_complaint",
   "hpi",
   "past_medical_history",
   "past_surgical_history",
@@ -184,7 +190,6 @@ const CLINICAL_NOTE_FIELDS: ClinicalNoteField[] = [
 ];
 
 const CLINICAL_FIELD_LABELS: Record<ClinicalNoteField, string> = {
-  presenting_complaint: "Presenting complaint",
   hpi: "History of present illness",
   past_medical_history: "Past medical history",
   past_surgical_history: "Past surgical history",
@@ -205,6 +210,7 @@ type ClinicalNoteConflictData = {
   status: string;
   encounter_status: string;
   content: ClinicalNoteContent;
+  complaints: PresentingComplaint[];
   saved_at: string | null;
 };
 
@@ -227,7 +233,8 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
     typeof data.status !== "string" ||
     typeof data.encounter_status !== "string" ||
     typeof data.content !== "object" ||
-    data.content === null
+    data.content === null ||
+    !Array.isArray(data.complaints)
   ) {
     return null;
   }
@@ -236,6 +243,7 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
     status: data.status,
     encounter_status: data.encounter_status,
     content: data.content as ClinicalNoteContent,
+    complaints: data.complaints as PresentingComplaint[],
     saved_at: typeof data.saved_at === "string" ? data.saved_at : null,
   };
 }
@@ -255,9 +263,69 @@ function isTerminalEncounterStatus(status: string) {
   return TERMINAL_ENCOUNTER_STATUSES.some((terminalStatus) => terminalStatus === status);
 }
 
+const COMPLAINT_DURATION_UNITS: ComplaintDurationUnit[] = ["HOURS", "DAYS", "WEEKS", "MONTHS"];
+
+function emptyComplaint(): PresentingComplaint {
+  return { text: "", duration_value: null, duration_unit: null };
+}
+
+function cloneComplaints(complaints: PresentingComplaint[]): PresentingComplaint[] {
+  return complaints.map((complaint) => ({ ...complaint }));
+}
+
+function complaintsEqual(left: PresentingComplaint[], right: PresentingComplaint[]) {
+  return left.length === right.length && left.every((complaint, index) => {
+    const other = right[index];
+    return Boolean(other) &&
+      complaint.text === other.text &&
+      complaint.duration_value === other.duration_value &&
+      complaint.duration_unit === other.duration_unit;
+  });
+}
+
+function complaintRowValidationMessage(complaint: PresentingComplaint): string | null {
+  if (complaint.text.trim().length === 0) return "Enter a presenting complaint.";
+  if (complaint.text.length > 500) return "Keep this complaint to 500 characters or fewer.";
+  const hasDurationValue = complaint.duration_value !== null;
+  const hasDurationUnit = complaint.duration_unit !== null;
+  if (hasDurationValue !== hasDurationUnit) {
+    return "Enter both a positive duration and a duration unit, or leave both blank.";
+  }
+  if (hasDurationValue && (
+    !Number.isFinite(complaint.duration_value) ||
+    (complaint.duration_value as number) <= 0
+  )) {
+    return "Duration must be a positive number.";
+  }
+  if (hasDurationUnit && !COMPLAINT_DURATION_UNITS.includes(complaint.duration_unit as ComplaintDurationUnit)) {
+    return "Choose a valid duration unit.";
+  }
+  return null;
+}
+
+function complaintsValidationMessage(complaints: PresentingComplaint[]): string | null {
+  for (const complaint of complaints) {
+    const message = complaintRowValidationMessage(complaint);
+    if (message) return message;
+  }
+  return null;
+}
+
+const DURATION_LABELS: Record<ComplaintDurationUnit, { singular: string; plural: string }> = {
+  HOURS: { singular: "hour", plural: "hours" },
+  DAYS: { singular: "day", plural: "days" },
+  WEEKS: { singular: "week", plural: "weeks" },
+  MONTHS: { singular: "month", plural: "months" },
+};
+
+function complaintDurationLabel(complaint: PresentingComplaint) {
+  if (complaint.duration_value === null || complaint.duration_unit === null) return "Duration not recorded";
+  const labels = DURATION_LABELS[complaint.duration_unit];
+  return complaint.duration_value + " " + (complaint.duration_value === 1 ? labels.singular : labels.plural);
+}
+
 function emptyDraftValues(): EditableDraftValues {
   return {
-    presentingComplaint: "",
     hpi: "",
     pastMedicalHistory: "",
     pastSurgicalHistory: "",
@@ -289,7 +357,6 @@ function editableDraftValuesFromContent(content: ClinicalNoteContent): EditableD
   const plan = contentText(content, "plan");
   const assessmentPlan = assessment || plan ? "Assessment: " + assessment + "\nPlan: " + plan : DEFAULT_CONSULTATION_NOTE;
   return {
-    presentingComplaint: contentText(content, "presenting_complaint"),
     hpi: contentText(content, "hpi"),
     pastMedicalHistory: contentText(content, "past_medical_history"),
     pastSurgicalHistory: contentText(content, "past_surgical_history"),
@@ -308,7 +375,12 @@ function editableDraftValuesFromContent(content: ClinicalNoteContent): EditableD
 
 function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft {
   const content = consultationContent(encounter);
-  return { content, ...editableDraftValuesFromContent(content) };
+  return {
+    content,
+    complaints: cloneComplaints(encounter.complaints ?? []),
+    triageComplaint: encounter.triage_complaint ?? null,
+    ...editableDraftValuesFromContent(content),
+  };
 }
 
 function noteContentForFields(values: EditableDraftValues, fields: ClinicalNoteField[]): ClinicalNoteContent {
@@ -819,13 +891,16 @@ function ExaminationSection({
 
 type HistorySectionProps = {
   status: string;
-  presentingComplaint: string;
+  complaints: PresentingComplaint[];
+  triageComplaint: string | null;
+  complaintConflict: PresentingComplaint[] | null;
   hpi: string;
   pastMedicalHistory: string;
   pastSurgicalHistory: string;
   familyHistory: string;
   socialHistory: string;
-  onPresentingComplaintChange: (value: string) => void;
+  onComplaintsChange: (value: PresentingComplaint[]) => void;
+  onCopyTriage: () => void;
   onHpiChange: (value: string) => void;
   onPastMedicalHistoryChange: (value: string) => void;
   onPastSurgicalHistoryChange: (value: string) => void;
@@ -837,15 +912,39 @@ type HistorySectionProps = {
   savedAt: string | null;
 };
 
+function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingComplaint[]; testId?: string }) {
+  if (complaints.length === 0) {
+    return <p className="mt-2 text-[12.5px] leading-relaxed text-muted">No presenting complaints recorded.</p>;
+  }
+  return (
+    <ol data-testid={testId} aria-label="Ordered presenting complaints" className="mt-2 space-y-2">
+      {complaints.map((complaint, index) => (
+        <li key={index} className="flex items-start gap-3 rounded-[10px] bg-surface-muted px-3 py-2.5">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">
+            {index + 1}
+          </span>
+          <div className="min-w-0">
+            <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-ink">{complaint.text}</p>
+            <p className="mt-1 text-[11px] font-medium text-muted">{complaintDurationLabel(complaint)}</p>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 function HistorySection({
   status,
-  presentingComplaint,
+  complaints,
+  triageComplaint,
+  complaintConflict,
   hpi,
   pastMedicalHistory,
   pastSurgicalHistory,
   familyHistory,
   socialHistory,
-  onPresentingComplaintChange,
+  onComplaintsChange,
+  onCopyTriage,
   onHpiChange,
   onPastMedicalHistoryChange,
   onPastSurgicalHistoryChange,
@@ -856,6 +955,34 @@ function HistorySection({
   saveState,
   savedAt,
 }: HistorySectionProps) {
+  const visibleComplaints = complaints.length > 0 ? complaints : [emptyComplaint()];
+
+  function updateComplaint(index: number, update: Partial<PresentingComplaint>) {
+    const base = complaints.length > 0 ? complaints : [emptyComplaint()];
+    const next = base.map((complaint, rowIndex) => rowIndex === index ? { ...complaint, ...update } : complaint);
+    onComplaintsChange(next);
+  }
+
+  function removeComplaint(index: number) {
+    if (complaints.length === 0) return;
+    onComplaintsChange(complaints.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  function moveComplaint(index: number, direction: -1 | 1) {
+    if (complaints.length === 0) return;
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= complaints.length) return;
+    const next = cloneComplaints(complaints);
+    const current = next[index];
+    next[index] = next[nextIndex];
+    next[nextIndex] = current;
+    onComplaintsChange(next);
+  }
+
+  function addComplaint() {
+    onComplaintsChange(complaints.length === 0 ? [emptyComplaint()] : [...complaints, emptyComplaint()]);
+  }
+
   if (status === "SIGNED") {
     return (
       <div className="space-y-4">
@@ -864,40 +991,35 @@ function HistorySection({
           This History section is signed and immutable.
         </p>
         <div className="rounded-[14px] border border-line bg-white p-4">
-          <h3 className="text-[13px] font-bold text-ink">Presenting complaint</h3>
+          <h3 className="text-[13px] font-bold text-ink">Presenting complaints</h3>
+          <ComplaintReadOnlyList complaints={complaints} testId="signed-presenting-complaints" />
+        </div>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Triage complaint</h3>
           <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
-            {presentingComplaint || "Not recorded."}
+            {triageComplaint || "Not recorded."}
           </p>
+          <p className="mt-1 text-[11px] font-medium text-muted">Triage context is shown separately and is not a structured complaint row.</p>
         </div>
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">History of present illness (HPI)</h3>
-          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
-            {hpi || "Not recorded."}
-          </p>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{hpi || "Not recorded."}</p>
         </div>
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">Relevant Past Medical History</h3>
-          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
-            {pastMedicalHistory || "Not recorded."}
-          </p>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{pastMedicalHistory || "Not recorded."}</p>
         </div>
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">Relevant Past Surgical History</h3>
-          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
-            {pastSurgicalHistory || "Not recorded."}
-          </p>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{pastSurgicalHistory || "Not recorded."}</p>
         </div>
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">Relevant Family History</h3>
-          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
-            {familyHistory || "Not recorded."}
-          </p>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{familyHistory || "Not recorded."}</p>
         </div>
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">Relevant Social History</h3>
-          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
-            {socialHistory || "Not recorded."}
-          </p>
+          <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{socialHistory || "Not recorded."}</p>
         </div>
       </div>
     );
@@ -906,89 +1028,119 @@ function HistorySection({
   return (
     <div className="space-y-4">
       <p className="text-[12.5px] font-medium text-secondary">
-        Record the patient&apos;s presenting complaint, history of this illness, and relevant past history. This section does not add a diagnosis or treatment.
+        Record ordered patient-reported presenting complaints, the history of this illness, and relevant past history. This section does not add a diagnosis or treatment.
       </p>
-      <Field
-        label="Presenting complaint"
-        htmlFor="presenting-complaint"
-        hint="Patient-reported reason for the visit (500 characters maximum)."
-      >
-        <Textarea
-          id="presenting-complaint"
-          maxLength={500}
-          value={presentingComplaint}
-          onChange={(event) => onPresentingComplaintChange(event.target.value)}
-        />
+      <section data-testid="presenting-complaints-editor" className="space-y-4 rounded-[14px] border border-line-soft bg-surface-muted p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-[13px] font-bold text-ink">Presenting complaints</h3>
+            <p className="mt-1 text-[11.5px] font-medium leading-relaxed text-secondary">Add each complaint in the order it was reported. Text is preserved verbatim and is limited to 500 characters per row.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={addComplaint}>Add complaint</Button>
+            <Button variant="secondary" disabled={!triageComplaint || triageComplaint.trim().length === 0} onClick={onCopyTriage}>Copy from triage</Button>
+          </div>
+        </div>
+        <div className="rounded-[10px] border border-line bg-white px-3 py-2.5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Triage complaint · context only</p>
+          <p data-testid="triage-complaint" className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{triageComplaint || "No triage complaint recorded."}</p>
+          <p className="mt-1 text-[11px] font-medium text-muted">It is never copied automatically. Use Copy from triage to append it as a new row.</p>
+        </div>
+        {complaintConflict ? (
+          <div data-testid="complaint-conflict" role="status" aria-label="Latest saved complaint values" className="space-y-3 rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-3">
+            <p className="text-[12px] font-semibold text-ink">Current saved complaints from another update</p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted">Latest saved</p>
+                <ComplaintReadOnlyList complaints={complaintConflict} />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted">Your unsaved draft</p>
+                <ComplaintReadOnlyList complaints={complaints} />
+              </div>
+            </div>
+            <p className="text-[11.5px] font-medium text-secondary">Review both versions, then choose Save draft explicitly if you intend to reconcile this conflict.</p>
+          </div>
+        ) : null}
+        <ol aria-label="Presenting complaints" className="space-y-3">
+          {visibleComplaints.map((complaint, index) => {
+            const validation = complaints.length === 0 ? null : complaintRowValidationMessage(complaint);
+            const errorId = "presenting-complaint-error-" + index;
+            return (
+              <li key={index} data-testid={"presenting-complaint-row-" + index} className="rounded-[12px] border border-line bg-white p-3">
+                <div className="flex items-start gap-3">
+                  <span aria-label={"Complaint order " + (index + 1)} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-soft text-[11px] font-bold text-primary">{index + 1}</span>
+                  <div className="min-w-0 flex-1 space-y-3">
+                    <Field label={"Presenting complaint " + (index + 1)} htmlFor={"presenting-complaint-" + index} hint="Patient-reported reason for the visit.">
+                      <Textarea
+                        id={"presenting-complaint-" + index}
+                        aria-label={index === 0 ? "Presenting complaint" : "Presenting complaint " + (index + 1)}
+                        aria-invalid={Boolean(validation)}
+                        aria-describedby={validation ? errorId : undefined}
+                        maxLength={500}
+                        value={complaint.text}
+                        onChange={(event) => updateComplaint(index, { text: event.target.value })}
+                      />
+                    </Field>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                      <Field label="Duration value" htmlFor={"presenting-complaint-duration-value-" + index} hint="Optional; must be positive when provided.">
+                        <input
+                          id={"presenting-complaint-duration-value-" + index}
+                          aria-label={"Duration value for presenting complaint " + (index + 1)}
+                          aria-invalid={Boolean(validation && (complaint.duration_value !== null || complaint.duration_unit !== null))}
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          step="any"
+                          value={complaint.duration_value ?? ""}
+                          onChange={(event) => updateComplaint(index, { duration_value: event.target.value === "" ? null : Number(event.target.value) })}
+                          className="h-11 w-full rounded-[12px] border border-line bg-white px-3.5 text-[13px] font-medium text-ink shadow-card focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                        />
+                      </Field>
+                      <Field label="Duration unit" htmlFor={"presenting-complaint-duration-unit-" + index}>
+                        <select
+                          id={"presenting-complaint-duration-unit-" + index}
+                          aria-label={"Duration unit for presenting complaint " + (index + 1)}
+                          aria-invalid={Boolean(validation && (complaint.duration_value !== null || complaint.duration_unit !== null))}
+                          value={complaint.duration_unit ?? ""}
+                          onChange={(event) => updateComplaint(index, { duration_unit: event.target.value === "" ? null : event.target.value as ComplaintDurationUnit })}
+                          className="h-11 w-full rounded-[12px] border border-line bg-white px-3.5 text-[13px] font-medium text-ink shadow-card focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                        >
+                          <option value="">No duration recorded</option>
+                          {COMPLAINT_DURATION_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    {validation ? <p id={errorId} role="alert" className="text-[11.5px] font-medium text-accent-pink">{validation}</p> : null}
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="small-secondary" disabled={complaints.length === 0 || index === 0} onClick={() => moveComplaint(index, -1)} aria-label={"Move presenting complaint " + (index + 1) + " up"}>Move up</Button>
+                      <Button variant="small-secondary" disabled={complaints.length === 0 || index === complaints.length - 1} onClick={() => moveComplaint(index, 1)} aria-label={"Move presenting complaint " + (index + 1) + " down"}>Move down</Button>
+                      <Button variant="danger" disabled={complaints.length === 0} onClick={() => removeComplaint(index)} aria-label={"Remove presenting complaint " + (index + 1)}>Remove</Button>
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+      <Field label="History of present illness (HPI)" htmlFor="history-of-present-illness" hint="Current illness history in the patient&apos;s account (4,000 characters maximum).">
+        <Textarea id="history-of-present-illness" className="min-h-[180px]" maxLength={4000} value={hpi} onChange={(event) => onHpiChange(event.target.value)} />
       </Field>
-      <Field
-        label="History of present illness (HPI)"
-        htmlFor="history-of-present-illness"
-        hint="Current illness history in the patient&apos;s account (4,000 characters maximum)."
-      >
-        <Textarea
-          id="history-of-present-illness"
-          className="min-h-[180px]"
-          maxLength={4000}
-          value={hpi}
-          onChange={(event) => onHpiChange(event.target.value)}
-        />
+      <Field label="Relevant Past Medical History" htmlFor="past-medical-history" hint="Relevant prior medical conditions or history (4,000 characters maximum).">
+        <Textarea id="past-medical-history" className="min-h-[150px]" maxLength={4000} value={pastMedicalHistory} onChange={(event) => onPastMedicalHistoryChange(event.target.value)} />
       </Field>
-      <Field
-        label="Relevant Past Medical History"
-        htmlFor="past-medical-history"
-        hint="Relevant prior medical conditions or history (4,000 characters maximum)."
-      >
-        <Textarea
-          id="past-medical-history"
-          className="min-h-[150px]"
-          maxLength={4000}
-          value={pastMedicalHistory}
-          onChange={(event) => onPastMedicalHistoryChange(event.target.value)}
-        />
+      <Field label="Relevant Past Surgical History" htmlFor="past-surgical-history" hint="Relevant prior surgical history (4,000 characters maximum).">
+        <Textarea id="past-surgical-history" className="min-h-[150px]" maxLength={4000} value={pastSurgicalHistory} onChange={(event) => onPastSurgicalHistoryChange(event.target.value)} />
       </Field>
-      <Field
-        label="Relevant Past Surgical History"
-        htmlFor="past-surgical-history"
-        hint="Relevant prior surgical history (4,000 characters maximum)."
-      >
-        <Textarea
-          id="past-surgical-history"
-          className="min-h-[150px]"
-          maxLength={4000}
-          value={pastSurgicalHistory}
-          onChange={(event) => onPastSurgicalHistoryChange(event.target.value)}
-        />
+      <Field label="Relevant Family History" htmlFor="family-history" hint="Relevant family history in the clinician&apos;s narrative (4,000 characters maximum).">
+        <Textarea id="family-history" className="min-h-[150px]" maxLength={4000} value={familyHistory} onChange={(event) => onFamilyHistoryChange(event.target.value)} />
       </Field>
-      <Field
-        label="Relevant Family History"
-        htmlFor="family-history"
-        hint="Relevant family history in the clinician's narrative (4,000 characters maximum)."
-      >
-        <Textarea
-          id="family-history"
-          className="min-h-[150px]"
-          maxLength={4000}
-          value={familyHistory}
-          onChange={(event) => onFamilyHistoryChange(event.target.value)}
-        />
-      </Field>
-      <Field
-        label="Relevant Social History"
-        htmlFor="social-history"
-        hint="Relevant social or contextual history in the clinician's narrative (4,000 characters maximum)."
-      >
-        <Textarea
-          id="social-history"
-          className="min-h-[150px]"
-          maxLength={4000}
-          value={socialHistory}
-          onChange={(event) => onSocialHistoryChange(event.target.value)}
-        />
+      <Field label="Relevant Social History" htmlFor="social-history" hint="Relevant social or contextual history in the clinician&apos;s narrative (4,000 characters maximum).">
+        <Textarea id="social-history" className="min-h-[150px]" maxLength={4000} value={socialHistory} onChange={(event) => onSocialHistoryChange(event.target.value)} />
       </Field>
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="secondary" disabled={savePending} onClick={onSave}>
-          {savePending ? "Saving…" : "Save draft"}
-        </Button>
+        <Button variant="secondary" disabled={savePending} onClick={onSave}>{savePending ? "Saving…" : "Save draft"}</Button>
         <DraftSaveStatus saveState={saveState} savedAt={savedAt} />
       </div>
     </div>
@@ -1006,7 +1158,8 @@ function ConsultationsWorkspace() {
   const [note, setNote] = useState(DEFAULT_CONSULTATION_NOTE);
   const noteContentRef = useRef<ClinicalNoteContent>({});
   const encounterEtagRef = useRef<string | null>(null);
-  const [presentingComplaint, setPresentingComplaint] = useState("");
+  const [complaints, setComplaints] = useState<PresentingComplaint[]>([]);
+  const [triageComplaint, setTriageComplaint] = useState<string | null>(null);
   const [hpi, setHpi] = useState("");
   const [pastMedicalHistory, setPastMedicalHistory] = useState("");
   const [pastSurgicalHistory, setPastSurgicalHistory] = useState("");
@@ -1025,6 +1178,7 @@ function ConsultationsWorkspace() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [conflictComparison, setConflictComparison] = useState<ConflictComparisonValues>({});
+  const [complaintConflict, setComplaintConflict] = useState<PresentingComplaint[] | null>(null);
   const [reviewedNormalActionOpen, setReviewedNormalActionOpen] = useState(false);
   const [reviewedNormalSelection, setReviewedNormalSelection] = useState<ExaminationField[]>([]);
   const [savedAt, setSavedAt] = useState<string | null>(null);
@@ -1038,8 +1192,15 @@ function ConsultationsWorkspace() {
   const autosaveDeferredRef = useRef(false);
   const clinicalMutationInFlightRef = useRef(false);
   const dirtyFieldsRef = useRef<Set<ClinicalNoteField>>(new Set());
+  const complaintsDraftRef = useRef<PresentingComplaint[]>([]);
+  const authoritativeComplaintsRef = useRef<PresentingComplaint[]>([]);
+  const complaintsDirtyRef = useRef(false);
   const draftValuesRef = useRef<EditableDraftValues>(emptyDraftValues());
   const draftSessionRef = useRef(0);
+
+  function hasDirtyDraft() {
+    return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current;
+  }
 
   useEffect(() => () => {
     if (autosaveTimerRef.current !== null) {
@@ -1101,7 +1262,7 @@ function ConsultationsWorkspace() {
     cancelAutosaveTimer();
     if (
       !encounter?.id ||
-      dirtyFieldsRef.current.size === 0 ||
+      !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
       isTerminalEncounterStatus(encounter.status)
     ) {
@@ -1120,7 +1281,7 @@ function ConsultationsWorkspace() {
       if (
         session !== draftSessionRef.current ||
         encounter?.id !== encounterId ||
-        dirtyFieldsRef.current.size === 0 ||
+        !hasDirtyDraft() ||
         autosaveBlockedRef.current ||
         isTerminalEncounterStatus(encounter.status)
       ) {
@@ -1154,8 +1315,13 @@ function ConsultationsWorkspace() {
     noteContentRef.current = draft.content;
     draftValuesRef.current = values;
     dirtyFieldsRef.current = new Set();
+    const hydratedComplaints = cloneComplaints(draft.complaints);
+    complaintsDraftRef.current = hydratedComplaints;
+    authoritativeComplaintsRef.current = cloneComplaints(hydratedComplaints);
+    complaintsDirtyRef.current = false;
     draftSessionRef.current += 1;
-    setPresentingComplaint(values.presentingComplaint);
+    setComplaints(cloneComplaints(draft.complaints));
+    setTriageComplaint(draft.triageComplaint);
     setHpi(values.hpi);
     setPastMedicalHistory(values.pastMedicalHistory);
     setPastSurgicalHistory(values.pastSurgicalHistory);
@@ -1169,12 +1335,12 @@ function ConsultationsWorkspace() {
     setGenitourinaryExamination(values.genitourinaryExamination);
     setMusculoskeletalExamination(values.musculoskeletalExamination);
     setNote(values.consultation);
-    setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
+    setDraftSaveState(Object.keys(draft.content).length > 0 || draft.complaints.length > 0 ? "saved" : "idle");
     setConflictComparison({});
+    setComplaintConflict(null);
   }
 
   function setVisibleDraftValue(field: ClinicalNoteField, value: string) {
-    if (field === "presenting_complaint") setPresentingComplaint(value);
     if (field === "hpi") setHpi(value);
     if (field === "past_medical_history") setPastMedicalHistory(value);
     if (field === "past_surgical_history") setPastSurgicalHistory(value);
@@ -1221,11 +1387,21 @@ function ConsultationsWorkspace() {
     }
     const values = { ...draftValuesRef.current };
     const fields = Array.from(dirtyFieldsRef.current);
-    if (fields.length === 0 && origin === "autosave") return null;
+    const complaintSnapshot = complaintsDirtyRef.current ? cloneComplaints(complaintsDraftRef.current) : undefined;
+    if (complaintSnapshot !== undefined) {
+      const complaintError = complaintsValidationMessage(complaintSnapshot);
+      if (complaintError) {
+        setDraftSaveState("unsaved");
+        setError("Fix the presenting complaint before saving: " + complaintError);
+        return null;
+      }
+    }
+    if (fields.length === 0 && complaintSnapshot === undefined && origin === "autosave") return null;
     return {
       content: noteContentForFields(values, fields),
       fields,
       values,
+      complaintSnapshot,
       encounterId: encounter.id,
       session: draftSessionRef.current,
       etag,
@@ -1234,10 +1410,35 @@ function ConsultationsWorkspace() {
     };
   }
 
+  function updateComplaints(next: PresentingComplaint[]) {
+    const snapshot = cloneComplaints(next);
+    complaintsDraftRef.current = snapshot;
+    setComplaints(snapshot);
+    complaintsDirtyRef.current = true;
+    setDraftSaveState(retryActiveRef.current ? "retrying" : "unsaved");
+    setNotice("");
+    setError("");
+    if (complaintsValidationMessage(snapshot)) return;
+    if (retryActiveRef.current) {
+      scheduleRetry();
+    } else {
+      scheduleAutosave();
+    }
+  }
+
+  function copyTriageComplaint() {
+    if (!triageComplaint || triageComplaint.trim().length === 0) return;
+    updateComplaints([...complaintsDraftRef.current, {
+      text: triageComplaint,
+      duration_value: null,
+      duration_unit: null,
+    }]);
+  }
+
   function selectEntry(entry: QueueEntry) {
     if (
       entry.id !== selectedId &&
-      dirtyFieldsRef.current.size > 0 &&
+      hasDirtyDraft() &&
       encounter &&
       !isTerminalEncounterStatus(encounter.status) &&
       !window.confirm("This consultation has unsaved changes. Leave and discard them?")
@@ -1255,13 +1456,18 @@ function ConsultationsWorkspace() {
     noteContentRef.current = {};
     encounterEtagRef.current = null;
     setConflictComparison({});
+    setComplaintConflict(null);
     draftValuesRef.current = emptyDraftValues();
     dirtyFieldsRef.current = new Set();
+    complaintsDraftRef.current = [];
+    authoritativeComplaintsRef.current = [];
+    complaintsDirtyRef.current = false;
     selectedQueueEntryIdRef.current = entry.id;
     setSelectedId(entry.id);
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
-    setPresentingComplaint("");
+    setTriageComplaint(null);
+    setComplaints([]);
     setHpi("");
     setPastMedicalHistory("");
     setPastSurgicalHistory("");
@@ -1318,7 +1524,7 @@ function ConsultationsWorkspace() {
   }
 
   const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
-    mutationFn: ({ content, encounterId, etag, origin }) =>
+    mutationFn: ({ content, complaintSnapshot, encounterId, etag, origin }) =>
       apiRequest<NoteSaveResponse>(
         "/api/v1/clinic/encounters/" + encounterId + "/notes/",
         {
@@ -1327,7 +1533,10 @@ function ConsultationsWorkspace() {
             "If-Match": etag,
             ...(origin === "autosave" ? { "X-KlinKlik-Autosave": "1" } : {}),
           },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({
+            content,
+            ...(complaintSnapshot !== undefined ? { complaints: complaintSnapshot } : {}),
+          }),
         },
       ),
     onMutate: (variables) => {
@@ -1343,6 +1552,14 @@ function ConsultationsWorkspace() {
       if (variables.origin === "manual") autosaveBlockedRef.current = false;
       noteContentRef.current = saved.content;
       encounterEtagRef.current = saved.etag;
+      const serverComplaints = cloneComplaints(saved.complaints ?? []);
+      authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
+      if (!complaintsDirtyRef.current || (variables.complaintSnapshot !== undefined && complaintsEqual(complaintsDraftRef.current, variables.complaintSnapshot))) {
+        complaintsDraftRef.current = cloneComplaints(serverComplaints);
+        setComplaints(cloneComplaints(serverComplaints));
+        complaintsDirtyRef.current = false;
+        setComplaintConflict(null);
+      }
       setSavedAt(saved.saved_at);
       setConflictComparison({});
       for (const field of variables.fields) {
@@ -1351,10 +1568,13 @@ function ConsultationsWorkspace() {
           dirtyFieldsRef.current.delete(field);
         }
       }
-      setDraftSaveState(dirtyFieldsRef.current.size > 0 ? "unsaved" : "saved");
-      setNotice(variables.origin === "autosave" ? "Consultation draft autosaved." : "Consultation draft saved.");
+      const stillDirty = hasDirtyDraft();
+      setDraftSaveState(stillDirty ? "unsaved" : "saved");
+      setNotice(stillDirty
+        ? "Consultation draft saved; newer edits remain unsaved."
+        : (variables.origin === "autosave" ? "Consultation draft autosaved." : "Consultation draft saved."));
       setError("");
-      if (dirtyFieldsRef.current.size > 0) scheduleAutosave();
+      if (stillDirty) scheduleAutosave();
     },
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;
@@ -1362,12 +1582,12 @@ function ConsultationsWorkspace() {
       const conflict = clinicalNoteConflict(reason);
       if (!conflict) {
         autosaveDeferredRef.current = false;
-        if (isRetryableDraftFailure(reason) && dirtyFieldsRef.current.size > 0) {
+        if (isRetryableDraftFailure(reason) && hasDirtyDraft()) {
           continueRetryAfterFailure();
           return;
         }
         resetRetryState();
-        setDraftSaveState(dirtyFieldsRef.current.size > 0 ? "unsaved" : "idle");
+        setDraftSaveState(hasDirtyDraft() ? "unsaved" : "idle");
         setError(errorMessage(reason));
         return;
       }
@@ -1380,9 +1600,22 @@ function ConsultationsWorkspace() {
         return draftValuesRef.current[draftKey] === remoteValues[draftKey];
       });
       const trueOverlappingFields = overlappingFields.filter((field) => !alreadyAppliedFields.includes(field));
+      const serverComplaints = cloneComplaints(conflict.complaints);
+      const complaintsChangedRemotely = !complaintsEqual(serverComplaints, authoritativeComplaintsRef.current);
+      const complaintWasAlreadyApplied = complaintsDirtyRef.current && complaintsChangedRemotely && complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const trueComplaintConflict = complaintsDirtyRef.current && complaintsChangedRemotely && !complaintsEqual(serverComplaints, complaintsDraftRef.current);
 
       noteContentRef.current = conflict.content;
       encounterEtagRef.current = conflict.etag;
+      authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
+      if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
+        complaintsDraftRef.current = cloneComplaints(serverComplaints);
+        setComplaints(cloneComplaints(serverComplaints));
+        complaintsDirtyRef.current = false;
+        setComplaintConflict(null);
+      } else if (trueComplaintConflict) {
+        setComplaintConflict(cloneComplaints(serverComplaints));
+      }
       for (const field of alreadyAppliedFields) {
         const draftKey = FIELD_TO_DRAFT_VALUE[field];
         if (draftValuesRef.current[draftKey] === remoteValues[draftKey]) {
@@ -1398,14 +1631,14 @@ function ConsultationsWorkspace() {
       }
       rebaseVisibleDraft(conflict.content, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
 
-      if (trueOverlappingFields.length > 0) {
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict) {
         resetRetryState();
         autosaveBlockedRef.current = true;
         cancelAutosaveTimer();
         autosaveDeferredRef.current = false;
       }
 
-      if (dirtyFieldsRef.current.size === 0) {
+      if (!hasDirtyDraft()) {
         resetRetryState();
         setSavedAt(conflict.saved_at);
         setDraftSaveState("saved");
@@ -1416,6 +1649,7 @@ function ConsultationsWorkspace() {
 
       if (
         trueOverlappingFields.length === 0 &&
+        !trueComplaintConflict &&
         variables.rebaseAttempt < 1 &&
         conflict.status === "DRAFT" &&
         conflict.encounter_status === "OPEN"
@@ -1428,10 +1662,15 @@ function ConsultationsWorkspace() {
         }
       }
 
-      if (trueOverlappingFields.length === 0) resetRetryState();
+      if (trueOverlappingFields.length === 0 && !trueComplaintConflict) resetRetryState();
       setDraftSaveState("unsaved");
       setNotice("");
-      setError(conflictMessage(remoteFields, trueOverlappingFields, "save"));
+      if (trueComplaintConflict) {
+        const complaintMessage = "Presenting complaints changed elsewhere. Your unsaved complaint list has been preserved. Review the latest record before saving again.";
+        setError(trueOverlappingFields.length > 0 ? conflictMessage(remoteFields, trueOverlappingFields, "save") + " " + complaintMessage : complaintMessage);
+      } else {
+        setError(conflictMessage(remoteFields, trueOverlappingFields, "save"));
+      }
     },
   });
   function attemptRetryNow() {
@@ -1440,11 +1679,11 @@ function ConsultationsWorkspace() {
       offlineRef.current ||
       clinicalMutationInFlightRef.current ||
       !encounter?.id ||
-      dirtyFieldsRef.current.size === 0 ||
+      !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
       isTerminalEncounterStatus(encounter.status)
     ) {
-      if (retryActiveRef.current && dirtyFieldsRef.current.size === 0) {
+      if (retryActiveRef.current && !hasDirtyDraft()) {
         resetRetryState();
         setDraftSaveState("saved");
       }
@@ -1462,7 +1701,7 @@ function ConsultationsWorkspace() {
       !retryActiveRef.current ||
       offlineRef.current ||
       !encounter?.id ||
-      dirtyFieldsRef.current.size === 0 ||
+      !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
       isTerminalEncounterStatus(encounter.status)
     ) {
@@ -1477,7 +1716,7 @@ function ConsultationsWorkspace() {
       if (
         session !== draftSessionRef.current ||
         encounter?.id !== encounterId ||
-        dirtyFieldsRef.current.size === 0 ||
+        !hasDirtyDraft() ||
         autosaveBlockedRef.current ||
         isTerminalEncounterStatus(encounter.status)
       ) {
@@ -1505,7 +1744,7 @@ function ConsultationsWorkspace() {
     function handleOffline() {
       offlineRef.current = true;
       if (
-        dirtyFieldsRef.current.size > 0 &&
+        hasDirtyDraft() &&
         encounter?.id &&
         !autosaveBlockedRef.current &&
         !isTerminalEncounterStatus(encounter.status)
@@ -1520,7 +1759,7 @@ function ConsultationsWorkspace() {
       offlineRef.current = false;
       if (
         retryActiveRef.current &&
-        dirtyFieldsRef.current.size > 0 &&
+        hasDirtyDraft() &&
         !autosaveBlockedRef.current &&
         !clinicalMutationInFlightRef.current &&
         encounter?.id &&
@@ -1540,7 +1779,7 @@ function ConsultationsWorkspace() {
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
-      if (dirtyFieldsRef.current.size === 0) return;
+      if (!hasDirtyDraft()) return;
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1548,11 +1787,14 @@ function ConsultationsWorkspace() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
   const signNote = useMutation<NoteSignResponse, unknown, DraftMutationVariables>({
-    mutationFn: ({ content, encounterId, etag }) =>
+    mutationFn: ({ content, complaintSnapshot, encounterId, etag }) =>
       apiRequest<NoteSignResponse>("/api/v1/clinic/encounters/" + encounterId + "/sign/", {
         method: "POST",
         headers: { "If-Match": etag },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          ...(complaintSnapshot !== undefined ? { complaints: complaintSnapshot } : {}),
+        }),
       }),
     onMutate: (variables) => {
       if (variables.session === draftSessionRef.current) {
@@ -1565,12 +1807,17 @@ function ConsultationsWorkspace() {
       resetRetryState();
       cancelAutosaveTimer();
       const signedDraft = editableDraftValuesFromContent(signed.content);
+      const signedComplaints = cloneComplaints(signed.complaints ?? []);
       noteContentRef.current = signed.content;
       encounterEtagRef.current = signed.etag;
+      authoritativeComplaintsRef.current = cloneComplaints(signedComplaints);
+      complaintsDraftRef.current = cloneComplaints(signedComplaints);
+      complaintsDirtyRef.current = false;
+      setComplaints(cloneComplaints(signedComplaints));
+      setComplaintConflict(null);
       setSavedAt(signed.saved_at);
       draftValuesRef.current = signedDraft;
       dirtyFieldsRef.current = new Set();
-      setPresentingComplaint(signedDraft.presentingComplaint);
       setHpi(signedDraft.hpi);
       setPastMedicalHistory(signedDraft.pastMedicalHistory);
       setPastSurgicalHistory(signedDraft.pastSurgicalHistory);
@@ -1600,28 +1847,56 @@ function ConsultationsWorkspace() {
       const conflict = clinicalNoteConflict(reason);
       setConfirmingSign(false);
       if (!conflict) {
+        if (reason instanceof ApiRequestError && reason.status === 400 && typeof reason.data === "object" && reason.data !== null && (reason.data as Record<string, unknown>).code === "PRESENTING_COMPLAINT_REQUIRED") {
+          setActiveSection("history");
+          setError("Add at least one valid presenting complaint before signing this consultation.");
+          return;
+        }
         setError(errorMessage(reason));
         return;
       }
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      const alreadyAppliedFields = overlappingFields.filter((field) => {
+        const remoteValues = editableDraftValuesFromContent(conflict.content);
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        return draftValuesRef.current[draftKey] === remoteValues[draftKey];
+      });
+      const trueOverlappingFields = overlappingFields.filter((field) => !alreadyAppliedFields.includes(field));
+      const serverComplaints = cloneComplaints(conflict.complaints);
+      const complaintsChangedRemotely = !complaintsEqual(serverComplaints, authoritativeComplaintsRef.current);
+      const complaintWasAlreadyApplied = complaintsDirtyRef.current && complaintsChangedRemotely && complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const trueComplaintConflict = complaintsDirtyRef.current && complaintsChangedRemotely && !complaintsEqual(serverComplaints, complaintsDraftRef.current);
       noteContentRef.current = conflict.content;
       encounterEtagRef.current = conflict.etag;
+      authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
+      if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
+        complaintsDraftRef.current = cloneComplaints(serverComplaints);
+        setComplaints(cloneComplaints(serverComplaints));
+        complaintsDirtyRef.current = false;
+        setComplaintConflict(null);
+      } else if (trueComplaintConflict) {
+        setComplaintConflict(cloneComplaints(serverComplaints));
+      }
       if (isTerminalEncounterStatus(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
-        resetRetryState();
         cancelAutosaveTimer();
         autosaveDeferredRef.current = false;
       }
-      rebaseVisibleDraft(conflict.content, remoteFields);
-      if (variables.origin === "autosave" && overlappingFields.length > 0) {
+      rebaseVisibleDraft(conflict.content, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict) {
         autosaveBlockedRef.current = true;
         cancelAutosaveTimer();
         autosaveDeferredRef.current = false;
       }
       setDraftSaveState("unsaved");
       setNotice("");
-      setError(conflictMessage(remoteFields, overlappingFields, "sign"));
+      if (trueComplaintConflict) {
+        const complaintMessage = "Presenting complaints changed elsewhere. Your unsaved complaint list has been preserved. Review the latest record before signing again.";
+        setError(trueOverlappingFields.length > 0 ? conflictMessage(remoteFields, trueOverlappingFields, "sign") + " " + complaintMessage : complaintMessage);
+      } else {
+        setError(conflictMessage(remoteFields, trueOverlappingFields, "sign"));
+      }
     },
   });
   function updateClinicalField(field: ClinicalNoteField, value: string, setValue: (value: string) => void) {
@@ -1694,6 +1969,16 @@ function ConsultationsWorkspace() {
   }
 
   function signCurrentDraft() {
+    const candidateComplaints = cloneComplaints(complaintsDraftRef.current);
+    const complaintError = complaintsValidationMessage(candidateComplaints);
+    if (candidateComplaints.length === 0 || complaintError) {
+      setActiveSection("history");
+      setConfirmingSign(false);
+      setError(candidateComplaints.length === 0
+        ? "Add at least one valid presenting complaint before signing this consultation."
+        : "Fix the presenting complaint before signing: " + complaintError);
+      return;
+    }
     if (clinicalMutationInFlightRef.current) return;
     cancelAutosaveTimer();
     resetRetryState();
@@ -1832,13 +2117,16 @@ function ConsultationsWorkspace() {
                   ) : (
                     <HistorySection
                       status={encounter.status}
-                      presentingComplaint={presentingComplaint}
+                      complaints={complaints}
+                      triageComplaint={triageComplaint}
+                      complaintConflict={complaintConflict}
                       hpi={hpi}
                       pastMedicalHistory={pastMedicalHistory}
                       pastSurgicalHistory={pastSurgicalHistory}
                       familyHistory={familyHistory}
                       socialHistory={socialHistory}
-                      onPresentingComplaintChange={(value) => updateClinicalField("presenting_complaint", value, setPresentingComplaint)}
+                      onComplaintsChange={updateComplaints}
+                      onCopyTriage={copyTriageComplaint}
                       onHpiChange={(value) => updateClinicalField("hpi", value, setHpi)}
                       onPastMedicalHistoryChange={(value) => updateClinicalField("past_medical_history", value, setPastMedicalHistory)}
                       onPastSurgicalHistoryChange={(value) => updateClinicalField("past_surgical_history", value, setPastSurgicalHistory)}
