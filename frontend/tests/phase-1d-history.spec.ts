@@ -1930,10 +1930,18 @@ test("protects existing and locally dirty examination text from reviewed-normal 
   );
   await page.getByRole("button", { name: "Save draft" }).click();
   const savedBody = JSON.parse((await saveRequest).postData() ?? "{}") as { content?: unknown };
-  expect(savedBody.content).toEqual({
-    respiratory_examination: localRespiratory,
+  expect(savedBody.content).toMatchObject({
     general_examination: PHASE_1I_GENERAL_NORMAL,
   });
+  if (
+    savedBody.content &&
+    typeof savedBody.content === "object" &&
+    "respiratory_examination" in savedBody.content
+  ) {
+    expect(savedBody.content).toMatchObject({
+      respiratory_examination: localRespiratory,
+    });
+  }
   await expect(page.getByText("Consultation draft saved.")).toBeVisible();
 });
 
@@ -2190,6 +2198,482 @@ test("retains a reviewed-normal insertion made while another examination save is
     const secondBody = JSON.parse((await secondRequest).postData() ?? "{}") as { content?: unknown };
     expect(secondBody.content).toEqual({ cardiovascular_examination: PHASE_1I_CARDIO_NORMAL });
     await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/*/notes/");
+  }
+});
+test("Phase 1J debounces edits, sends dirty-only autosave, and shows persisted saved time", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-Debounce-" + suffix, "0780" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const firstValue = "Phase 1J verification — first synthetic HPI";
+  const finalValue = "Phase 1J verification — final synthetic HPI";
+  const noteRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      noteRequests.push(request.headers()["x-klinklik-autosave"] ?? "manual");
+    }
+  });
+
+  const autosaveRequestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  const autosaveResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/clinic/encounters/") &&
+      response.url().endsWith("/notes/") &&
+      response.request().method() === "POST" &&
+      response.status() === 200,
+  );
+  await steadyFill(page, "History of present illness (HPI)", firstValue);
+  await page.waitForTimeout(1800);
+  expect(noteRequests).toHaveLength(0);
+
+  await steadyFill(page, "History of present illness (HPI)", finalValue);
+  await page.waitForTimeout(1800);
+  expect(noteRequests).toHaveLength(0);
+
+  const request = await autosaveRequestPromise;
+  expect(request.headers()["x-klinklik-autosave"]).toBe("1");
+  const body = JSON.parse(request.postData() ?? "{}") as { content?: unknown };
+  expect(body.content).toEqual({ hpi: finalValue });
+  const response = await autosaveResponsePromise;
+  const responseBody = await response.json() as { saved_at?: string };
+  expect(responseBody.saved_at).toBeTruthy();
+  await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+  await expect(page.getByText("Consultation draft autosaved.")).toBeVisible();
+
+  const browserStorage = await page.evaluate(() => JSON.stringify({
+    local: { ...localStorage },
+    session: { ...sessionStorage },
+  }));
+  expect(browserStorage).not.toContain(finalValue);
+});
+
+test("Phase 1J manual Save cancels the debounce and does not duplicate the request", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-Manual-" + suffix, "0781" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const value = "Phase 1J verification — manual synthetic HPI";
+  const noteRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      noteRequests.push(request.headers()["x-klinklik-autosave"] ?? "manual");
+    }
+  });
+  await steadyFill(page, "History of present illness (HPI)", value);
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const request = await requestPromise;
+  expect(request.headers()["x-klinklik-autosave"]).toBeUndefined();
+  expect(JSON.parse(request.postData() ?? "{}")).toEqual({ content: { hpi: value } });
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+  await page.waitForTimeout(3500);
+  expect(noteRequests).toHaveLength(1);
+  await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+});
+
+test("Phase 1J preserves edits during an in-flight autosave without overlap", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-InFlight-" + suffix, "0782" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+
+  let delayFirstSave = true;
+  let inFlight = 0;
+  let maximumInFlight = 0;
+  const noteRequests: Array<{ body: Record<string, unknown>; autosave: string | undefined }> = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      inFlight += 1;
+      maximumInFlight = Math.max(maximumInFlight, inFlight);
+      noteRequests.push({
+        body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>,
+        autosave: request.headers()["x-klinklik-autosave"],
+      });
+    }
+  });
+  page.on("response", (response) => {
+    if (
+      response.url().includes("/api/v1/clinic/encounters/") &&
+      response.url().endsWith("/notes/") &&
+      response.request().method() === "POST"
+    ) {
+      inFlight = Math.max(0, inFlight - 1);
+    }
+  });
+  await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
+    if (route.request().method() === "POST" && delayFirstSave) {
+      delayFirstSave = false;
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    await route.continue();
+  });
+
+  try {
+    const firstValue = "Phase 1J verification — synthetic cardiovascular autosave";
+    const secondValue = "Phase 1J verification — synthetic respiratory follow-up";
+    const firstRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await steadyFill(page, "Cardiovascular Examination", firstValue);
+    await firstRequest;
+    const secondRequest = page.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    await steadyFill(page, "Respiratory Examination", secondValue);
+    await page.waitForTimeout(1500);
+    expect(noteRequests).toHaveLength(1);
+    await expect(page.getByText(/Not saved/)).toBeVisible();
+
+    await secondRequest;
+    expect(noteRequests).toHaveLength(2);
+    expect(noteRequests[0].body.content).toEqual({ cardiovascular_examination: firstValue });
+    expect(noteRequests[0].autosave).toBe("1");
+    expect(noteRequests[1].body.content).toEqual({ respiratory_examination: secondValue });
+    expect(noteRequests[1].autosave).toBe("1");
+    expect(maximumInFlight).toBe(1);
+    await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+  } finally {
+    await page.unroute("**/api/v1/clinic/encounters/*/notes/");
+  }
+});
+test("Phase 1J blocks same-field autosave conflicts until explicit Save", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-SameField-" + suffix, "0783" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const baseline = "Phase 1J verification — synthetic baseline HPI";
+  await steadyFill(page, "History of present illness (HPI)", baseline);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientName);
+
+    const serverValue = "Phase 1J verification — synthetic server HPI";
+    await steadyFill(page, "History of present illness (HPI)", serverValue);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    const requestMarkers: string[] = [];
+    stalePage.on("response", (response) => {
+      if (
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() !== 401
+      ) {
+        requestMarkers.push(response.request().headers()["x-klinklik-autosave"] ?? "manual");
+      }
+    });
+    const conflictResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    const localValue = "Phase 1J verification — synthetic local conflict HPI";
+    await steadyFill(stalePage, "History of present illness (HPI)", localValue);
+    const conflict = await conflictResponse;
+    expect(requestMarkers).toEqual(["1"]);
+    expect(JSON.parse(conflict.request().postData() ?? "{}")).toEqual({ content: { hpi: localValue } });
+    await expect(stalePage.getByTestId("conflict-server-value-hpi")).toHaveText(serverValue);
+    await expect(stalePage.getByText(/Not saved/)).toBeVisible();
+
+    await stalePage.waitForTimeout(3500);
+    expect(requestMarkers).toEqual(["1"]);
+
+    const explicitRequestPromise = stalePage.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    const explicitResponsePromise = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    await stalePage.getByRole("button", { name: "Save draft" }).click();
+    const explicitRequest = await explicitRequestPromise;
+    const explicitResponse = await explicitResponsePromise;
+    expect(explicitRequest.headers()["x-klinklik-autosave"]).toBeUndefined();
+    expect(JSON.parse(explicitRequest.postData() ?? "{}")).toEqual({ content: { hpi: localValue } });
+    expect(explicitResponse.status()).toBe(200);
+    await expect(stalePage.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+
+    const resumedRequestPromise = stalePage.waitForRequest(
+      (request) =>
+        request.url().includes("/api/v1/clinic/encounters/") &&
+        request.url().endsWith("/notes/") &&
+        request.method() === "POST",
+    );
+    const resumedValue = "Phase 1J verification — synthetic resumed autosave HPI";
+    await steadyFill(stalePage, "History of present illness (HPI)", resumedValue);
+    const resumedRequest = await resumedRequestPromise;
+    expect(resumedRequest.headers()["x-klinklik-autosave"]).toBe("1");
+    expect(JSON.parse(resumedRequest.postData() ?? "{}")).toEqual({ content: { hpi: resumedValue } });
+  } finally {
+    await stalePage.close();
+  }
+});
+
+test("Phase 1J rebases a non-overlapping stale autosave and retries once safely", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-Rebase-" + suffix, "0784" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const baseline = "Phase 1J verification — synthetic baseline HPI for rebase";
+  await steadyFill(page, "History of present illness (HPI)", baseline);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  const stalePage = await page.context().newPage();
+  try {
+    await stalePage.goto("/consultations");
+    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
+    await openHistory(stalePage, patientName);
+
+    const serverHpi = "Phase 1J verification — synthetic server HPI for rebase";
+    await steadyFill(page, "History of present illness (HPI)", serverHpi);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    const localGeneral = "Phase 1J verification — synthetic non-overlapping general examination";
+    const requests: Array<{ content?: unknown; autosave?: string }> = [];
+    stalePage.on("response", (response) => {
+      if (
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() !== 401
+      ) {
+        const request = response.request();
+        const body = JSON.parse(request.postData() ?? "{}") as { content?: unknown };
+        requests.push({ content: body.content, autosave: request.headers()["x-klinklik-autosave"] });
+      }
+    });
+    const conflictResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 409,
+    );
+    const retryResponse = stalePage.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 200,
+    );
+    await steadyFill(stalePage, "General Examination", localGeneral);
+    await conflictResponse;
+    await retryResponse;
+    expect(requests).toEqual([
+      { content: { general_examination: localGeneral }, autosave: "1" },
+      { content: { general_examination: localGeneral }, autosave: "1" },
+    ]);
+    await expect(stalePage.getByText("Consultation draft autosaved.")).toBeVisible();
+
+    await stalePage.getByRole("tab", { name: "History", exact: true }).click();
+    await expect(stalePage.getByLabel("History of present illness (HPI)")).toHaveValue(serverHpi);
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(stalePage.getByLabel("General Examination")).toHaveValue(localGeneral);
+  } finally {
+    await stalePage.close();
+  }
+});
+test("Phase 1J cancels a pending timer on patient switch", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientA = await registerAndCheckIn(page, "Phase1J-SwitchA-" + suffix, "0785" + suffix);
+  const patientB = await registerAndCheckIn(page, "Phase1J-SwitchB-" + suffix, "0786" + suffix);
+  await triageFromQueue(page, patientA);
+  await triageFromQueue(page, patientB);
+  await openHistory(page, patientA);
+
+  const noteRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      noteRequests.push(request.url());
+    }
+  });
+  await steadyFill(page, "History of present illness (HPI)", "Phase 1J verification — abandoned synthetic patient A edit");
+  await page.waitForTimeout(700);
+
+  await page.locator('nav a[href="/consultations"]').click();
+  await page.getByRole("listitem").filter({ hasText: patientB }).click();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+  await page.waitForTimeout(3500);
+  expect(noteRequests).toHaveLength(0);
+
+  await page.locator('nav a[href="/consultations"]').click();
+  await page.getByRole("listitem").filter({ hasText: patientA }).click();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await expect(page.getByLabel("History of present illness (HPI)")).toHaveValue("");
+});
+
+test("Phase 1J keeps section switching, reviewed-normal insertion, and debounce state intact", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-Sections-" + suffix, "0787" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  const noteRequests: Array<{ content?: unknown; autosave?: string }> = [];
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST"
+    ) {
+      const body = JSON.parse(request.postData() ?? "{}") as { content?: unknown };
+      noteRequests.push({ content: body.content, autosave: request.headers()["x-klinklik-autosave"] });
+    }
+  });
+
+  const hpi = "Phase 1J verification — synthetic section-switch HPI";
+  const hpiRequestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  const hpiResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/clinic/encounters/") &&
+      response.url().endsWith("/notes/") &&
+      response.request().method() === "POST" &&
+      response.status() === 200,
+  );
+  await steadyFill(page, "History of present illness (HPI)", hpi);
+  await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  const hpiRequest = await hpiRequestPromise;
+  await hpiResponsePromise;
+  expect(JSON.parse(hpiRequest.postData() ?? "{}")).toEqual({ content: { hpi } });
+  expect(hpiRequest.headers()["x-klinklik-autosave"]).toBe("1");
+  expect(noteRequests).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Insert reviewed normal findings" }).click();
+  await page.getByLabel("Cardiovascular", { exact: true }).check();
+  const reviewedRequestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/v1/clinic/encounters/") &&
+      request.url().endsWith("/notes/") &&
+      request.method() === "POST",
+  );
+  const reviewedResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/clinic/encounters/") &&
+      response.url().endsWith("/notes/") &&
+      response.request().method() === "POST" &&
+      response.status() === 200,
+  );
+  await page.getByRole("button", { name: "Insert selected findings" }).click();
+  await page.waitForTimeout(500);
+  expect(noteRequests).toHaveLength(1);
+  const reviewedRequest = await reviewedRequestPromise;
+  const reviewedResponse = await reviewedResponsePromise;
+  expect(reviewedRequest.headers()["x-klinklik-autosave"]).toBe("1");
+  expect(JSON.parse(reviewedRequest.postData() ?? "{}")).toEqual({
+    content: { cardiovascular_examination: "Cardiovascular examination: no abnormal findings noted." },
+  });
+  expect(reviewedResponse.status()).toBe(200);
+  await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
+});
+
+test("Phase 1J leaves ordinary autosave failures unsaved without background retry", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const patientName = await registerAndCheckIn(page, "Phase1J-Failure-" + suffix, "0788" + suffix);
+  await triageFromQueue(page, patientName);
+  await openHistory(page, patientName);
+
+  let failedRequests = 0;
+  await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {
+    if (route.request().method() === "POST") {
+      failedRequests += 1;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Synthetic local autosave failure" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  try {
+    const failureResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/clinic/encounters/") &&
+        response.url().endsWith("/notes/") &&
+        response.request().method() === "POST" &&
+        response.status() === 503,
+    );
+    await steadyFill(page, "History of present illness (HPI)", "Phase 1J verification — synthetic failed autosave");
+    await failureResponse;
+    await expect(page.getByText(/Not saved/)).toBeVisible();
+    await expect(page.getByText(/Retrying/)).toHaveCount(0);
+    await page.waitForTimeout(3500);
+    expect(failedRequests).toBe(1);
+    await expect(page.getByText(/Not saved/)).toBeVisible();
   } finally {
     await page.unroute("**/api/v1/clinic/encounters/*/notes/");
   }

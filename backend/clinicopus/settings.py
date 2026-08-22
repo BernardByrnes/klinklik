@@ -126,6 +126,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-request-id",
     "if-match",
     "idempotency-key",
+    "x-klinklik-autosave",
 ]
 
 ACCESS_TOKEN_MINUTES = int(os.getenv("ACCESS_TOKEN_MINUTES", "15"))

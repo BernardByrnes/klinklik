@@ -1,9 +1,12 @@
+from datetime import timedelta
+
 import secrets
 import string
 
 from django.db import transaction
 from django.utils import timezone
 
+from audit.models import AuditEvent
 from audit.services import record_event
 from clinical.concurrency import require_current_consultation_etag
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
@@ -101,6 +104,49 @@ def record_triage(*, organisation, facility, actor, queue_entry_id, data, reques
     return assessment
 
 
+_AUTOSAVE_HEADER = "X-KlinKlik-Autosave"
+_AUTOSAVE_MARKER = "1"
+_AUTOSAVE_REASON = "ENCOUNTER_DRAFT_UPDATED"
+
+
+def _is_autosave_request(request):
+    return request is not None and request.headers.get(_AUTOSAVE_HEADER) == _AUTOSAVE_MARKER
+
+
+def _record_autosave_summary(*, organisation, facility, actor, encounter, request=None):
+    now = timezone.now()
+    minute_start = now.replace(second=0, microsecond=0)
+    minute_end = minute_start + timedelta(minutes=1)
+    existing = AuditEvent.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        action="UPDATE",
+        entity_type="Encounter",
+        entity_id=str(encounter.id),
+        occurred_at__gte=minute_start,
+        occurred_at__lt=minute_end,
+    )
+    if any(
+        (event.after or {}).get("reason") == _AUTOSAVE_REASON
+        and (event.after or {}).get("note_type") == "CONSULTATION"
+        for event in existing
+    ):
+        return
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="UPDATE",
+        entity_type="Encounter",
+        entity_id=encounter.id,
+        after={
+            "reason": _AUTOSAVE_REASON,
+            "note_type": "CONSULTATION",
+            "minute": minute_start.isoformat(),
+        },
+    )
 def _note_audit_metadata(content):
     return {
         "note_type": "CONSULTATION",
@@ -167,17 +213,26 @@ def save_note(*, organisation, facility, actor, encounter, content, expected_eta
     else:
         note.content = {**(note.content or {}), **content}
         note.save(update_fields=["content", "updated_at"])
-    record_event(
-        request=request,
-        organisation=organisation,
-        actor=actor,
-        facility=facility,
-        action="CREATE" if previous_status is None else "UPDATE",
-        entity_type="ClinicalNote",
-        entity_id=note.id,
-        before={"status": previous_status} if previous_status is not None else None,
-        after={**_note_audit_metadata(content), "status": note.status},
-    )
+    if _is_autosave_request(request):
+        _record_autosave_summary(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            encounter=encounter,
+            request=request,
+        )
+    else:
+        record_event(
+            request=request,
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            action="CREATE" if previous_status is None else "UPDATE",
+            entity_type="ClinicalNote",
+            entity_id=note.id,
+            before={"status": previous_status} if previous_status is not None else None,
+            after={**_note_audit_metadata(content), "status": note.status},
+        )
     return note
 
 

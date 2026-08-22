@@ -46,6 +46,7 @@ const WORKSPACE_PANEL_ID = "consultation-workspace-panel";
 type WorkspaceSectionId = (typeof WORKSPACE_SECTIONS)[number]["id"];
 type FoundationSectionId = Exclude<WorkspaceSectionId, "notes">;
 const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
+const AUTOSAVE_DELAY_MS = 3000;
 
 type ConsultationDraft = {
   content: ClinicalNoteContent;
@@ -125,6 +126,7 @@ type DraftMutationVariables = {
   session: number;
   etag: string;
   rebaseAttempt: number;
+  origin: "manual" | "autosave";
 };
 
 type NoteSaveResponse = {
@@ -132,6 +134,7 @@ type NoteSaveResponse = {
   status: string;
   content: ClinicalNoteContent;
   etag: string;
+  saved_at: string;
 };
 
 type NoteSignResponse = NoteSaveResponse & {
@@ -308,6 +311,18 @@ function conflictMessage(remoteFields: ClinicalNoteField[], overlappingFields: C
     ". Review the latest record before " + actionLabel + " again.";
 }
 
+function savedTimeLabel(savedAt: string | null) {
+  if (!savedAt) return "Saved";
+  const parsed = new Date(savedAt);
+  if (Number.isNaN(parsed.getTime())) return "Saved";
+  return "Saved " + parsed.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
 function ConflictComparisonPanel({ values }: { values: ConflictComparisonValues }) {
   const fields = CLINICAL_NOTE_FIELDS.filter((field) => values[field]);
   if (fields.length === 0) return null;
@@ -444,6 +459,7 @@ type ExaminationSectionProps = {
   onSave: () => void;
   savePending: boolean;
   saveState: "idle" | "unsaved" | "saved";
+  savedAt: string | null;
   reviewedNormalActionOpen: boolean;
   reviewedNormalSelection: ExaminationField[];
   isExaminationFieldUnavailable: (field: ExaminationField) => boolean;
@@ -473,6 +489,7 @@ function ExaminationSection({
   onSave,
   savePending,
   saveState,
+  savedAt,
   reviewedNormalActionOpen,
   reviewedNormalSelection,
   isExaminationFieldUnavailable,
@@ -752,7 +769,7 @@ function ExaminationSection({
           {savePending ? "Saving..." : "Save draft"}
         </Button>
         {saveState === "saved" ? (
-          <span role="status" className="text-[12px] font-medium text-accent-teal">Draft saved.</span>
+          <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>
         ) : saveState === "unsaved" ? (
           <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved - use Save draft.</span>
         ) : null}
@@ -778,6 +795,7 @@ type HistorySectionProps = {
   onSave: () => void;
   savePending: boolean;
   saveState: "idle" | "unsaved" | "saved";
+  savedAt: string | null;
 };
 
 function HistorySection({
@@ -797,6 +815,7 @@ function HistorySection({
   onSave,
   savePending,
   saveState,
+  savedAt,
 }: HistorySectionProps) {
   if (status === "SIGNED") {
     return (
@@ -932,7 +951,7 @@ function HistorySection({
           {savePending ? "Saving…" : "Save draft"}
         </Button>
         {saveState === "saved" ? (
-          <span role="status" className="text-[12px] font-medium text-accent-teal">Draft saved.</span>
+          <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>
         ) : saveState === "unsaved" ? (
           <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>
         ) : null}
@@ -972,9 +991,21 @@ function ConsultationsWorkspace() {
   const [conflictComparison, setConflictComparison] = useState<ConflictComparisonValues>({});
   const [reviewedNormalActionOpen, setReviewedNormalActionOpen] = useState(false);
   const [reviewedNormalSelection, setReviewedNormalSelection] = useState<ExaminationField[]>([]);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autosaveBlockedRef = useRef(false);
+  const autosaveDeferredRef = useRef(false);
+  const clinicalMutationInFlightRef = useRef(false);
   const dirtyFieldsRef = useRef<Set<ClinicalNoteField>>(new Set());
   const draftValuesRef = useRef<EditableDraftValues>(emptyDraftValues());
   const draftSessionRef = useRef(0);
+
+  useEffect(() => () => {
+    if (autosaveTimerRef.current !== null) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+  }, []);
 
   const queue = useQuery({
     queryKey: ["queue", "TRIAGED,IN_CONSULTATION"],
@@ -991,7 +1022,51 @@ function ConsultationsWorkspace() {
     setReviewedNormalSelection([]);
   }
 
+  function cancelAutosaveTimer() {
+    if (autosaveTimerRef.current !== null) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+  }
+
+  function scheduleAutosave() {
+    cancelAutosaveTimer();
+    if (
+      !encounter?.id ||
+      dirtyFieldsRef.current.size === 0 ||
+      autosaveBlockedRef.current ||
+      ["SIGNED", "CLOSED", "CANCELLED"].includes(encounter.status)
+    ) {
+      return;
+    }
+    const session = draftSessionRef.current;
+    const encounterId = encounter.id;
+    autosaveTimerRef.current = setTimeout(() => {
+      autosaveTimerRef.current = null;
+      if (
+        session !== draftSessionRef.current ||
+        encounter?.id !== encounterId ||
+        dirtyFieldsRef.current.size === 0 ||
+        autosaveBlockedRef.current ||
+        ["SIGNED", "CLOSED", "CANCELLED"].includes(encounter.status)
+      ) {
+        return;
+      }
+      if (clinicalMutationInFlightRef.current) {
+        autosaveDeferredRef.current = true;
+        return;
+      }
+      autosaveDeferredRef.current = false;
+      const mutation = currentDraftMutation(0, "autosave");
+      if (mutation) saveDraft.mutate(mutation);
+    }, AUTOSAVE_DELAY_MS);
+  }
   function hydrateNote(created: Encounter) {
+    cancelAutosaveTimer();
+    autosaveBlockedRef.current = false;
+    autosaveDeferredRef.current = false;
+    clinicalMutationInFlightRef.current = false;
+    setSavedAt(null);
     closeReviewedNormalAction();
     const draft = consultationDraftFromEncounter(created);
     const values = editableDraftValuesFromContent(draft.content);
@@ -1055,7 +1130,10 @@ function ConsultationsWorkspace() {
     setConflictComparison(comparison);
   }
 
-  function currentDraftMutation(rebaseAttempt = 0): DraftMutationVariables | null {
+  function currentDraftMutation(
+    rebaseAttempt = 0,
+    origin: "manual" | "autosave" = "manual",
+  ): DraftMutationVariables | null {
     const etag = encounterEtagRef.current;
     if (!encounter?.id || !etag) {
       setError("The current consultation revision is unavailable. Reload before saving.");
@@ -1063,6 +1141,7 @@ function ConsultationsWorkspace() {
     }
     const values = { ...draftValuesRef.current };
     const fields = Array.from(dirtyFieldsRef.current);
+    if (fields.length === 0 && origin === "autosave") return null;
     return {
       content: noteContentForFields(values, fields),
       fields,
@@ -1071,10 +1150,16 @@ function ConsultationsWorkspace() {
       session: draftSessionRef.current,
       etag,
       rebaseAttempt,
+      origin,
     };
   }
 
   function selectEntry(entry: QueueEntry) {
+    cancelAutosaveTimer();
+    autosaveBlockedRef.current = false;
+    autosaveDeferredRef.current = false;
+    clinicalMutationInFlightRef.current = false;
+    setSavedAt(null);
     closeReviewedNormalAction();
     draftSessionRef.current += 1;
     noteContentRef.current = {};
@@ -1122,19 +1207,31 @@ function ConsultationsWorkspace() {
   });
 
   const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
-    mutationFn: ({ content, encounterId, etag }) =>
+    mutationFn: ({ content, encounterId, etag, origin }) =>
       apiRequest<NoteSaveResponse>(
         "/api/v1/clinic/encounters/" + encounterId + "/notes/",
         {
           method: "POST",
-          headers: { "If-Match": etag },
+          headers: {
+            "If-Match": etag,
+            ...(origin === "autosave" ? { "X-KlinKlik-Autosave": "1" } : {}),
+          },
           body: JSON.stringify({ content }),
         },
       ),
+    onMutate: (variables) => {
+      if (variables.session === draftSessionRef.current) {
+        clinicalMutationInFlightRef.current = true;
+      }
+    },
     onSuccess: (saved, variables) => {
       if (variables.session !== draftSessionRef.current) return;
+      clinicalMutationInFlightRef.current = false;
+      autosaveDeferredRef.current = false;
+      if (variables.origin === "manual") autosaveBlockedRef.current = false;
       noteContentRef.current = saved.content;
       encounterEtagRef.current = saved.etag;
+      setSavedAt(saved.saved_at);
       setConflictComparison({});
       for (const field of variables.fields) {
         const draftKey = FIELD_TO_DRAFT_VALUE[field];
@@ -1143,15 +1240,20 @@ function ConsultationsWorkspace() {
         }
       }
       setDraftSaveState(dirtyFieldsRef.current.size > 0 ? "unsaved" : "saved");
-      setNotice("Consultation draft saved.");
+      setNotice(variables.origin === "autosave" ? "Consultation draft autosaved." : "Consultation draft saved.");
       setError("");
+      if (dirtyFieldsRef.current.size > 0) scheduleAutosave();
     },
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;
+      clinicalMutationInFlightRef.current = false;
       const conflict = clinicalNoteConflict(reason);
       if (!conflict) {
+        const followUpAutosave = autosaveDeferredRef.current;
+        autosaveDeferredRef.current = false;
         setDraftSaveState("unsaved");
         setError(errorMessage(reason));
+        if (followUpAutosave) scheduleAutosave();
         return;
       }
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
@@ -1160,8 +1262,15 @@ function ConsultationsWorkspace() {
       encounterEtagRef.current = conflict.etag;
       if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
+        cancelAutosaveTimer();
+        autosaveDeferredRef.current = false;
       }
       rebaseVisibleDraft(conflict.content, remoteFields);
+      if (variables.origin === "autosave" && overlappingFields.length > 0) {
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        autosaveDeferredRef.current = false;
+      }
       if (
         overlappingFields.length === 0 &&
         variables.rebaseAttempt < 1 &&
@@ -1188,11 +1297,18 @@ function ConsultationsWorkspace() {
         headers: { "If-Match": etag },
         body: JSON.stringify({ content }),
       }),
+    onMutate: (variables) => {
+      if (variables.session === draftSessionRef.current) {
+        clinicalMutationInFlightRef.current = true;
+      }
+    },
     onSuccess: (signed, variables) => {
       if (variables.session !== draftSessionRef.current) return;
+      clinicalMutationInFlightRef.current = false;
       const signedDraft = editableDraftValuesFromContent(signed.content);
       noteContentRef.current = signed.content;
       encounterEtagRef.current = signed.etag;
+      setSavedAt(signed.saved_at);
       draftValuesRef.current = signedDraft;
       dirtyFieldsRef.current = new Set();
       setPresentingComplaint(signedDraft.presentingComplaint);
@@ -1220,6 +1336,7 @@ function ConsultationsWorkspace() {
     },
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;
+      clinicalMutationInFlightRef.current = false;
       const conflict = clinicalNoteConflict(reason);
       setConfirmingSign(false);
       if (!conflict) {
@@ -1232,8 +1349,15 @@ function ConsultationsWorkspace() {
       encounterEtagRef.current = conflict.etag;
       if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
         setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
+        cancelAutosaveTimer();
+        autosaveDeferredRef.current = false;
       }
       rebaseVisibleDraft(conflict.content, remoteFields);
+      if (variables.origin === "autosave" && overlappingFields.length > 0) {
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        autosaveDeferredRef.current = false;
+      }
       setDraftSaveState("unsaved");
       setNotice("");
       setError(conflictMessage(remoteFields, overlappingFields, "sign"));
@@ -1254,6 +1378,7 @@ function ConsultationsWorkspace() {
     dirtyFieldsRef.current.add(field);
     setDraftSaveState("unsaved");
     setNotice("");
+    scheduleAutosave();
   }
 
   function isExaminationFieldUnavailable(field: ExaminationField) {
@@ -1298,12 +1423,20 @@ function ConsultationsWorkspace() {
   }
 
   function saveCurrentDraft() {
-    const mutation = currentDraftMutation();
+    cancelAutosaveTimer();
+    autosaveDeferredRef.current = false;
+    if (clinicalMutationInFlightRef.current) return;
+    autosaveBlockedRef.current = false;
+    const mutation = currentDraftMutation(0, "manual");
     if (mutation) saveDraft.mutate(mutation);
   }
 
   function signCurrentDraft() {
-    const mutation = currentDraftMutation();
+    cancelAutosaveTimer();
+    autosaveDeferredRef.current = false;
+    if (clinicalMutationInFlightRef.current) return;
+    autosaveBlockedRef.current = false;
+    const mutation = currentDraftMutation(0, "manual");
     if (mutation) signNote.mutate(mutation);
   }
 
@@ -1451,6 +1584,7 @@ function ConsultationsWorkspace() {
                       onSave={saveCurrentDraft}
                       savePending={saveDraft.isPending || signNote.isPending}
                       saveState={draftSaveState}
+                      savedAt={savedAt}
                     />
                   )
                 ) : activeSection === "examination" ? (
@@ -1483,6 +1617,7 @@ function ConsultationsWorkspace() {
                       onSave={saveCurrentDraft}
                       savePending={saveDraft.isPending || signNote.isPending}
                       saveState={draftSaveState}
+                      savedAt={savedAt}
                       reviewedNormalActionOpen={reviewedNormalActionOpen}
                       reviewedNormalSelection={reviewedNormalSelection}
                       isExaminationFieldUnavailable={isExaminationFieldUnavailable}
@@ -1553,7 +1688,7 @@ function ConsultationsWorkspace() {
                         {saveDraft.isPending ? "Saving…" : "Save draft"}
                       </Button>
                       {draftSaveState === "saved" ? (
-                        <span role="status" className="text-[12px] font-medium text-accent-teal">Draft saved.</span>
+                        <span role="status" className="text-[12px] font-medium text-accent-teal">{savedTimeLabel(savedAt)}</span>
                       ) : draftSaveState === "unsaved" ? (
                         <span role="status" className="text-[12px] font-medium text-accent-orange">Not saved — use Save draft.</span>
                       ) : null}

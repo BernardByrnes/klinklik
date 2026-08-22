@@ -504,3 +504,33 @@ Validation: full backend pytest passed 115 tests with 7 documented PostgreSQL-on
 Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the documented PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. No new blueprint decision was made. Phase 1J and all later work remain outside scope.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1J — Debounced Autosave Core
+
+Status: IMPLEMENTED / VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Baseline: e5c30bacdac90fe86608e92a9a7d37efc34e2f84 on main, with the local public remote unchanged.
+
+Objective: add the approved Phase 1J debounced autosave core for the existing consultation draft workflow. All editable ClinicalNote fields use one three-second debounce, including history, the seven examination fields, and consultation Assessment/Plan content. Explicit Save remains available and cancels the timer; manual saves use the existing dirty-field-only payload and do not receive the autosave marker.
+
+Persistence and timestamp: the existing Encounter/ClinicalNote workflow, ETag, If-Match, 428 precondition, 409 conflict comparison, safe non-overlap rebase, and signed-note immutability were reused. Successful note responses now expose saved_at from the persisted ClinicalNote.updated_at; the UI renders Saved HH:MM:SS. Unsaved and failed states remain truthful as Not saved or Not saved - use Save draft. No browser storage, persistent query cache, or local PHI persistence was added.
+
+In-flight and session safety: same-tab saves do not overlap. Edits made during an in-flight save remain dirty and receive a follow-up debounce after the response; late responses from a switched patient/session cannot update the active draft. Section switching preserves the session and timer. Patient switching cancels the timer and resets autosave session state. Signed, closed, and cancelled encounters do not autosave.
+
+Conflict and retry scope: a same-field autosave 409 retains the local draft, exposes the server comparison, blocks further autosave, and requires explicit Save. Non-overlapping autosave conflicts reuse the existing one-time safe rebase/retry. Ordinary autosave failures remain unsaved without a Retry loop. No automatic retry/backoff policy was added.
+
+Reviewed-normal insertion: insertion continues through the ordinary dirty-field update path. It makes the selected field dirty, schedules the normal debounce, and does not issue an immediate request. Existing-content, local-dirty, conflict, signed, and patient-isolation protections remain in force.
+
+Audit: autosave requests are identified only by the safe X-KlinKlik-Autosave: 1 header, which is not an authorization boundary. They do not create an ordinary ClinicalNote audit event for every save. The existing AuditEvent model records at most one safe ENCOUNTER_DRAFT_UPDATED summary marker per clinician, Encounter, and minute, containing only note type and minute metadata; no clinical text is recorded. Manual save and sign audit behaviour remains unchanged. The header was added to the existing CORS allow-list for the local frontend request path.
+
+Architecture and migration status: NONE. The canonical Django/DRF monolith, service-layer workflow, server-side authorization, tenant/facility boundaries, Encounter/ClinicalNote persistence, ETag contract, and Next.js consultation architecture were reused. No model, endpoint, database column, generated client type, or migration changed. The canonical blueprint and canonical backlog were not modified.
+
+Validation: python -m pytest -q passed 121 tests with 7 documented PostgreSQL-only skips: five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests. Focused Phase 1J backend coverage passed 6 tests. Django check reported no issues; makemigrations --check --dry-run reported No changes detected; migrate --plan reported no planned migration operations. Frontend typecheck, lint, and production build passed. Focused Phase 1J Playwright coverage passed 8 tests. The corrected reviewed-normal regression passed in isolation, and the final full authenticated local consultation Playwright file passed 36/36 tests.
+
+Security and verification: verification used synthetic local SQLite development data only. No credentials, seed passwords, secrets, real patient data, PHI, email, SMS, payment, webhook, or other external side effect was used or exposed. No unsafe tracked artifact, local database, browser session state, or runtime artifact was added. No Phase 1K reference was found in the checked frontend/backend source and test scope.
+
+Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the existing PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. Autosave remains intentionally limited to the approved core and does not include the deferred full ENC-015 workflow or automatic retry/backoff.
+
+Files changed for Phase 1J: backend/clinical/services.py, backend/clinical/views.py, backend/clinicopus/settings.py, backend/tests/test_phase_1j.py, frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Next approved phase: NOT YET AUTHORISED

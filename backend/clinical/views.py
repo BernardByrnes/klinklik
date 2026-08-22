@@ -72,11 +72,13 @@ def _revision_conflict_response(exc):
 
 
 def _note_response(*, encounter, note, include_version=False):
+    note.refresh_from_db(fields=["updated_at"])
     data = {
         "note": note.id,
         "status": note.status,
         "content": note.content,
         "etag": consultation_note_etag(encounter=encounter, note=note),
+        "saved_at": note.updated_at.isoformat(),
     }
     if include_version:
         data["current_version"] = note.current_version
