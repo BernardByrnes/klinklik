@@ -10,6 +10,7 @@ from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter
 from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility, Organisation
+from tests.clinical_test_helpers import note_headers
 
 
 pytestmark = pytest.mark.django_db
@@ -71,6 +72,7 @@ def test_phase_1c_history_merge_reload_association_audit_and_signed_immutability
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": initial},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert saved.status_code == 200
     note_id = saved.data["note"]
@@ -81,6 +83,7 @@ def test_phase_1c_history_merge_reload_association_audit_and_signed_immutability
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"past_medical_history": updated_pmh}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert pmh_update.status_code == 200
 
@@ -90,6 +93,7 @@ def test_phase_1c_history_merge_reload_association_audit_and_signed_immutability
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"hpi": updated_hpi, "assessment": updated_assessment}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert second_update.status_code == 200
 
@@ -121,6 +125,7 @@ def test_phase_1c_history_merge_reload_association_audit_and_signed_immutability
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"past_surgical_history": signed_surgical_history}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert signed.status_code == 200
     assert Encounter.objects.get(id=encounter_id).status == "SIGNED"
@@ -133,6 +138,7 @@ def test_phase_1c_history_merge_reload_association_audit_and_signed_immutability
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"past_medical_history": "Phase 1C verification — rejected overwrite"}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert rejected.status_code == 400
     unchanged = authed_client.get(f"/api/v1/clinic/encounters/{encounter_id}/")

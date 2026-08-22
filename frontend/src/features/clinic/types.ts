@@ -61,6 +61,7 @@ export type Encounter = {
   patient_name: string;
   queue_entry: string;
   status: string;
+  consultation_etag?: string;
   notes?: ClinicalNote[];
 };
 

@@ -3,6 +3,7 @@ from clinical.models import ClinicalNoteVersion, Encounter
 from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility, Organisation
+from tests.clinical_test_helpers import note_headers
 
 import pytest
 
@@ -47,6 +48,7 @@ def test_full_patient_to_receipt_slice(tenant, authed_client):
     sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"assessment": "Stable", "plan": "Hydration"}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert sign.status_code == 200
@@ -146,11 +148,13 @@ def test_signed_note_is_immutable(tenant, authed_client):
     assert authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"assessment": "First"}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     ).status_code == 200
     rejected = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"assessment": "Overwrite"}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert rejected.status_code == 400

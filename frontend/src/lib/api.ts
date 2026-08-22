@@ -34,6 +34,24 @@ export type Facility = {
 };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly data: unknown;
+  readonly headers: Headers;
+
+  constructor(status: number, data: unknown, headers: Headers) {
+    const detail =
+      data && typeof data === "object" && "detail" in data && typeof data.detail === "string"
+        ? data.detail
+        : "The request could not be completed.";
+    super(detail);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.data = data;
+    this.headers = new Headers(headers);
+  }
+}
+
 let accessToken: string | null = null;
 let facilityId: string | null = null;
 
@@ -129,7 +147,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retry 
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(data?.detail || "The request could not be completed.");
+    throw new ApiRequestError(response.status, data, response.headers);
   }
   return data as T;
 }

@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from audit.services import record_event
+from clinical.concurrency import require_current_consultation_etag
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
 from patients.models import Patient
 from scheduling.models import QueueEntry
@@ -135,20 +136,21 @@ def _lock_consultation_note(*, organisation, facility, encounter):
 
 
 @transaction.atomic
-def save_note(*, organisation, facility, actor, encounter, content, request=None):
+def save_note(*, organisation, facility, actor, encounter, content, expected_etag=None, request=None):
     encounter = _lock_encounter_for_note(
         organisation=organisation,
         facility=facility,
         encounter=encounter,
     )
-    if encounter.status in {"CLOSED", "CANCELLED"}:
-        raise ValueError("This encounter is closed.")
     note = _lock_consultation_note(
         organisation=organisation,
         facility=facility,
         encounter=encounter,
     )
+    require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
     previous_status = note.status if note is not None else None
+    if encounter.status in {"CLOSED", "CANCELLED"}:
+        raise ValueError("This encounter is closed.")
     if note is None:
         note = ClinicalNote.objects.create(
             organisation=organisation,
@@ -178,7 +180,7 @@ def save_note(*, organisation, facility, actor, encounter, content, request=None
 
 
 @transaction.atomic
-def sign_note(*, organisation, facility, actor, encounter, content=None, request=None):
+def sign_note(*, organisation, facility, actor, encounter, content=None, expected_etag=None, request=None):
     encounter = _lock_encounter_for_note(
         organisation=organisation,
         facility=facility,
@@ -189,10 +191,11 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, request
         facility=facility,
         encounter=encounter,
     )
+    require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
     if note is None:
         note = save_note(
             organisation=organisation, facility=facility, actor=actor, encounter=encounter,
-            content=content or {}, request=request
+            content=content or {}, expected_etag=expected_etag, request=request
         )
     if note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("This note is already signed.")
@@ -229,7 +232,7 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, request
 
 
 @transaction.atomic
-def amend_note(*, organisation, facility, actor, encounter, content, reason, request=None):
+def amend_note(*, organisation, facility, actor, encounter, content, reason, expected_etag=None, request=None):
     encounter = _lock_encounter_for_note(
         organisation=organisation,
         facility=facility,
@@ -240,6 +243,7 @@ def amend_note(*, organisation, facility, actor, encounter, content, reason, req
         facility=facility,
         encounter=encounter,
     )
+    require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
     if note is None or note.status not in {"SIGNED", "AMENDED"}:
         raise ValueError("Only a signed clinical note can be amended.")
     version = ClinicalNoteVersion.objects.create(

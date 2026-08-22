@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from clinical.concurrency import consultation_note_etag, consultation_note_for_encounter
 from clinical.models import ClinicalNote, Encounter, TriageAssessment
 
 
@@ -53,10 +54,14 @@ class NoteAmendSerializer(serializers.Serializer):
 class EncounterSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     notes = ClinicalNoteSerializer(many=True, read_only=True)
+    consultation_etag = serializers.SerializerMethodField()
+
+    def get_consultation_etag(self, obj):
+        return consultation_note_etag(encounter=obj, note=consultation_note_for_encounter(obj))
 
     class Meta:
         model = Encounter
         fields = [
             "id", "encounter_no", "patient", "patient_name", "queue_entry", "facility",
-            "clinician", "status", "started_at", "signed_at", "closed_at", "notes",
+            "clinician", "status", "started_at", "signed_at", "closed_at", "notes", "consultation_etag",
         ]

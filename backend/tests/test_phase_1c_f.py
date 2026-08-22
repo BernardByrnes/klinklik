@@ -6,6 +6,7 @@ from django.db import close_old_connections, connection, IntegrityError, transac
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter
 from clinical.services import save_note, sign_note
 from core.services import tenant_atomic
+from tests.clinical_test_helpers import note_headers
 
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -63,6 +64,7 @@ def test_database_uniqueness_rejects_duplicate_consultation_note(tenant, authed_
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"presenting_complaint": "Phase 1C-F synthetic note"}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert saved.status_code == 200
 
@@ -88,6 +90,7 @@ def test_amendment_and_post_sign_normal_save_regression(tenant, authed_client):
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"hpi": "Phase 1C-F signed synthetic note"}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert signed.status_code == 200
 
@@ -99,6 +102,7 @@ def test_amendment_and_post_sign_normal_save_regression(tenant, authed_client):
         f"/api/v1/clinic/encounters/{encounter_id}/amend/",
         {"content": amended_content, "reason": "Phase 1C-F correction verification"},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert amended.status_code == 200
 
@@ -112,6 +116,7 @@ def test_amendment_and_post_sign_normal_save_regression(tenant, authed_client):
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"hpi": "Phase 1C-F rejected normal save"}},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert rejected.status_code == 400
 
@@ -131,6 +136,7 @@ def test_postgres_save_vs_sign_serializes_signed_note_content(tenant, authed_cli
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": initial_content},
         format="json",
+        **note_headers(authed_client, encounter_id),
     )
     assert saved.status_code == 200
     note_id = saved.data["note"]

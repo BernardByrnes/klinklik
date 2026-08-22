@@ -3,6 +3,7 @@ import pytest
 from audit.models import AuditEvent
 from clinical.models import ClinicalNote, ClinicalNoteVersion
 
+from tests.clinical_test_helpers import note_headers
 
 pytestmark = pytest.mark.django_db
 
@@ -82,6 +83,7 @@ def test_phase_1d_f_stale_clients_preserve_untouched_fields_and_audit_only_submi
     initial = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": INITIAL_CONTENT},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert initial.status_code == 200
@@ -89,6 +91,7 @@ def test_phase_1d_f_stale_clients_preserve_untouched_fields_and_audit_only_submi
     first_update = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {first_field: first_value}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert first_update.status_code == 200
@@ -96,6 +99,7 @@ def test_phase_1d_f_stale_clients_preserve_untouched_fields_and_audit_only_submi
     second_update = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {second_field: second_value}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert second_update.status_code == 200
@@ -123,6 +127,7 @@ def test_phase_1d_f_stale_partial_sign_preserves_newer_server_content(tenant, au
     saved = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": INITIAL_CONTENT},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert saved.status_code == 200
@@ -130,6 +135,7 @@ def test_phase_1d_f_stale_partial_sign_preserves_newer_server_content(tenant, au
     family_update = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"family_history": "Phase 1D-F synthetic newer family"}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert family_update.status_code == 200
@@ -137,6 +143,7 @@ def test_phase_1d_f_stale_partial_sign_preserves_newer_server_content(tenant, au
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"social_history": "Phase 1D-F synthetic signed social"}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert signed.status_code == 200

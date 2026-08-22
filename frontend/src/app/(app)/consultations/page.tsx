@@ -5,7 +5,7 @@ import { Suspense, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiRequest } from "../../../lib/api";
+import { ApiRequestError, apiRequest } from "../../../lib/api";
 import { useSession } from "../../../lib/session";
 import { ClinicalNoteContent, Encounter, QueueEntry } from "../../../features/clinic";
 import { IconAlertTriangle, IconCheckCircle, IconConsultation } from "../../../components/icons";
@@ -78,12 +78,15 @@ type DraftMutationVariables = {
   values: EditableDraftValues;
   encounterId: string;
   session: number;
+  etag: string;
+  rebaseAttempt: number;
 };
 
 type NoteSaveResponse = {
   note: string;
   status: string;
   content: ClinicalNoteContent;
+  etag: string;
 };
 
 type NoteSignResponse = NoteSaveResponse & {
@@ -99,6 +102,55 @@ const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues>
   social_history: "socialHistory",
   consultation: "consultation",
 };
+
+const CLINICAL_NOTE_FIELDS: ClinicalNoteField[] = [
+  "presenting_complaint",
+  "hpi",
+  "past_medical_history",
+  "past_surgical_history",
+  "family_history",
+  "social_history",
+  "consultation",
+];
+
+const CLINICAL_FIELD_LABELS: Record<ClinicalNoteField, string> = {
+  presenting_complaint: "Presenting complaint",
+  hpi: "History of present illness",
+  past_medical_history: "Past medical history",
+  past_surgical_history: "Past surgical history",
+  family_history: "Family history",
+  social_history: "Social history",
+  consultation: "Consultation note",
+};
+
+type ClinicalNoteConflictData = {
+  etag: string;
+  status: string;
+  encounter_status: string;
+  content: ClinicalNoteContent;
+};
+
+function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 409 || typeof error.data !== "object" || error.data === null) {
+    return null;
+  }
+  const data = error.data as Record<string, unknown>;
+  if (
+    typeof data.etag !== "string" ||
+    typeof data.status !== "string" ||
+    typeof data.encounter_status !== "string" ||
+    typeof data.content !== "object" ||
+    data.content === null
+  ) {
+    return null;
+  }
+  return {
+    etag: data.etag,
+    status: data.status,
+    encounter_status: data.encounter_status,
+    content: data.content as ClinicalNoteContent,
+  };
+}
 
 function emptyDraftValues(): EditableDraftValues {
   return {
@@ -147,6 +199,29 @@ function noteContentForFields(values: EditableDraftValues, fields: ClinicalNoteF
     content[field] = values[FIELD_TO_DRAFT_VALUE[field]];
     return content;
   }, {});
+}
+
+function changedClinicalFields(before: ClinicalNoteContent, after: ClinicalNoteContent): ClinicalNoteField[] {
+  const beforeValues = editableDraftValuesFromContent(before);
+  const afterValues = editableDraftValuesFromContent(after);
+  return CLINICAL_NOTE_FIELDS.filter(
+    (field) => beforeValues[FIELD_TO_DRAFT_VALUE[field]] !== afterValues[FIELD_TO_DRAFT_VALUE[field]],
+  );
+}
+
+function fieldNames(fields: ClinicalNoteField[]) {
+  return fields.map((field) => CLINICAL_FIELD_LABELS[field]).join(", ");
+}
+
+function conflictMessage(remoteFields: ClinicalNoteField[], overlappingFields: ClinicalNoteField[], action: "save" | "sign") {
+  const actionLabel = action === "sign" ? "signing" : "saving";
+  if (overlappingFields.length > 0) {
+    return "This consultation changed elsewhere. Your unsaved " + fieldNames(overlappingFields) +
+      " has been preserved. Review the latest record before " + actionLabel + " again.";
+  }
+  const remoteLabel = remoteFields.length > 0 ? fieldNames(remoteFields) : "the latest record";
+  return "This consultation changed elsewhere in " + remoteLabel +
+    ". Review the latest record before " + actionLabel + " again.";
 }
 
 const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
@@ -416,6 +491,7 @@ function ConsultationsWorkspace() {
   const [encounter, setEncounter] = useState<Encounter | null>(null);
   const [note, setNote] = useState(DEFAULT_CONSULTATION_NOTE);
   const noteContentRef = useRef<ClinicalNoteContent>({});
+  const encounterEtagRef = useRef<string | null>(null);
   const [presentingComplaint, setPresentingComplaint] = useState("");
   const [hpi, setHpi] = useState("");
   const [pastMedicalHistory, setPastMedicalHistory] = useState("");
@@ -444,6 +520,7 @@ function ConsultationsWorkspace() {
   function hydrateNote(created: Encounter) {
     const draft = consultationDraftFromEncounter(created);
     const values = editableDraftValuesFromContent(draft.content);
+    encounterEtagRef.current = created.consultation_etag ?? null;
     noteContentRef.current = draft.content;
     draftValuesRef.current = values;
     dirtyFieldsRef.current = new Set();
@@ -458,21 +535,29 @@ function ConsultationsWorkspace() {
     setDraftSaveState(Object.keys(draft.content).length > 0 ? "saved" : "idle");
   }
 
-  function currentDraftMutation(): DraftMutationVariables {
+  function currentDraftMutation(rebaseAttempt = 0): DraftMutationVariables | null {
+    const etag = encounterEtagRef.current;
+    if (!encounter?.id || !etag) {
+      setError("The current consultation revision is unavailable. Reload before saving.");
+      return null;
+    }
     const values = { ...draftValuesRef.current };
     const fields = Array.from(dirtyFieldsRef.current);
     return {
       content: noteContentForFields(values, fields),
       fields,
       values,
-      encounterId: encounter?.id ?? "",
+      encounterId: encounter.id,
       session: draftSessionRef.current,
+      etag,
+      rebaseAttempt,
     };
   }
 
   function selectEntry(entry: QueueEntry) {
     draftSessionRef.current += 1;
     noteContentRef.current = {};
+    encounterEtagRef.current = null;
     draftValuesRef.current = emptyDraftValues();
     dirtyFieldsRef.current = new Set();
     setSelectedId(entry.id);
@@ -508,17 +593,19 @@ function ConsultationsWorkspace() {
   });
 
   const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
-    mutationFn: ({ content, encounterId }) =>
+    mutationFn: ({ content, encounterId, etag }) =>
       apiRequest<NoteSaveResponse>(
         "/api/v1/clinic/encounters/" + encounterId + "/notes/",
         {
           method: "POST",
+          headers: { "If-Match": etag },
           body: JSON.stringify({ content }),
         },
       ),
     onSuccess: (saved, variables) => {
       if (variables.session !== draftSessionRef.current) return;
       noteContentRef.current = saved.content;
+      encounterEtagRef.current = saved.etag;
       for (const field of variables.fields) {
         const draftKey = FIELD_TO_DRAFT_VALUE[field];
         if (draftValuesRef.current[draftKey] === variables.values[draftKey]) {
@@ -530,22 +617,51 @@ function ConsultationsWorkspace() {
       setError("");
     },
     onError: (reason, variables) => {
-      if (variables.session !== draftSessionRef.current) return;
+      if (!variables || variables.session !== draftSessionRef.current) return;
+      const conflict = clinicalNoteConflict(reason);
+      if (!conflict) {
+        setDraftSaveState("unsaved");
+        setError(errorMessage(reason));
+        return;
+      }
+      const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
+      const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      noteContentRef.current = conflict.content;
+      encounterEtagRef.current = conflict.etag;
+      if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
+        setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
+      }
+      if (
+        overlappingFields.length === 0 &&
+        variables.rebaseAttempt < 1 &&
+        conflict.status === "DRAFT" &&
+        conflict.encounter_status === "OPEN"
+      ) {
+        setError("");
+        saveDraft.mutate({
+          ...variables,
+          etag: conflict.etag,
+          rebaseAttempt: variables.rebaseAttempt + 1,
+        });
+        return;
+      }
       setDraftSaveState("unsaved");
-      setError(errorMessage(reason));
+      setNotice("");
+      setError(conflictMessage(remoteFields, overlappingFields, "save"));
     },
   });
-
   const signNote = useMutation<NoteSignResponse, unknown, DraftMutationVariables>({
-    mutationFn: ({ content, encounterId }) =>
+    mutationFn: ({ content, encounterId, etag }) =>
       apiRequest<NoteSignResponse>("/api/v1/clinic/encounters/" + encounterId + "/sign/", {
         method: "POST",
+        headers: { "If-Match": etag },
         body: JSON.stringify({ content }),
       }),
     onSuccess: (signed, variables) => {
       if (variables.session !== draftSessionRef.current) return;
       const signedDraft = editableDraftValuesFromContent(signed.content);
       noteContentRef.current = signed.content;
+      encounterEtagRef.current = signed.etag;
       draftValuesRef.current = signedDraft;
       dirtyFieldsRef.current = new Set();
       setPresentingComplaint(signedDraft.presentingComplaint);
@@ -558,17 +674,30 @@ function ConsultationsWorkspace() {
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
       setDraftSaveState("saved");
       setConfirmingSign(false);
-      setNotice(`Consultation signed for ${selected?.patient_name ?? "the patient"}.`);
+      setNotice("Consultation signed for " + (selected?.patient_name ?? "the patient") + ".");
       setError("");
       queryClient.invalidateQueries({ queryKey: ["queue"] });
     },
     onError: (reason, variables) => {
-      if (variables.session !== draftSessionRef.current) return;
+      if (!variables || variables.session !== draftSessionRef.current) return;
+      const conflict = clinicalNoteConflict(reason);
       setConfirmingSign(false);
-      setError(errorMessage(reason));
+      if (!conflict) {
+        setError(errorMessage(reason));
+        return;
+      }
+      const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
+      const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      noteContentRef.current = conflict.content;
+      encounterEtagRef.current = conflict.etag;
+      if (["SIGNED", "CLOSED", "CANCELLED"].includes(conflict.encounter_status)) {
+        setEncounter((current) => (current ? { ...current, status: conflict.encounter_status } : current));
+      }
+      setDraftSaveState("unsaved");
+      setNotice("");
+      setError(conflictMessage(remoteFields, overlappingFields, "sign"));
     },
   });
-
   function updateClinicalField(field: ClinicalNoteField, value: string, setValue: (value: string) => void) {
     setValue(value);
     draftValuesRef.current = {
@@ -581,11 +710,13 @@ function ConsultationsWorkspace() {
   }
 
   function saveCurrentDraft() {
-    saveDraft.mutate(currentDraftMutation());
+    const mutation = currentDraftMutation();
+    if (mutation) saveDraft.mutate(mutation);
   }
 
   function signCurrentDraft() {
-    signNote.mutate(currentDraftMutation());
+    const mutation = currentDraftMutation();
+    if (mutation) signNote.mutate(mutation);
   }
 
   if (!can("clinical.note.create")) {

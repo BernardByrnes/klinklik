@@ -10,6 +10,7 @@ from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter
 from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility, Organisation
+from tests.clinical_test_helpers import note_headers
 
 
 pytestmark = pytest.mark.django_db
@@ -81,6 +82,7 @@ def test_phase_1d_family_social_round_trip_association_and_audit(tenant, authed_
     saved = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": content},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert saved.status_code == 200
@@ -113,6 +115,7 @@ def test_phase_1d_partial_family_and_social_updates_preserve_all_note_fields(ten
     saved = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": initial},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert saved.status_code == 200
@@ -120,6 +123,7 @@ def test_phase_1d_partial_family_and_social_updates_preserve_all_note_fields(ten
     family_update = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"family_history": UPDATED_FAMILY}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert family_update.status_code == 200
@@ -129,6 +133,7 @@ def test_phase_1d_partial_family_and_social_updates_preserve_all_note_fields(ten
     social_update = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"social_history": UPDATED_SOCIAL}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert social_update.status_code == 200
@@ -146,6 +151,7 @@ def test_phase_1d_sign_preserves_all_history_and_note_content_and_rejects_normal
     saved = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": initial},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert saved.status_code == 200
@@ -156,6 +162,7 @@ def test_phase_1d_sign_preserves_all_history_and_note_content_and_rejects_normal
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"family_history": signed_family, "social_history": signed_social}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert signed.status_code == 200
@@ -169,6 +176,7 @@ def test_phase_1d_sign_preserves_all_history_and_note_content_and_rejects_normal
     rejected = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"family_history": "Phase 1D verification - rejected overwrite"}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert rejected.status_code == 400
@@ -181,6 +189,7 @@ def test_phase_1d_history_fields_validate_type_and_length(tenant, authed_client,
     invalid_type = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {field_name: 42}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert invalid_type.status_code == 400
@@ -189,6 +198,7 @@ def test_phase_1d_history_fields_validate_type_and_length(tenant, authed_client,
     too_long = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {field_name: "x" * 4001}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert too_long.status_code == 400

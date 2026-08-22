@@ -286,3 +286,31 @@ Scope and architecture: no canonical blueprint or backlog changes, no Phase 1E w
 Known limitations: PostgreSQL verification is the existing Phase 1C-F owner-role integrity suite; pytest teardown under the intentionally restricted application role remains a test-fixture privilege limitation. Optimistic locking/ETag conflict detection remains outside this slice.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1D-F2 — Clinical Draft ETag Conflict Protection
+
+Status: VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Objective: protect clinical draft revision, signing, and amendment writes against stale clients while preserving the Phase 1D-F dirty-field merge contract and the Phase 1C-F lock order.
+
+Original integrity defect: two clients could edit the same clinical field from the same baseline; partial dirty-field merging preserved unrelated concurrent fields but did not reject a same-field stale write. That allowed the later stale writer to overwrite the earlier writer's value.
+
+Canonical concurrency contract: the implementation follows the ENC-002 concurrency requirement in the canonical backlog. Clinical note mutations require HTTP If-Match. A missing precondition fails closed with 428 PRECONDITION_REQUIRED. A stale token returns 409 CLINICAL_NOTE_REVISION_CONFLICT with the current opaque ETag, status, Encounter status, and authorized current content for review. The authoritative token is returned on Encounter load and on clinical mutation responses, including the no-note state.
+
+ETag design: the token is an opaque HMAC-SHA256 value keyed by Django SECRET_KEY over a versioned clinical-note scope, tenant/facility/Encounter/note identity, note status/version/timestamp, and content. It does not contain raw PHI. The no-note state has an authoritative absent-note token; the first successful save changes it. Mutable Encounter status is not included in the token so signing does not create an artificial post-mutation token mismatch.
+
+Backend protection: save, sign, and amend lock Encounter first and ClinicalNote second, then perform the decisive ETag comparison while both rows are locked. The conflict response includes the current ETag header and current state without creating a clinical UPDATE audit event. Amendment/version preservation and signed-note immutability remain enforced. No schema migration was required.
+
+Frontend protection: the consultation workspace keeps the authoritative baseline, draft values, dirty field IDs, ETag, and session token in React memory. Same-field conflicts preserve the local draft and require an explicit retry; the UI names the conflicting field. A stale request whose dirty fields do not overlap the remote changes may rebase and retry once only. Signing never auto-retries; a stale sign preserves the local draft, updates the authoritative baseline/ETag, closes confirmation, and requires explicit review and retry. In-flight request/session guards, section switching, patient switching, and no-PHI browser persistence remain intact.
+
+Migration status: NONE. Django check passed; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations.
+
+Files changed: backend/clinical/concurrency.py, backend/clinical/serializers.py, backend/clinical/services.py, backend/clinical/views.py, backend/tests/clinical_test_helpers.py, backend/tests/test_phase_1b.py, backend/tests/test_phase_1c.py, backend/tests/test_phase_1c_f.py, backend/tests/test_phase_1d.py, backend/tests/test_phase_1d_f.py, backend/tests/test_phase_1d_f2.py, backend/tests/test_vertical_slice.py, frontend/src/app/(app)/consultations/page.tsx, frontend/src/features/clinic/types.ts, frontend/src/lib/api.ts, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Tests: full backend suite 45 passed and 7 skipped; the skipped tests are the five PostgreSQL-only auth/RLS tests and two PostgreSQL-only Phase 1C-F row-lock tests in the current SQLite-only environment. The combined Phase 1B/1C/1C-F/1D/1D-F/1D-F2/vertical suite passed 31 with 2 PostgreSQL-only skips; focused Phase 1D-F2 passed 6. Frontend typecheck, lint, and production build passed. The full authenticated Phase 1D history Playwright file passed 5/5, including same-field stale-draft preservation, one-time non-overlapping rebase, stale-sign preservation, in-flight editing, and existing history coverage.
+
+PostgreSQL limitation: the current local verification run does not provision or use an external database and therefore skips the two PostgreSQL-only row-lock tests. The prior Phase 1C-F owner-role PostgreSQL integrity baseline recorded 4/4 passing; the documented restricted application-role pytest teardown limitation remains unchanged and no permissions were loosened.
+
+Security and scope: verification and browser data were synthetic local development data only. No credentials, seed passwords, secrets, PHI, local database, browser session state, or runtime artifacts were added or exposed. ETags contain no raw clinical values; conflict state is returned only through the authorized clinical API response, and audit/log assertions continue to exclude raw note content. No email, SMS, payment, webhook, or other external side effect occurred. The canonical blueprint and backlog were not modified. Phase 1E and later phases were not started.
+
+Next approved phase: NOT YET AUTHORISED

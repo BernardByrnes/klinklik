@@ -11,6 +11,8 @@ from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility, Organisation
 
+from tests.clinical_test_helpers import note_headers
+
 
 pytestmark = pytest.mark.django_db
 
@@ -64,6 +66,7 @@ def test_phase_1b_draft_round_trip_audit_and_signed_immutability(tenant, authed_
     saved = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": content},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert saved.status_code == 200
@@ -73,6 +76,7 @@ def test_phase_1b_draft_round_trip_audit_and_signed_immutability(tenant, authed_
     updated = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": updated_content},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert updated.status_code == 200
@@ -95,6 +99,7 @@ def test_phase_1b_draft_round_trip_audit_and_signed_immutability(tenant, authed_
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": updated_content},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert signed.status_code == 200
@@ -104,6 +109,7 @@ def test_phase_1b_draft_round_trip_audit_and_signed_immutability(tenant, authed_
     rejected = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": note_content("Phase 1B verification — rejected synthetic overwrite.")},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert rejected.status_code == 400
@@ -117,6 +123,7 @@ def test_phase_1b_content_limits_are_server_enforced(tenant, authed_client):
     response = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/notes/",
         {"content": {"presenting_complaint": "x" * 501, "hpi": ""}},
+        **note_headers(authed_client, encounter_id),
         format="json",
     )
     assert response.status_code == 400

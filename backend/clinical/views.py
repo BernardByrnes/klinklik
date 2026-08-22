@@ -2,6 +2,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 
+from clinical.concurrency import ClinicalNoteRevisionConflict, consultation_note_etag
 from clinical.models import Encounter
 from clinical.serializers import (
     EncounterSerializer,
@@ -41,6 +42,49 @@ class TriageView(TenantAPIView):
         }, status=status.HTTP_201_CREATED)
 
 
+def _required_if_match(request):
+    expected_etag = request.headers.get("If-Match")
+    if not expected_etag:
+        return None, Response(
+            {
+                "code": "PRECONDITION_REQUIRED",
+                "detail": "If-Match is required for clinical note mutations.",
+            },
+            status=status.HTTP_428_PRECONDITION_REQUIRED,
+        )
+    return expected_etag, None
+
+
+def _revision_conflict_response(exc):
+    response = Response(
+        {
+            "code": "CLINICAL_NOTE_REVISION_CONFLICT",
+            "detail": "This consultation changed elsewhere; review the current record before retrying.",
+            "etag": exc.current_etag,
+            "status": exc.current_status,
+            "encounter_status": exc.current_encounter_status,
+            "content": exc.current_content,
+        },
+        status=status.HTTP_409_CONFLICT,
+    )
+    response["ETag"] = exc.current_etag
+    return response
+
+
+def _note_response(*, encounter, note, include_version=False):
+    data = {
+        "note": note.id,
+        "status": note.status,
+        "content": note.content,
+        "etag": consultation_note_etag(encounter=encounter, note=note),
+    }
+    if include_version:
+        data["current_version"] = note.current_version
+    response = Response(data)
+    response["ETag"] = data["etag"]
+    return response
+
+
 class EncounterListCreateView(TenantAPIView):
     capability = "clinical.note.create"
 
@@ -58,7 +102,10 @@ class EncounterListCreateView(TenantAPIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(EncounterSerializer(encounter).data, status=status.HTTP_201_CREATED)
+        data = EncounterSerializer(encounter).data
+        response = Response(data, status=status.HTTP_201_CREATED)
+        response["ETag"] = data["consultation_etag"]
+        return response
 
 
 class EncounterDetailView(TenantAPIView):
@@ -73,7 +120,10 @@ class EncounterDetailView(TenantAPIView):
         )
 
     def get(self, request, pk):
-        return Response(EncounterSerializer(self.get_object(request, pk)).data)
+        data = EncounterSerializer(self.get_object(request, pk)).data
+        response = Response(data)
+        response["ETag"] = data["consultation_etag"]
+        return response
 
 
 class EncounterNoteView(TenantAPIView):
@@ -83,6 +133,9 @@ class EncounterNoteView(TenantAPIView):
         encounter = get_object_or_404(
             Encounter, id=pk, organisation=request.organisation, facility=request.facility
         )
+        expected_etag, error_response = _required_if_match(request)
+        if error_response is not None:
+            return error_response
         serializer = NoteWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -92,11 +145,14 @@ class EncounterNoteView(TenantAPIView):
                 actor=request.user,
                 encounter=encounter,
                 content=serializer.validated_data["content"],
+                expected_etag=expected_etag,
                 request=request,
             )
+        except ClinicalNoteRevisionConflict as exc:
+            return _revision_conflict_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"note": note.id, "status": note.status, "content": note.content})
+        return _note_response(encounter=encounter, note=note)
 
 
 class EncounterSignView(TenantAPIView):
@@ -106,6 +162,9 @@ class EncounterSignView(TenantAPIView):
         encounter = get_object_or_404(
             Encounter, id=pk, organisation=request.organisation, facility=request.facility
         )
+        expected_etag, error_response = _required_if_match(request)
+        if error_response is not None:
+            return error_response
         serializer = NoteWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -115,11 +174,14 @@ class EncounterSignView(TenantAPIView):
                 actor=request.user,
                 encounter=encounter,
                 content=serializer.validated_data["content"],
+                expected_etag=expected_etag,
                 request=request,
             )
+        except ClinicalNoteRevisionConflict as exc:
+            return _revision_conflict_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"note": note.id, "status": note.status, "current_version": note.current_version, "content": note.content})
+        return _note_response(encounter=encounter, note=note, include_version=True)
 
 
 class EncounterAmendView(TenantAPIView):
@@ -129,6 +191,9 @@ class EncounterAmendView(TenantAPIView):
         encounter = get_object_or_404(
             Encounter, id=pk, organisation=request.organisation, facility=request.facility
         )
+        expected_etag, error_response = _required_if_match(request)
+        if error_response is not None:
+            return error_response
         serializer = NoteAmendSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -139,8 +204,11 @@ class EncounterAmendView(TenantAPIView):
                 encounter=encounter,
                 content=serializer.validated_data["content"],
                 reason=serializer.validated_data["reason"],
+                expected_etag=expected_etag,
                 request=request,
             )
+        except ClinicalNoteRevisionConflict as exc:
+            return _revision_conflict_response(exc)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"note": note.id, "status": note.status, "current_version": note.current_version})
+        return _note_response(encounter=encounter, note=note, include_version=True)
