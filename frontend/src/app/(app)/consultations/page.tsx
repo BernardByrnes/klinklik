@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -80,6 +80,37 @@ type ClinicalNoteField =
   | "genitourinary_examination"
   | "musculoskeletal_examination"
   | "consultation";
+
+type ExaminationField = Extract<
+  ClinicalNoteField,
+  | "general_examination"
+  | "cardiovascular_examination"
+  | "respiratory_examination"
+  | "abdominal_examination"
+  | "neurological_examination"
+  | "genitourinary_examination"
+  | "musculoskeletal_examination"
+>;
+
+const REVIEWED_NORMAL_SYSTEMS: Array<{ field: ExaminationField; label: string }> = [
+  { field: "general_examination", label: "General" },
+  { field: "cardiovascular_examination", label: "Cardiovascular" },
+  { field: "respiratory_examination", label: "Respiratory" },
+  { field: "abdominal_examination", label: "Abdominal / Gastrointestinal" },
+  { field: "neurological_examination", label: "Neurological / CNS" },
+  { field: "genitourinary_examination", label: "Genitourinary" },
+  { field: "musculoskeletal_examination", label: "Musculoskeletal" },
+];
+
+const REVIEWED_NORMAL_TEMPLATES: Record<ExaminationField, string> = {
+  general_examination: "Patient appears clinically well. No abnormal general findings noted.",
+  cardiovascular_examination: "Cardiovascular examination: no abnormal findings noted.",
+  respiratory_examination: "Respiratory examination: no abnormal findings noted.",
+  abdominal_examination: "Abdominal examination: no abnormal findings noted.",
+  neurological_examination: "Neurological examination: no abnormal findings noted.",
+  genitourinary_examination: "Genitourinary examination: no abnormal findings noted.",
+  musculoskeletal_examination: "Musculoskeletal examination: no abnormal findings noted.",
+};
 
 type EditableDraftValues = Pick<
   ConsultationDraft,
@@ -413,6 +444,14 @@ type ExaminationSectionProps = {
   onSave: () => void;
   savePending: boolean;
   saveState: "idle" | "unsaved" | "saved";
+  reviewedNormalActionOpen: boolean;
+  reviewedNormalSelection: ExaminationField[];
+  isExaminationFieldUnavailable: (field: ExaminationField) => boolean;
+  hasExaminationFieldValue: (field: ExaminationField) => boolean;
+  onOpenReviewedNormalAction: () => void;
+  onToggleReviewedNormalField: (field: ExaminationField) => void;
+  onCancelReviewedNormalAction: () => void;
+  onInsertReviewedNormalFindings: () => void;
 };
 
 function ExaminationSection({
@@ -434,7 +473,27 @@ function ExaminationSection({
   onSave,
   savePending,
   saveState,
+  reviewedNormalActionOpen,
+  reviewedNormalSelection,
+  isExaminationFieldUnavailable,
+  hasExaminationFieldValue,
+  onOpenReviewedNormalAction,
+  onToggleReviewedNormalField,
+  onCancelReviewedNormalAction,
+  onInsertReviewedNormalFindings,
 }: ExaminationSectionProps) {
+  const reviewedNormalHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    if (!reviewedNormalActionOpen) return;
+    reviewedNormalHeadingRef.current?.focus();
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onCancelReviewedNormalAction();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [reviewedNormalActionOpen, onCancelReviewedNormalAction]);
+
   if (status === "SIGNED") {
     return (
       <div className="space-y-4">
@@ -514,6 +573,89 @@ function ExaminationSection({
       <p className="text-[12.5px] font-medium text-secondary">
         Record clinician-authored examination findings only. No automated interpretation, suggestions, or normal-exam template is applied.
       </p>
+      <div className="rounded-[14px] border border-line-soft bg-surface-muted p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[13px] font-semibold text-ink">Reviewed normal findings</p>
+            <p className="mt-1 max-w-2xl text-[11.5px] font-medium leading-relaxed text-secondary">
+              Select only systems you examined and reviewed as having no abnormal findings. Existing documentation will not be replaced.
+            </p>
+          </div>
+          <Button variant="secondary" onClick={onOpenReviewedNormalAction}>
+            Insert reviewed normal findings
+          </Button>
+        </div>
+        {reviewedNormalActionOpen ? (
+          <div
+            data-testid="reviewed-normal-panel"
+            role="dialog"
+            aria-labelledby="reviewed-normal-heading"
+            className="mt-4 rounded-[12px] border border-line bg-white p-4 shadow-card"
+          >
+            <h3
+              ref={reviewedNormalHeadingRef}
+              id="reviewed-normal-heading"
+              tabIndex={-1}
+              className="text-[13px] font-bold text-ink focus-visible:outline-none"
+            >
+              Reviewed normal examination
+            </h3>
+            <p className="mt-1 text-[11.5px] font-medium leading-relaxed text-secondary">
+              Select only systems you examined and reviewed as having no abnormal findings. Existing documentation will not be replaced.
+            </p>
+            <div
+              role="group"
+              aria-label="Examination systems reviewed as normal"
+              className="mt-4 grid gap-2 sm:grid-cols-2"
+            >
+              {REVIEWED_NORMAL_SYSTEMS.map((system) => {
+                const unavailable = isExaminationFieldUnavailable(system.field);
+                const checked = reviewedNormalSelection.includes(system.field);
+                const statusId = `reviewed-normal-${system.field}-status`;
+                return (
+                  <div
+                    key={system.field}
+                    className="flex items-start gap-3 rounded-[10px] border border-line-soft bg-surface-muted px-3 py-2.5"
+                  >
+                    <input
+                      id={`reviewed-normal-${system.field}`}
+                      type="checkbox"
+                      checked={checked}
+                      disabled={unavailable}
+                      onChange={() => onToggleReviewedNormalField(system.field)}
+                      aria-describedby={statusId}
+                      className="mt-0.5 h-4 w-4 rounded border-line text-primary focus:ring-primary"
+                    />
+                    <div className="min-w-0">
+                      <label
+                        htmlFor={`reviewed-normal-${system.field}`}
+                        className={`block text-[12px] font-semibold ${unavailable ? "text-muted" : "text-ink"}`}
+                      >
+                        {system.label}
+                      </label>
+                      <span id={statusId} className="mt-0.5 block text-[10.5px] font-medium text-muted">
+                        {unavailable
+                          ? hasExaminationFieldValue(system.field)
+                            ? "Already documented — not replaced."
+                            : "Unsaved local documentation — not replaced."
+                          : "Select to insert a concise reviewed-normal template."}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-4 flex flex-wrap justify-end gap-3">
+              <Button variant="secondary" onClick={onCancelReviewedNormalAction}>
+                Cancel
+              </Button>
+              <Button disabled={reviewedNormalSelection.length === 0} onClick={onInsertReviewedNormalFindings}>
+                Insert selected findings
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
       <Field
         label="General Examination"
         htmlFor="general-examination"
@@ -828,6 +970,8 @@ function ConsultationsWorkspace() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [conflictComparison, setConflictComparison] = useState<ConflictComparisonValues>({});
+  const [reviewedNormalActionOpen, setReviewedNormalActionOpen] = useState(false);
+  const [reviewedNormalSelection, setReviewedNormalSelection] = useState<ExaminationField[]>([]);
   const dirtyFieldsRef = useRef<Set<ClinicalNoteField>>(new Set());
   const draftValuesRef = useRef<EditableDraftValues>(emptyDraftValues());
   const draftSessionRef = useRef(0);
@@ -842,7 +986,13 @@ function ConsultationsWorkspace() {
     () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
     [queue.data, selectedId],
   );
+  function closeReviewedNormalAction() {
+    setReviewedNormalActionOpen(false);
+    setReviewedNormalSelection([]);
+  }
+
   function hydrateNote(created: Encounter) {
+    closeReviewedNormalAction();
     const draft = consultationDraftFromEncounter(created);
     const values = editableDraftValuesFromContent(draft.content);
     encounterEtagRef.current = created.consultation_etag ?? null;
@@ -925,6 +1075,7 @@ function ConsultationsWorkspace() {
   }
 
   function selectEntry(entry: QueueEntry) {
+    closeReviewedNormalAction();
     draftSessionRef.current += 1;
     noteContentRef.current = {};
     encounterEtagRef.current = null;
@@ -1061,6 +1212,7 @@ function ConsultationsWorkspace() {
       setConflictComparison({});
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
       setDraftSaveState("saved");
+      closeReviewedNormalAction();
       setConfirmingSign(false);
       setNotice("Consultation signed for " + (selected?.patient_name ?? "the patient") + ".");
       setError("");
@@ -1102,6 +1254,47 @@ function ConsultationsWorkspace() {
     dirtyFieldsRef.current.add(field);
     setDraftSaveState("unsaved");
     setNotice("");
+  }
+
+  function isExaminationFieldUnavailable(field: ExaminationField) {
+    const draftValue = draftValuesRef.current[FIELD_TO_DRAFT_VALUE[field]];
+    return draftValue.length > 0 || dirtyFieldsRef.current.has(field) || Boolean(conflictComparison[field]?.localDirty);
+  }
+
+  function hasExaminationFieldValue(field: ExaminationField) {
+    return draftValuesRef.current[FIELD_TO_DRAFT_VALUE[field]].length > 0;
+  }
+
+  function openReviewedNormalAction() {
+    setReviewedNormalSelection([]);
+    setReviewedNormalActionOpen(true);
+  }
+
+  function toggleReviewedNormalField(field: ExaminationField) {
+    if (isExaminationFieldUnavailable(field)) return;
+    setReviewedNormalSelection((current) =>
+      current.includes(field) ? current.filter((selectedField) => selectedField !== field) : [...current, field],
+    );
+  }
+
+  function insertReviewedNormalFindings() {
+    for (const field of reviewedNormalSelection) {
+      if (isExaminationFieldUnavailable(field)) continue;
+      const template = REVIEWED_NORMAL_TEMPLATES[field];
+      if (field === "general_examination") updateClinicalField(field, template, setGeneralExamination);
+      if (field === "cardiovascular_examination") updateClinicalField(field, template, setCardiovascularExamination);
+      if (field === "respiratory_examination") updateClinicalField(field, template, setRespiratoryExamination);
+      if (field === "abdominal_examination") updateClinicalField(field, template, setAbdominalExamination);
+      if (field === "neurological_examination") updateClinicalField(field, template, setNeurologicalExamination);
+      if (field === "genitourinary_examination") updateClinicalField(field, template, setGenitourinaryExamination);
+      if (field === "musculoskeletal_examination") updateClinicalField(field, template, setMusculoskeletalExamination);
+    }
+    closeReviewedNormalAction();
+  }
+
+  function handleWorkspaceSectionChange(section: WorkspaceSectionId) {
+    if (section !== "examination") closeReviewedNormalAction();
+    setActiveSection(section);
   }
 
   function saveCurrentDraft() {
@@ -1220,7 +1413,7 @@ function ConsultationsWorkspace() {
                 ) : null}
               </div>
 
-              <WorkspaceSectionTabs activeSection={activeSection} onChange={setActiveSection} />
+              <WorkspaceSectionTabs activeSection={activeSection} onChange={handleWorkspaceSectionChange} />
 
               <ConflictComparisonPanel values={conflictComparison} />
 
@@ -1290,6 +1483,14 @@ function ConsultationsWorkspace() {
                       onSave={saveCurrentDraft}
                       savePending={saveDraft.isPending || signNote.isPending}
                       saveState={draftSaveState}
+                      reviewedNormalActionOpen={reviewedNormalActionOpen}
+                      reviewedNormalSelection={reviewedNormalSelection}
+                      isExaminationFieldUnavailable={isExaminationFieldUnavailable}
+                      hasExaminationFieldValue={hasExaminationFieldValue}
+                      onOpenReviewedNormalAction={openReviewedNormalAction}
+                      onToggleReviewedNormalField={toggleReviewedNormalField}
+                      onCancelReviewedNormalAction={closeReviewedNormalAction}
+                      onInsertReviewedNormalFindings={insertReviewedNormalFindings}
                     />
                   )
                 ) : activeSection !== "notes" ? (

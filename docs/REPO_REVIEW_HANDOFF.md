@@ -475,3 +475,32 @@ Architecture and scope: the existing canonical Django/DRF monolith, Encounter/Cl
 Known limitations: this remains the explicitly authorized narrative-only genitourinary and musculoskeletal slice; structured examination findings, normal-exam quick action, clinical interpretation, body diagrams, and later phases remain outside scope.
 
 Next approved phase: NOT YET AUTHORISED
+
+
+### Phase 1I — Reviewed Normal Examination Quick Action
+
+Status: VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Objective: implement only a frontend drafting convenience for the reviewed normal examination quick action across the seven existing narrative examination systems. No backend workflow, model, endpoint, migration, clinical interpretation, structured findings, or Phase 1J work was introduced.
+
+Clinical safety: the action is available only in an unsigned mutable Examination section. All seven systems are shown with explicit clinician selection required; none is preselected and no Select all or Mark all control exists. The static templates are concise and editable: General — “Patient appears clinically well. No abnormal general findings noted.”; Cardiovascular — “Cardiovascular examination: no abnormal findings noted.”; Respiratory — “Respiratory examination: no abnormal findings noted.”; Abdominal — “Abdominal examination: no abnormal findings noted.”; Neurological — “Neurological examination: no abnormal findings noted.”; Genitourinary — “Genitourinary examination: no abnormal findings noted.”; Musculoskeletal — “Musculoskeletal examination: no abnormal findings noted.” The feature does not infer that a system was examined or reviewed.
+
+Existing-content protection: fields with saved content, local dirty content, or an active conflict comparison are disabled and are never replaced. Selection is rechecked at insertion time so a field becoming unavailable during the interaction is skipped. Unselected systems remain unchanged. Cancel and Escape close the panel without mutation. The heading receives focus when the panel opens, system labels are associated with keyboard-operable checkboxes, and the insertion panel exposes a clear accessible heading and group label.
+
+Draft and persistence behaviour: insertion calls the existing clinical-field draft update helper, so the visible value, draft ref, dirty-field tracking, unsaved state, and notice handling remain on the established path. The note-content ref is not mutated by the quick action. No request is made until the clinician explicitly chooses Save draft or Sign consultation; inserted text remains editable. Save requests contain only dirty fields, and the existing ETag, If-Match, 428, 409, comparison, retry, rebase, and in-flight-save logic remains authoritative.
+
+Concurrency: focused browser coverage verified a same-field stale conflict for a template-inserted field, preservation of the local template and server comparison, explicit retry with the conflict ETag, and non-overlapping rebase with both examination values retained. An insertion made while another examination save was in flight remained unsaved and was sent only on the later explicit save.
+
+Signed and isolation behaviour: after signing, the quick action and editable controls are unavailable and the existing immutable read-only Examination rendering is unchanged. Opening/closing the panel and switching sections clears transient panel selections while preserving inserted draft values; switching patients clears the transient state and does not leak draft values. No browser persistent storage is used. No automatic save or sign was added.
+
+Security and audit: no new audit event was introduced for local insertion; existing save/sign audit behaviour remains unchanged and records field keys rather than raw examination text. Templates are static source text and contain no patient data. Verification used synthetic local SQLite development data only, with no credentials, secrets, PHI, email, SMS, payment, webhook, or other external side effect.
+
+Backend and migration status: NONE. No backend file, API contract, model, database column, migration, or generated client type changed. The existing Django/DRF service and authorization boundaries, tenant isolation, signed-note immutability, and Next.js consultation architecture were reused. The canonical blueprint and canonical backlog were not modified.
+
+Files changed: frontend/src/app/(app)/consultations/page.tsx, frontend/tests/phase-1d-history.spec.ts, and this handoff document.
+
+Validation: full backend pytest passed 115 tests with 7 documented PostgreSQL-only skips in 63.06 seconds. The focused clinical regression group passed 101 tests with 2 PostgreSQL-only row-lock skips in 56.31 seconds. The focused Phase 1I Playwright run passed 7 tests in 4.2 minutes. The full authenticated consultation Playwright file passed 28 tests in 16.1 minutes. Frontend typecheck, lint, and production build passed. Django check reported no issues; makemigrations --check --dry-run reported No changes detected; migrate --plan reported No planned migration operations. The repository Playwright harness was used because the in-app browser bridge was unavailable.
+
+Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the documented PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. No new blueprint decision was made. Phase 1J and all later work remain outside scope.
+
+Next approved phase: NOT YET AUTHORISED
