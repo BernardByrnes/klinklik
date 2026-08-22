@@ -81,6 +81,15 @@ async function openHistory(page: Page, patientName: string) {
   await expect(page.getByRole("tab", { name: "History", exact: true })).toHaveAttribute("aria-selected", "true");
 }
 
+async function ensureSyntheticComplaint(page: Page) {
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  const complaint = page.getByLabel("Presenting complaint", { exact: true });
+  if ((await complaint.inputValue()) === SYNTHETIC_COMPLAINT) return;
+  await steadyFill(page, "Presenting complaint", SYNTHETIC_COMPLAINT);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+}
+
 async function expectHistory(page: Page, values: {
   complaint: string;
   hpi: string;
@@ -417,6 +426,7 @@ test("preserves a draft and requires explicit retry after a stale sign", async (
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
 
+  await ensureSyntheticComplaint(page);
   const baselineFamily = "Phase 1D-F2 synthetic sign baseline family";
   await steadyFill(page, "Relevant Family History", baselineFamily);
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -567,6 +577,7 @@ test("persists, isolates, reloads, signs, and locks general examination", async 
 
   const examination = "Phase 1A verification - synthetic development record: general examination.";
   await openHistory(page, patientA);
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
   await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
 
@@ -698,6 +709,7 @@ test("persists, isolates, reloads, signs, and locks cardiovascular and respirato
   const respiratory = "Phase 1F verification - synthetic respiratory examination.";
 
   await openHistory(page, patientA);
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
   await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue("");
@@ -754,6 +766,7 @@ test("persists, isolates, reloads, signs, and locks cardiovascular and respirato
   await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Respiratory Examination", { exact: true })).toHaveValue("");
 
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByRole("button", { name: "Sign consultation" }).click();
   await page.getByRole("button", { name: "Confirm signature" }).click();
@@ -1018,6 +1031,7 @@ test("persists, isolates, reloads, signs, and locks abdominal and neurological e
   const neurological = "Phase 1G verification - synthetic neurological CNS examination.";
 
   await openHistory(page, patientA);
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
   await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue("");
@@ -1091,6 +1105,7 @@ test("persists, isolates, reloads, signs, and locks abdominal and neurological e
     await expect(page.getByLabel(label, { exact: true })).toHaveValue("");
   }
 
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByRole("button", { name: "Sign consultation" }).click();
   await page.getByRole("button", { name: "Confirm signature" }).click();
@@ -1371,6 +1386,7 @@ test("persists, isolates, reloads, signs, and locks genitourinary and musculoske
   const musculoskeletal = "Phase 1H verification - synthetic musculoskeletal CNS examination.";
 
   await openHistory(page, patientA);
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
   await expect(page.getByLabel("General Examination", { exact: true })).toHaveValue("");
   await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue("");
@@ -1444,6 +1460,7 @@ test("persists, isolates, reloads, signs, and locks genitourinary and musculoske
     await expect(page.getByLabel(label, { exact: true })).toHaveValue("");
   }
 
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByRole("button", { name: "Sign consultation" }).click();
   await page.getByRole("button", { name: "Confirm signature" }).click();
@@ -1715,6 +1732,7 @@ test("preserves genitourinary and musculoskeletal drafts and requires explicit r
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
 
+  await ensureSyntheticComplaint(page);
   const baselineFamily = "Phase 1H synthetic sign baseline family";
   await steadyFill(page, "Relevant Family History", baselineFamily);
   await page.getByRole("button", { name: "Save draft" }).click();
@@ -2137,6 +2155,7 @@ test("reviewed-normal quick action is unavailable after signing", async ({ page 
   const patientName = await registerAndCheckIn(page, "Phase1I-Signed-" + suffix, "0786" + suffix);
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
+  await ensureSyntheticComplaint(page);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByRole("button", { name: "Sign consultation" }).click();

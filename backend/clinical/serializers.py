@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from clinical.complaints import ComplaintValidationError, normalize_complaints
 from clinical.concurrency import consultation_note_etag, consultation_note_for_encounter
 from clinical.models import ClinicalNote, Encounter, TriageAssessment
 
@@ -45,9 +46,16 @@ def validate_note_content(value):
 
 class NoteWriteSerializer(serializers.Serializer):
     content = serializers.DictField()
+    complaints = serializers.JSONField(required=False)
 
     def validate_content(self, value):
         return validate_note_content(value)
+
+    def validate_complaints(self, value):
+        try:
+            return normalize_complaints(value)
+        except ComplaintValidationError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
 
 class NoteAmendSerializer(serializers.Serializer):
@@ -61,7 +69,18 @@ class NoteAmendSerializer(serializers.Serializer):
 class EncounterSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     notes = ClinicalNoteSerializer(many=True, read_only=True)
+    complaints = serializers.JSONField(read_only=True)
+    triage_complaint = serializers.SerializerMethodField()
     consultation_etag = serializers.SerializerMethodField()
+
+    def get_triage_complaint(self, obj):
+        if obj.queue_entry_id is None:
+            return None
+        return TriageAssessment.objects.filter(
+            organisation=obj.organisation_id,
+            facility=obj.facility_id,
+            queue_entry_id=obj.queue_entry_id,
+        ).values_list("chief_complaint", flat=True).first()
 
     def get_consultation_etag(self, obj):
         return consultation_note_etag(encounter=obj, note=consultation_note_for_encounter(obj))
@@ -69,6 +88,6 @@ class EncounterSerializer(serializers.ModelSerializer):
     class Meta:
         model = Encounter
         fields = [
-            "id", "encounter_no", "patient", "patient_name", "queue_entry", "facility",
+            "id", "encounter_no", "patient", "patient_name", "queue_entry", "complaints", "triage_complaint", "facility",
             "clinician", "status", "started_at", "signed_at", "closed_at", "notes", "consultation_etag",
         ]

@@ -183,7 +183,7 @@ def test_stale_sign_does_not_mutate_and_fresh_retry_signs(tenant, authed_client)
 
     fresh_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
-        {"content": {"social_history": "Phase 1D-F2 synthetic explicit sign retry"}},
+        {"content": {"social_history": "Phase 1D-F2 synthetic explicit sign retry"}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         format="json",
         **match(stale_sign.data["etag"]),
     )
@@ -216,7 +216,7 @@ def test_amendment_is_etag_protected_and_preserves_versions(tenant, authed_clien
     )
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
-        {"content": {"plan": "Phase 1D-F2 synthetic signed plan"}},
+        {"content": {"plan": "Phase 1D-F2 synthetic signed plan"}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         format="json",
         **match(saved.data["etag"]),
     )

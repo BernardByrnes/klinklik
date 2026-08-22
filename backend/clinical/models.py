@@ -16,6 +16,7 @@ class Encounter(FacilityScopedModel):
     queue_entry = models.OneToOneField(
         "scheduling.QueueEntry", on_delete=models.PROTECT, null=True, blank=True, related_name="encounter"
     )
+    complaints = models.JSONField(default=list)
     encounter_no = models.CharField(max_length=50)
     clinician = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="clinical_encounters"

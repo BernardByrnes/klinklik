@@ -104,6 +104,9 @@ test("role handoffs across independent sessions: reception → nurse → doctor 
   await consultRow.click();
   await doctorPage.getByRole("button", { name: "Start encounter" }).click();
   await expect(doctorPage.getByText(/ENC-/)).toBeVisible();
+  await doctorPage.getByRole("tab", { name: "History", exact: true }).click();
+  await steadyFill(doctorPage, "Presenting complaint", "Phase 1L-A browser compatibility synthetic complaint");
+  await doctorPage.getByRole("tab", { name: "Notes", exact: true }).click();
   await doctorPage.getByLabel("Consultation note").fill("Assessment: mild. Plan: review.");
   await doctorPage.getByRole("button", { name: "Sign consultation" }).click();
   await doctorPage.getByRole("button", { name: "Confirm signature" }).click();

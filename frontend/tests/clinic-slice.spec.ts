@@ -93,6 +93,9 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
 
   await page.getByRole("button", { name: "Start encounter" }).click();
   await expect(page.getByText(/ENC-/)).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await steadyFill(page, "Presenting complaint", "Phase 1L-A browser compatibility synthetic complaint");
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByLabel("Consultation note").fill("Assessment: stable. Plan: hydration.");
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
   await expect(page.getByRole("tabpanel")).toContainText("Not recorded yet");

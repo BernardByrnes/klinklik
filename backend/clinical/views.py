@@ -10,7 +10,14 @@ from clinical.serializers import (
     NoteWriteSerializer,
     TriageSerializer,
 )
-from clinical.services import amend_note, record_triage, save_note, sign_note, start_encounter
+from clinical.services import (
+    PresentingComplaintRequired,
+    amend_note,
+    record_triage,
+    save_note,
+    sign_note,
+    start_encounter,
+)
 from core.tenant_api import TenantAPIView
 from scheduling.models import QueueEntry
 from scheduling.serializers import QueueEntrySerializer
@@ -64,6 +71,7 @@ def _revision_conflict_response(exc, http_status=status.HTTP_409_CONFLICT):
             "status": exc.current_status,
             "encounter_status": exc.current_encounter_status,
             "content": exc.current_content,
+            "complaints": exc.current_complaints,
             "saved_at": exc.current_saved_at,
         },
         status=http_status,
@@ -73,11 +81,13 @@ def _revision_conflict_response(exc, http_status=status.HTTP_409_CONFLICT):
 
 
 def _note_response(*, encounter, note, include_version=False):
+    encounter.refresh_from_db(fields=["complaints", "status", "signed_at", "updated_at"])
     note.refresh_from_db(fields=["updated_at"])
     data = {
         "note": note.id,
         "status": note.status,
         "content": note.content,
+        "complaints": list(encounter.complaints or []),
         "etag": consultation_note_etag(encounter=encounter, note=note),
         "saved_at": note.updated_at.isoformat(),
     }
@@ -148,6 +158,7 @@ class EncounterNoteView(TenantAPIView):
                 actor=request.user,
                 encounter=encounter,
                 content=serializer.validated_data["content"],
+                complaints=serializer.validated_data.get("complaints"),
                 expected_etag=expected_etag,
                 request=request,
             )
@@ -182,11 +193,17 @@ class EncounterSignView(TenantAPIView):
                 actor=request.user,
                 encounter=encounter,
                 content=serializer.validated_data["content"],
+                complaints=serializer.validated_data.get("complaints"),
                 expected_etag=expected_etag,
                 request=request,
             )
         except ClinicalNoteRevisionConflict as exc:
             return _revision_conflict_response(exc)
+        except PresentingComplaintRequired as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return _note_response(encounter=encounter, note=note, include_version=True)

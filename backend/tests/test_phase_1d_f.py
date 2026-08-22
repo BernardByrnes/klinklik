@@ -142,7 +142,7 @@ def test_phase_1d_f_stale_partial_sign_preserves_newer_server_content(tenant, au
 
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
-        {"content": {"social_history": "Phase 1D-F synthetic signed social"}},
+        {"content": {"social_history": "Phase 1D-F synthetic signed social"}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **note_headers(authed_client, encounter_id),
         format="json",
     )

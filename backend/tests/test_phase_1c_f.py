@@ -88,7 +88,7 @@ def test_amendment_and_post_sign_normal_save_regression(tenant, authed_client):
     encounter_id = create_encounter(tenant, authed_client, label="Phase1CFAmend")
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
-        {"content": {"hpi": "Phase 1C-F signed synthetic note"}},
+        {"content": {"hpi": "Phase 1C-F signed synthetic note"}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         format="json",
         **note_headers(authed_client, encounter_id),
     )

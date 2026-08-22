@@ -47,7 +47,7 @@ def test_full_patient_to_receipt_slice(tenant, authed_client):
     encounter_id = encounter_response.data["id"]
     sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
-        {"content": {"assessment": "Stable", "plan": "Hydration"}},
+        {"content": {"assessment": "Stable", "plan": "Hydration"}, "complaints": [{"text": "Phase 1L-A vertical-slice synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **note_headers(authed_client, encounter_id),
         format="json",
     )
@@ -147,7 +147,7 @@ def test_signed_note_is_immutable(tenant, authed_client):
     encounter_id = encounter["id"]
     assert authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
-        {"content": {"assessment": "First"}},
+        {"content": {"assessment": "First"}, "complaints": [{"text": "Phase 1L-A vertical-slice synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **note_headers(authed_client, encounter_id),
         format="json",
     ).status_code == 200

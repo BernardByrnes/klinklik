@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from audit.models import AuditEvent
 from audit.services import record_event
+from clinical.complaints import normalize_complaints, resolve_complaints
 from clinical.concurrency import require_current_consultation_etag
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
 from patients.models import Patient
@@ -119,6 +120,13 @@ EXAMINATION_FIELDS = {
 }
 
 
+class PresentingComplaintRequired(ValueError):
+    code = "PRESENTING_COMPLAINT_REQUIRED"
+
+    def __init__(self):
+        super().__init__("At least one presenting complaint is required before signing.")
+
+
 def normalize_examination_content(content):
     normalized = dict(content or {})
     for field in EXAMINATION_FIELDS:
@@ -166,20 +174,21 @@ def _record_autosave_summary(*, organisation, facility, actor, encounter, reques
             "minute": minute_start.isoformat(),
         },
     )
-def _note_audit_metadata(content):
-    return {
-        "note_type": "CONSULTATION",
-        "fields": sorted(
-            field for field in (
-                "presenting_complaint", "hpi", "past_medical_history", "past_surgical_history",
-                "family_history", "social_history", "general_examination", "cardiovascular_examination", "respiratory_examination",
-                "abdominal_examination", "neurological_examination",
-                "genitourinary_examination", "musculoskeletal_examination",
-                "consultation", "assessment", "plan",
-            )
-            if field in content
-        ),
-    }
+def _note_audit_metadata(content, *, complaints_changed=False):
+    fields = sorted(
+        field for field in (
+            "presenting_complaint", "hpi", "past_medical_history", "past_surgical_history",
+            "family_history", "social_history", "general_examination", "cardiovascular_examination", "respiratory_examination",
+            "abdominal_examination", "neurological_examination",
+            "genitourinary_examination", "musculoskeletal_examination",
+            "consultation", "assessment", "plan",
+        )
+        if field in content
+    )
+    if complaints_changed:
+        fields.append("complaints")
+        fields.sort()
+    return {"note_type": "CONSULTATION", "fields": fields}
 
 
 def _lock_encounter_for_note(*, organisation, facility, encounter):
@@ -203,7 +212,7 @@ def _lock_consultation_note(*, organisation, facility, encounter):
 
 
 @transaction.atomic
-def save_note(*, organisation, facility, actor, encounter, content, expected_etag=None, request=None):
+def save_note(*, organisation, facility, actor, encounter, content, complaints=None, expected_etag=None, request=None):
     encounter = _lock_encounter_for_note(
         organisation=organisation,
         facility=facility,
@@ -215,6 +224,7 @@ def save_note(*, organisation, facility, actor, encounter, content, expected_eta
         encounter=encounter,
     )
     require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
+    normalized_complaints = resolve_complaints(content=content, complaints=complaints)
     previous_status = note.status if note is not None else None
     if encounter.status in {"CLOSED", "CANCELLED"}:
         raise ValueError("This encounter is closed.")
@@ -232,6 +242,9 @@ def save_note(*, organisation, facility, actor, encounter, content, expected_eta
     else:
         note.content = normalize_examination_content({**(note.content or {}), **content})
         note.save(update_fields=["content", "updated_at"])
+    if normalized_complaints is not None:
+        encounter.complaints = normalized_complaints
+        encounter.save(update_fields=["complaints", "updated_at"])
     if _is_autosave_request(request):
         _record_autosave_summary(
             organisation=organisation,
@@ -250,13 +263,16 @@ def save_note(*, organisation, facility, actor, encounter, content, expected_eta
             entity_type="ClinicalNote",
             entity_id=note.id,
             before={"status": previous_status} if previous_status is not None else None,
-            after={**_note_audit_metadata(content), "status": note.status},
+            after={
+                **_note_audit_metadata(content, complaints_changed=normalized_complaints is not None),
+                "status": note.status,
+            },
         )
     return note
 
 
 @transaction.atomic
-def sign_note(*, organisation, facility, actor, encounter, content=None, expected_etag=None, request=None):
+def sign_note(*, organisation, facility, actor, encounter, content=None, complaints=None, expected_etag=None, request=None):
     encounter = _lock_encounter_for_note(
         organisation=organisation,
         facility=facility,
@@ -268,16 +284,28 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, expecte
         encounter=encounter,
     )
     require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
+    incoming_complaints = resolve_complaints(content=content or {}, complaints=complaints)
     if note is None:
         note = save_note(
             organisation=organisation, facility=facility, actor=actor, encounter=encounter,
-            content=content or {}, expected_etag=expected_etag, request=request
+            content=content or {}, complaints=incoming_complaints,
+            expected_etag=expected_etag, request=request
         )
+    candidate_complaints = (
+        incoming_complaints
+        if incoming_complaints is not None
+        else normalize_complaints(encounter.complaints or [])
+    )
+    if not candidate_complaints:
+        raise PresentingComplaintRequired()
     if note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("This note is already signed.")
     if content is not None:
         note.content = normalize_examination_content({**(note.content or {}), **content})
     note.content = normalize_examination_content(note.content)
+    if incoming_complaints is not None:
+        encounter.complaints = incoming_complaints
+        encounter.save(update_fields=["complaints", "updated_at"])
     version = ClinicalNoteVersion.objects.create(
         organisation=organisation,
         note=note,

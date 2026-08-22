@@ -334,7 +334,7 @@ def test_phase_1h_stale_sign_preserves_draft_and_requires_fresh_retry(tenant, au
     )
     stale_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"neurological_examination": SYNTHETIC_NEUROLOGICAL_SIGNED}},
+        {"content": {"neurological_examination": SYNTHETIC_NEUROLOGICAL_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )
@@ -348,7 +348,7 @@ def test_phase_1h_stale_sign_preserves_draft_and_requires_fresh_retry(tenant, au
 
     fresh_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"neurological_examination": SYNTHETIC_NEUROLOGICAL_SIGNED}},
+        {"content": {"neurological_examination": SYNTHETIC_NEUROLOGICAL_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": stale_sign.data["etag"]},
         format="json",
     )
@@ -608,7 +608,7 @@ def test_phase_1h_stale_sign_new_systems_requires_fresh_retry(tenant, authed_cli
     )
     stale_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"musculoskeletal_examination": SYNTHETIC_MUSCULOSKELETAL_SIGNED}},
+        {"content": {"musculoskeletal_examination": SYNTHETIC_MUSCULOSKELETAL_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )
@@ -623,7 +623,7 @@ def test_phase_1h_stale_sign_new_systems_requires_fresh_retry(tenant, authed_cli
 
     fresh_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"musculoskeletal_examination": SYNTHETIC_MUSCULOSKELETAL_SIGNED}},
+        {"content": {"musculoskeletal_examination": SYNTHETIC_MUSCULOSKELETAL_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": stale_sign.data["etag"]},
         format="json",
     )

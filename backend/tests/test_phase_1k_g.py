@@ -12,6 +12,7 @@ SYNTHETIC_CARDIOVASCULAR = "Phase 1K-G verification - synthetic cardiovascular f
 SYNTHETIC_GENERAL = "Phase 1K-G verification - synthetic general finding"
 SYNTHETIC_GENERAL_UPDATED = "Phase 1K-G verification - updated synthetic general finding"
 SYNTHETIC_HPI = "Phase 1K-G verification - synthetic HPI"
+SYNTHETIC_COMPLAINT = "Phase 1K-G verification - synthetic presenting complaint"
 
 
 def create_encounter(tenant, client, label="Phase1KG"):
@@ -148,17 +149,23 @@ def test_phase_1k_g_sign_after_clear_has_no_blank_examination_in_note_or_version
     )
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {}},
+        {
+            "content": {"presenting_complaint": SYNTHETIC_COMPLAINT},
+        },
         **{"HTTP_IF_MATCH": cleared.data["etag"]},
         format="json",
     )
 
     assert signed.status_code == 200
-    assert signed.data["content"] == {"hpi": SYNTHETIC_HPI}
+    expected_content = {
+        "hpi": SYNTHETIC_HPI,
+        "presenting_complaint": SYNTHETIC_COMPLAINT,
+    }
+    assert signed.data["content"] == expected_content
     note = ClinicalNote.objects.get(id=signed.data["note"])
     version = ClinicalNoteVersion.objects.get(note=note, version_number=1)
-    assert note.content == {"hpi": SYNTHETIC_HPI}
-    assert version.content == {"hpi": SYNTHETIC_HPI}
+    assert note.content == expected_content
+    assert version.content == expected_content
 
 
 def test_phase_1k_g_sign_with_whitespace_examination_omits_key_from_version(tenant, authed_client):
@@ -171,13 +178,21 @@ def test_phase_1k_g_sign_with_whitespace_examination_omits_key_from_version(tena
     )
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"general_examination": " \t\n "}},
+        {
+            "content": {
+                "general_examination": " \t\n ",
+                "presenting_complaint": SYNTHETIC_COMPLAINT,
+            },
+        },
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )
 
     assert signed.status_code == 200
-    assert signed.data["content"] == {"hpi": SYNTHETIC_HPI}
+    assert signed.data["content"] == {
+        "hpi": SYNTHETIC_HPI,
+        "presenting_complaint": SYNTHETIC_COMPLAINT,
+    }
     note = ClinicalNote.objects.get(id=signed.data["note"])
     version = ClinicalNoteVersion.objects.get(note=note, version_number=1)
     assert "general_examination" not in note.content
@@ -274,7 +289,9 @@ def test_phase_1k_g_amendment_version_omits_blank_examination(tenant, authed_cli
     )
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {}},
+        {
+            "content": {"presenting_complaint": SYNTHETIC_COMPLAINT},
+        },
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )

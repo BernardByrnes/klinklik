@@ -250,7 +250,7 @@ def test_phase_1e_sign_persists_exact_text_and_rejects_post_sign_write(tenant, a
     )
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"general_examination": SYNTHETIC_EXAMINATION_SIGNED}},
+        {"content": {"general_examination": SYNTHETIC_EXAMINATION_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )
@@ -283,7 +283,7 @@ def test_phase_1e_amendment_preserves_prior_version_and_exact_examination_text(t
     )
     signed = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {}},
+        {"content": {}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )

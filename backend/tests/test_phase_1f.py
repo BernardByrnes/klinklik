@@ -319,7 +319,7 @@ def test_phase_1f_stale_sign_preserves_draft_and_requires_fresh_retry(tenant, au
     )
     stale_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"respiratory_examination": SYNTHETIC_RESPIRATORY_SIGNED}},
+        {"content": {"respiratory_examination": SYNTHETIC_RESPIRATORY_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": initial.data["etag"]},
         format="json",
     )
@@ -333,7 +333,7 @@ def test_phase_1f_stale_sign_preserves_draft_and_requires_fresh_retry(tenant, au
 
     fresh_sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/sign/",
-        {"content": {"respiratory_examination": SYNTHETIC_RESPIRATORY_SIGNED}},
+        {"content": {"respiratory_examination": SYNTHETIC_RESPIRATORY_SIGNED}, "complaints": [{"text": "Phase 1L-A compatibility synthetic complaint", "duration_value": None, "duration_unit": None}]},
         **{"HTTP_IF_MATCH": stale_sign.data["etag"]},
         format="json",
     )

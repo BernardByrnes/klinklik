@@ -652,3 +652,31 @@ Migration status: NONE. No database schema, generated client type, or backend en
 Known limitations: PostgreSQL-only tests were not rerun in this local SQLite-only verification; the existing PostgreSQL owner-role integrity baseline and restricted application-role pytest teardown limitation remain unchanged. The retry draft remains in React memory only and is intentionally not recoverable after reload or close. No new blueprint decision was made.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1L-A — ENC-005 Structured Presenting Complaints Backend Foundation
+
+Status: IMPLEMENTED / VERIFIED / PASS WITH VALIDATION LIMITATION.
+
+Baseline: 82c5d946f7ee71c2e051f9cd992d33dfaffc3d79 on main, aligned with origin/main before implementation.
+
+Objective and scope: implement only the backend/API foundation for ENC-005 structured presenting complaints. Phase 1L-B frontend structured-complaint work was not started; no frontend production code or canonical backlog content was changed.
+
+Canonical data: Encounter now stores `complaints` as an ordered JSON list. Each item is canonicalized as `{text, duration_value, duration_unit}`. Text is a nonblank string of at most 500 characters and is preserved verbatim. Duration fields are optional but paired, positive numeric values with units limited to HOURS, DAYS, WEEKS, or MONTHS. Empty drafts are valid as `[]`; no invented maximum duration was added.
+
+Persistence and API: Encounter read responses expose `complaints` and a separate read-only `triage_complaint` sourced from the matching TriageAssessment. Triage is not copied into the consultation complaint list. Note POST and canonical PATCH accept optional structured complaints through the same locked `save_note` transaction. Omitted complaints leave the Encounter value unchanged; explicit `[]` clears it; an explicit list replaces it. Successful note responses include complaints. The existing ETag includes complaints, PATCH stale writes remain 412, legacy POST stale writes remain 409, and both conflict bodies return authoritative current complaints.
+
+Legacy bridge and migration: when structured complaints are omitted, a legacy `content.presenting_complaint` string becomes one structured item (or `[]` when blank) while the legacy ClinicalNote content key remains unchanged. Explicit structured complaints are authoritative. Migration `backend/clinical/migrations/0004_encounter_complaints.py` adds the field and copies a nonblank legacy consultation complaint into empty Encounter.complaints without rewriting ClinicalNote or ClinicalNoteVersion content; its reverse clears the new field. The migration function was directly tested with legacy, blank, and signed-history records.
+
+Signing and state safety: server-side signing requires a nonempty structured complaint or legacy bridge value and returns stable code `PRESENTING_COMPLAINT_REQUIRED` with HTTP 400 when absent. The blocked transaction creates no note version, sign audit, or terminal state. Triage alone never satisfies the rule. Successful signing preserves signed immutability and existing version behavior.
+
+ETag and audit safety: complaint changes use the existing Encounter-first/note-second transaction and revision checks. Generic audit metadata may identify the `complaints` field but never contains complaint text or duration values. Autosave summary behavior remains unchanged and rejected requests do not create false success events.
+
+Security and privacy: verification used synthetic local SQLite development data only. No browser PHI persistence was introduced: no localStorage, IndexedDB, offline queue, service worker, background sync, or persistent draft cache. No raw complaint text was added to generic audit payloads, logs, URLs, or telemetry. No credentials, seed passwords, secrets, real patient data, PHI, email, SMS, payment, webhook, or other external side effect was used or exposed.
+
+Files changed: `backend/clinical/models.py`, `backend/clinical/complaints.py`, `backend/clinical/migrations/0004_encounter_complaints.py`, `backend/clinical/concurrency.py`, `backend/clinical/serializers.py`, `backend/clinical/services.py`, `backend/clinical/views.py`, `backend/tests/test_phase_1l_a.py`, compatibility fixture updates in `backend/tests/test_phase_1c_f.py`, `test_phase_1d_f.py`, `test_phase_1d_f2.py`, `test_phase_1e.py`, `test_phase_1f.py`, `test_phase_1g.py`, `test_phase_1h.py`, `test_phase_1k_g.py`, and `test_vertical_slice.py`, synthetic complaint actions in `frontend/tests/clinic-slice.spec.ts`, `frontend/tests/role-handoff.spec.ts`, `frontend/tests/phase-1d-history.spec.ts`, and this handoff document. No frontend production file changed.
+
+Validation: focused Phase 1L-A backend coverage passed 22 tests. Focused Phase 1K-H, 1K-G, and 1J regressions passed 21 tests. Full backend pytest passed 158 tests with 7 documented PostgreSQL-only skips: five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests. Django check reported no issues. `makemigrations --check --dry-run` reported No changes detected. `migrate --plan` reported the expected `clinical.0004_encounter_complaints` AddField plus RunPython operations. The browser consultation smoke was not run: the local frontend dependency tree was incomplete (`@playwright/test`, Next, TypeScript, and ESLint were absent), `npm ci` could not replace a locked native module held by an existing local Next process, and the authorized Chrome control connection also failed before exposing a tab. Frontend production code was unchanged; browser fixture updates were static synthetic actions only.
+
+Known limitations: PostgreSQL-only validation remains limited to the documented skips in this local SQLite environment. The migration has been validated by plan and direct migration-function tests but was not applied to the development database during this implementation turn. Phase 1L-B remains outside scope and unauthorised.
+
+Next approved phase: NOT YET AUTHORISED
