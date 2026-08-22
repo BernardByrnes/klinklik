@@ -108,6 +108,25 @@ _AUTOSAVE_HEADER = "X-KlinKlik-Autosave"
 _AUTOSAVE_MARKER = "1"
 _AUTOSAVE_REASON = "ENCOUNTER_DRAFT_UPDATED"
 
+EXAMINATION_FIELDS = {
+    "general_examination",
+    "cardiovascular_examination",
+    "respiratory_examination",
+    "abdominal_examination",
+    "neurological_examination",
+    "genitourinary_examination",
+    "musculoskeletal_examination",
+}
+
+
+def normalize_examination_content(content):
+    normalized = dict(content or {})
+    for field in EXAMINATION_FIELDS:
+        value = normalized.get(field)
+        if isinstance(value, str) and value.strip() == "":
+            normalized.pop(field, None)
+    return normalized
+
 
 def _is_autosave_request(request):
     return request is not None and request.headers.get(_AUTOSAVE_HEADER) == _AUTOSAVE_MARKER
@@ -205,13 +224,13 @@ def save_note(*, organisation, facility, actor, encounter, content, expected_eta
             facility=facility,
             encounter=encounter,
             note_type="CONSULTATION",
-            content=content,
+            content=normalize_examination_content(content),
             author=actor,
         )
     elif note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("Signed clinical history is immutable; use amend.")
     else:
-        note.content = {**(note.content or {}), **content}
+        note.content = normalize_examination_content({**(note.content or {}), **content})
         note.save(update_fields=["content", "updated_at"])
     if _is_autosave_request(request):
         _record_autosave_summary(
@@ -257,7 +276,8 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, expecte
     if note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("This note is already signed.")
     if content is not None:
-        note.content = {**(note.content or {}), **content}
+        note.content = normalize_examination_content({**(note.content or {}), **content})
+    note.content = normalize_examination_content(note.content)
     version = ClinicalNoteVersion.objects.create(
         organisation=organisation,
         note=note,
@@ -303,15 +323,16 @@ def amend_note(*, organisation, facility, actor, encounter, content, reason, exp
     require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
     if note is None or note.status not in {"SIGNED", "AMENDED"}:
         raise ValueError("Only a signed clinical note can be amended.")
+    normalized_content = normalize_examination_content(content)
     version = ClinicalNoteVersion.objects.create(
         organisation=organisation,
         note=note,
         version_number=note.current_version + 1,
-        content=content,
+        content=normalized_content,
         created_by=actor,
         reason=reason,
     )
-    note.content = content
+    note.content = normalized_content
     note.status = "AMENDED"
     note.current_version = version.version_number
     note.save(update_fields=["content", "status", "current_version", "updated_at"])

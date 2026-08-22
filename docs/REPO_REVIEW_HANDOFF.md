@@ -598,3 +598,29 @@ Validation: focused Phase 1K-F race test passed 1 test. Focused Phase 1K Playwri
 Security and scope: verification used synthetic local SQLite development data only. No real patient data, PHI, credentials, seed passwords, secrets, emails, SMS, payments, webhooks, or other external side effect was used or exposed. No browser PHI persistence was introduced. Phase 1L was not started.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1K-G — ENC-014 Populated-Only Examination Persistence
+
+Status: VERIFIED / PASS.
+
+Objective: enforce the ENC-014 invariant that only populated findings are stored or represented for the seven existing examination fields, without changing blank semantics for other consultation fields or redesigning the note workflow.
+
+Governed fields: general_examination, cardiovascular_examination, respiratory_examination, abdominal_examination, neurological_examination, genitourinary_examination, and musculoskeletal_examination.
+
+Normalization semantics: a shared backend helper copies incoming content and removes a governed examination key only when its value is a string whose stripped value is empty. Empty strings and whitespace-only strings are therefore absent from stored ClinicalNote.content and signed ClinicalNoteVersion.content. Populated examination text is not trimmed and is stored verbatim. Caller-owned dictionaries are not mutated. Other fields, including hpi, retain their existing blank semantics.
+
+Save and clear behaviour: new-note creation normalizes before persistence, and existing-note saves merge first and then normalize. Clearing a previously saved examination field therefore removes only that JSON key, preserves unrelated content, changes the persisted content/ETag revision, and remains a real mutation.
+
+Signing and amendment behaviour: signing normalizes the complete merged note immediately before creating the immutable version and saving the signed note, including cleanup of legacy blank examination keys. The existing amendment path stores the same normalized content in both the new ClinicalNoteVersion and the amended ClinicalNote. Signature immutability, versioning, and amendment workflow were otherwise unchanged.
+
+Concurrency preservation: If-Match requirements, ETag calculation, 409 revision-conflict status and response shape, stale-content preservation, lost-response reconciliation, and Phase 1K retry behavior were not changed. A stale clear or replacement still receives the existing conflict response and cannot overwrite newer examination content.
+
+Audit preservation: manual clears continue to identify the changed examination field through safe field metadata without previous or new clinical text. Autosave clears continue through the existing ENCOUNTER_DRAFT_UPDATED summary mechanism and do not add raw examination text or a per-attempt ClinicalNote audit event.
+
+Validation: focused Phase 1K-G backend coverage passed 9 tests. Existing Phase 1E–1H examination regressions and Phase 1J backend regressions passed 76 tests. Full backend pytest passed 130 tests with 7 documented PostgreSQL-only skips in 68.30 seconds. Django check reported no issues; makemigrations --check --dry-run reported No changes detected; migrate --plan reported no planned migration operations. The optional browser smoke regression was not run because the checkout does not have the frontend Playwright or Next binaries installed; frontend production code was unchanged.
+
+Security and scope: verification used synthetic local SQLite development data only. No real patient data, PHI, credentials, seed passwords, secrets, email, SMS, payment, webhook, or other external side effect was used or exposed. No frontend production code, model, serializer, migration, canonical backlog, printing path, or Phase 1L work was added.
+
+Files changed: backend/clinical/services.py, backend/tests/test_phase_1k_g.py, and this handoff document. Migration status: NONE.
+
+Next approved phase: NOT YET AUTHORISED
