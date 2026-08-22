@@ -109,6 +109,7 @@ def _note_audit_metadata(content):
                 "presenting_complaint", "hpi", "past_medical_history", "past_surgical_history",
                 "family_history", "social_history", "general_examination", "cardiovascular_examination", "respiratory_examination",
                 "abdominal_examination", "neurological_examination",
+                "genitourinary_examination", "musculoskeletal_examination",
                 "consultation", "assessment", "plan",
             )
             if field in content
