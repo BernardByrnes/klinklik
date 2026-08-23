@@ -154,10 +154,10 @@ def _check_active_exclusivity(*, encounter, candidate, current=None):
                 "DIAGNOSIS_STATE_INVALID",
                 "No diagnosis cannot coexist with an active final diagnosis or another no-diagnosis entry.",
             )
-    elif active.filter(diagnosis_type="NO_DIAGNOSIS").exists():
+    elif diagnosis_type == "FINAL" and active.filter(diagnosis_type="NO_DIAGNOSIS").exists():
         raise DiagnosisDomainError(
             "DIAGNOSIS_STATE_INVALID",
-            "A working or final diagnosis cannot coexist with an active no-diagnosis entry.",
+            "A final diagnosis cannot coexist with an active no-diagnosis entry.",
         )
     if candidate["diagnosis_type"] == "FINAL" and candidate["is_primary"]:
         if active.filter(diagnosis_type="FINAL", is_primary=True).exists():

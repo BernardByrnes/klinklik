@@ -965,3 +965,52 @@ Frontend production changed: NO.
 Phase 1N-B started: NO.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1N-A-F — Working + NO_DIAGNOSIS Symmetry Fix
+
+Status: COMPLETE / PASS.
+
+Baseline: `0f058875de4513b00b498d715aea74fe3588f8a5` on `main`, aligned with `origin/main` before this correction.
+
+Objective and scope: correct the Phase 1N-A diagnosis exclusivity symmetry without changing the model, API shape, ETag architecture, signing architecture, or frontend. WORKING diagnoses may coexist with one active `NO_DIAGNOSIS` entry in either creation/edit order; active FINAL plus active `NO_DIAGNOSIS` remains forbidden.
+
+Diagnosis rules verified:
+
+- WORKING then NO_DIAGNOSIS and NO_DIAGNOSIS then WORKING both succeed with both entries active.
+- Multiple WORKING entries may coexist with one active NO_DIAGNOSIS entry.
+- FINAL then NO_DIAGNOSIS and NO_DIAGNOSIS then FINAL remain blocked.
+- WORKING to NO_DIAGNOSIS is allowed while other WORKING entries exist; NO_DIAGNOSIS to WORKING is allowed with the required label; WORKING to FINAL remains blocked when NO_DIAGNOSIS is active.
+- NO_DIAGNOSIS to FINAL is allowed when the current entry is the only no-diagnosis entry and normal final/primary rules are satisfied. FINAL to NO_DIAGNOSIS remains blocked when another active FINAL exists.
+- The exclusivity check remains transactionally enforced and all primary-final uniqueness checks are preserved.
+
+Signing, concurrency, and audit safety:
+
+- A valid active state containing WORKING plus one reason-bearing NO_DIAGNOSIS satisfies the existing sign prerequisite after valid presenting complaint, current allergy review, and consultation ETag checks; signing creates exactly one ClinicalNoteVersion and makes the Encounter SIGNED.
+- Existing ETag behavior, soft removal, primary uniqueness, signed immutability, tenant/facility scoping, and diagnosis audit metadata safety remain covered by the Phase 1N-A suite. No raw diagnosis label, code, certainty note, or no-diagnosis reason is added to audit metadata.
+- No browser PHI persistence was introduced.
+
+Files changed:
+
+- `backend/clinical/diagnoses.py`
+- `backend/tests/test_phase_1n_a.py`
+- `docs/REPO_REVIEW_HANDOFF.md`
+
+Tests and validation:
+
+- Focused Phase 1N-A suite: 17 passed.
+- Phase 1M-A allergy suite: 24 passed.
+- Full backend pytest suite: 199 passed, 7 skipped. Skips are the existing five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests.
+- Django check: PASS; no issues identified.
+- `makemigrations --check --dry-run`: PASS; No changes detected.
+- Migration: NONE expected; no model or migration file changed.
+
+Scope and decision boundary:
+
+- Canonical backlog changed: NO.
+- Frontend production changed: NO.
+- Phase 1N-B started: NO. No frontend diagnosis UI was implemented.
+- The existing local SQLite validation limitation remains: PostgreSQL/RLS and PostgreSQL row-lock execution require the project PostgreSQL environment.
+
+Ready for review: YES.
+
+Next approved phase: NOT YET AUTHORISED

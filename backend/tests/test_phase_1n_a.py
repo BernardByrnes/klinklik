@@ -172,6 +172,203 @@ def test_diagnosis_validation_enforces_labels_no_diagnosis_reason_and_state(tena
     assert conflicting_final.data["code"] == "DIAGNOSIS_STATE_INVALID"
 
 
+
+def test_working_and_no_diagnosis_can_coexist_in_either_creation_order(tenant, authed_client):
+    working_first = create_encounter(tenant, authed_client, "Phase1NAWorkingFirst")
+    working = add_diagnosis(
+        authed_client,
+        working_first,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A working-first"},
+    )
+    no_diagnosis = add_diagnosis(
+        authed_client,
+        working_first,
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+        etag=working.data["consultation_etag"],
+    )
+    assert working.status_code == 201, working.data
+    assert no_diagnosis.status_code == 201, no_diagnosis.data
+    assert {item["diagnosis_type"] for item in no_diagnosis.data["diagnoses"]} == {
+        "WORKING",
+        "NO_DIAGNOSIS",
+    }
+
+    no_diagnosis_first = create_encounter(tenant, authed_client, "Phase1NANoDiagnosisFirst")
+    no_diagnosis = add_diagnosis(
+        authed_client,
+        no_diagnosis_first,
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+    )
+    working = add_diagnosis(
+        authed_client,
+        no_diagnosis_first,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A no-diagnosis-first"},
+        etag=no_diagnosis.data["consultation_etag"],
+    )
+    assert no_diagnosis.status_code == 201, no_diagnosis.data
+    assert working.status_code == 201, working.data
+    assert {item["diagnosis_type"] for item in working.data["diagnoses"]} == {
+        "WORKING",
+        "NO_DIAGNOSIS",
+    }
+
+    multiple_working = create_encounter(tenant, authed_client, "Phase1NAMultipleWorking")
+    working_a = add_diagnosis(
+        authed_client,
+        multiple_working,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A working A"},
+    )
+    working_b = add_diagnosis(
+        authed_client,
+        multiple_working,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A working B"},
+        etag=working_a.data["consultation_etag"],
+    )
+    no_diagnosis = add_diagnosis(
+        authed_client,
+        multiple_working,
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+        etag=working_b.data["consultation_etag"],
+    )
+    assert working_a.status_code == 201, working_a.data
+    assert working_b.status_code == 201, working_b.data
+    assert no_diagnosis.status_code == 201, no_diagnosis.data
+    types = [item["diagnosis_type"] for item in no_diagnosis.data["diagnoses"]]
+    assert types.count("WORKING") == 2
+    assert types.count("NO_DIAGNOSIS") == 1
+
+
+def test_diagnosis_type_transitions_preserve_symmetric_exclusivity(tenant, authed_client):
+    working_transition = create_encounter(tenant, authed_client, "Phase1NATransitions")
+    working_a = add_diagnosis(
+        authed_client,
+        working_transition,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A transition A"},
+    )
+    working_b = add_diagnosis(
+        authed_client,
+        working_transition,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A transition B"},
+        etag=working_a.data["consultation_etag"],
+    )
+    working_a_id = working_a.data["diagnoses"][0]["id"]
+    to_no_diagnosis = authed_client.patch(
+        f"{diagnosis_url(working_transition['id'])}{working_a_id}/",
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+        format="json",
+        HTTP_IF_MATCH=working_b.data["consultation_etag"],
+    )
+    assert to_no_diagnosis.status_code == 200, to_no_diagnosis.data
+    assert {item["diagnosis_type"] for item in to_no_diagnosis.data["diagnoses"]} == {
+        "WORKING",
+        "NO_DIAGNOSIS",
+    }
+
+    back_to_working = authed_client.patch(
+        f"{diagnosis_url(working_transition['id'])}{working_a_id}/",
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A transition A revised"},
+        format="json",
+        HTTP_IF_MATCH=to_no_diagnosis.data["consultation_etag"],
+    )
+    assert back_to_working.status_code == 200, back_to_working.data
+    assert [item["diagnosis_type"] for item in back_to_working.data["diagnoses"]] == [
+        "WORKING",
+        "WORKING",
+    ]
+
+    blocked_final = create_encounter(tenant, authed_client, "Phase1NAWorkingFinalBlocked")
+    no_diagnosis = add_diagnosis(
+        authed_client,
+        blocked_final,
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+    )
+    working = add_diagnosis(
+        authed_client,
+        blocked_final,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A final transition blocked"},
+        etag=no_diagnosis.data["consultation_etag"],
+    )
+    working_id = next(item["id"] for item in working.data["diagnoses"] if item["diagnosis_type"] == "WORKING")
+    to_final = authed_client.patch(
+        f"{diagnosis_url(blocked_final['id'])}{working_id}/",
+        {
+            "diagnosis_type": "FINAL",
+            "label": "Phase 1N-A blocked final",
+            "code": SYNTHETIC_CODE,
+            "is_primary": True,
+        },
+        format="json",
+        HTTP_IF_MATCH=working.data["consultation_etag"],
+    )
+    assert to_final.status_code == 400, to_final.data
+    assert to_final.data["code"] == "DIAGNOSIS_STATE_INVALID"
+    unchanged = read_encounter(authed_client, blocked_final["id"])
+    assert {item["diagnosis_type"] for item in unchanged["diagnoses"]} == {"WORKING", "NO_DIAGNOSIS"}
+
+    no_to_final = create_encounter(tenant, authed_client, "Phase1NANoDiagnosisPromotion")
+    no_diagnosis = add_diagnosis(
+        authed_client,
+        no_to_final,
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+    )
+    promoted = authed_client.patch(
+        f"{diagnosis_url(no_to_final['id'])}{no_diagnosis.data['diagnoses'][0]['id']}/",
+        {
+            "diagnosis_type": "FINAL",
+            "label": "Phase 1N-A promoted final",
+            "code": SYNTHETIC_CODE,
+            "is_primary": True,
+        },
+        format="json",
+        HTTP_IF_MATCH=no_diagnosis.data["consultation_etag"],
+    )
+    assert promoted.status_code == 200, promoted.data
+    assert promoted.data["diagnoses"][0]["diagnosis_type"] == "FINAL"
+
+    final_transition = create_encounter(tenant, authed_client, "Phase1NAFinalToNoBlocked")
+    first_final = add_final(authed_client, final_transition)
+    second_final = add_final(
+        authed_client,
+        final_transition,
+        label="Phase 1N-A second final transition",
+        code="DX-1NA-SECOND",
+        primary=False,
+        etag=first_final.data["consultation_etag"],
+    )
+    first_final_id = first_final.data["diagnoses"][0]["id"]
+    final_to_no = authed_client.patch(
+        f"{diagnosis_url(final_transition['id'])}{first_final_id}/",
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+        format="json",
+        HTTP_IF_MATCH=second_final.data["consultation_etag"],
+    )
+    assert final_to_no.status_code == 400, final_to_no.data
+    assert final_to_no.data["code"] == "DIAGNOSIS_STATE_INVALID"
+
+
+def test_sign_succeeds_with_working_and_no_diagnosis(tenant, authed_client):
+    encounter = create_encounter(tenant, authed_client, "Phase1NAWorkingNoDiagnosisSign")
+    no_diagnosis = add_diagnosis(
+        authed_client,
+        encounter,
+        {"diagnosis_type": "NO_DIAGNOSIS", "no_diagnosis_reason": SYNTHETIC_REASON},
+    )
+    working = add_diagnosis(
+        authed_client,
+        encounter,
+        {"diagnosis_type": "WORKING", "label": "Phase 1N-A provisional working diagnosis"},
+        etag=no_diagnosis.data["consultation_etag"],
+    )
+    review = review_allergies(authed_client, encounter)
+    signed = sign_with_complaint(authed_client, encounter, working.data["consultation_etag"])
+    assert no_diagnosis.status_code == 201, no_diagnosis.data
+    assert working.status_code == 201, working.data
+    assert review["allergies_review_is_current"] is True
+    assert signed.status_code == 200, signed.data
+    assert signed.data["status"] == "SIGNED"
+    assert Encounter.objects.get(id=encounter["id"]).status == "SIGNED"
+    assert ClinicalNoteVersion.objects.filter(note__encounter_id=encounter["id"]).count() == 1
+
 def test_primary_final_is_unique_and_working_cannot_be_primary(tenant, authed_client):
     encounter = create_encounter(tenant, authed_client, "Phase1NAPrimary")
     working_primary = add_diagnosis(
