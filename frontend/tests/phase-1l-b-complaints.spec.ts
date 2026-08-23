@@ -77,6 +77,15 @@ async function createConsultation(page: Page, prefix: string) {
   return patientName;
 }
 
+async function setNkaAndReview(page: Page) {
+  const statusResponse = page.waitForResponse((response) => response.url().endsWith("/allergy-status/") && response.status() === 200);
+  await page.getByRole("button", { name: "No known allergies", exact: true }).click();
+  await statusResponse;
+  const reviewResponse = page.waitForResponse((response) => response.url().endsWith("/allergies/review/") && response.status() === 200);
+  await page.getByRole("button", { name: "Review allergies", exact: true }).click();
+  await reviewResponse;
+}
+
 function isNotePatch(request: { url(): string; method(): string }) {
   return request.url().includes("/api/v1/clinic/encounters/") && request.url().endsWith("/notes/") && request.method() === "PATCH";
 }
@@ -413,6 +422,7 @@ test.describe("Phase 1L-B structured presenting complaints", () => {
 
   test("blocks empty sign locally, includes valid dirty complaints on sign, and shows signed order read-only", async ({ page }) => {
     await createConsultation(page, "Phase1LB-Sign-");
+    await setNkaAndReview(page);
     let signRequests = 0;
     page.on("request", (request) => { if (request.url().endsWith("/sign/") && request.method() === "POST") signRequests += 1; });
     await page.getByRole("tab", { name: "Notes", exact: true }).click();
@@ -483,6 +493,7 @@ test.describe("Phase 1L-B structured presenting complaints", () => {
 
   test("omits complaints when signing a clean saved structured list", async ({ page }) => {
     await createConsultation(page, "Phase1LB-CleanSign-");
+    await setNkaAndReview(page);
     await steadyFill(page, "Presenting complaint", "Phase 1L-B synthetic clean sign complaint");
     await page.getByRole("button", { name: "Save draft" }).click();
     await expect(page.getByText("Consultation draft saved.")).toBeVisible();
@@ -511,6 +522,7 @@ test.describe("Phase 1L-B structured presenting complaints", () => {
 
   test("blocks signing when a complaint duration pair is invalid without a sign request", async ({ page }) => {
     await createConsultation(page, "Phase1LB-InvalidSign-");
+    await setNkaAndReview(page);
     let signRequests = 0;
     page.on("request", (request) => { if (request.url().endsWith("/sign/") && request.method() === "POST") signRequests += 1; });
     await steadyFill(page, "Presenting complaint", "Phase 1L-B synthetic invalid sign complaint");

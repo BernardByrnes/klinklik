@@ -8,12 +8,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiRequestError, apiRequest } from "../../../lib/api";
 import { useSession } from "../../../lib/session";
 import {
+  ActiveAllergy,
+  AllergyStatus,
   ClinicalNoteContent,
   ComplaintDurationUnit,
   Encounter,
   PresentingComplaint,
   QueueEntry,
 } from "../../../features/clinic";
+import { AllergyBanner, type AllergyFormValues } from "../../../components/clinical/allergy-banner";
 import { IconAlertTriangle, IconCheckCircle, IconConsultation } from "../../../components/icons";
 import {
   Button,
@@ -157,6 +160,38 @@ type NoteSignResponse = NoteSaveResponse & {
   current_version: number;
 };
 
+type AllergyStateResponse = {
+  allergy_status: AllergyStatus;
+  active_allergies: ActiveAllergy[];
+  allergy_revision: number;
+  allergy_state_etag: string;
+  allergies_reviewed_at?: string | null;
+  allergies_reviewed_revision?: number | null;
+  allergies_review_is_current?: boolean;
+};
+
+type AllergyContext = {
+  patientId: string;
+  encounterId: string;
+  queueEntryId: string;
+  session: number;
+  etag: string;
+};
+
+type AllergyStatusMutationVariables = AllergyContext & {
+  status: Extract<AllergyStatus, "NKA" | "UNKNOWN">;
+};
+
+type AllergyAddMutationVariables = Omit<AllergyContext, "etag"> & {
+  values: AllergyFormValues;
+};
+
+type AllergyEnteredInErrorMutationVariables = AllergyContext & {
+  allergyId: string;
+  reason: string;
+};
+
+type AllergyReviewMutationVariables = AllergyContext;
 const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues> = {
   hpi: "hpi",
   past_medical_history: "pastMedicalHistory",
@@ -263,6 +298,60 @@ function isTerminalEncounterStatus(status: string) {
   return TERMINAL_ENCOUNTER_STATUSES.some((terminalStatus) => terminalStatus === status);
 }
 
+function allergyStateConflict(error: unknown): AllergyStateResponse | null {
+  if (
+    !(error instanceof ApiRequestError) ||
+    error.status !== 412 ||
+    typeof error.data !== "object" ||
+    error.data === null
+  ) {
+    return null;
+  }
+  const data = error.data as Record<string, unknown>;
+  if (
+    typeof data.allergy_status !== "string" ||
+    !Array.isArray(data.active_allergies) ||
+    typeof data.allergy_revision !== "number" ||
+    typeof data.allergy_state_etag !== "string"
+  ) {
+    return null;
+  }
+  return {
+    allergy_status: data.allergy_status as AllergyStatus,
+    active_allergies: data.active_allergies as ActiveAllergy[],
+    allergy_revision: data.allergy_revision,
+    allergy_state_etag: data.allergy_state_etag,
+  };
+}
+
+function allergyMutationErrorMessage(error: unknown) {
+  if (allergyStateConflict(error)) {
+    return "Allergy information changed. Review the latest record before trying again.";
+  }
+  return errorMessage(error);
+}
+
+function signAllergyServerErrorMessage(error: unknown) {
+  if (!(error instanceof ApiRequestError) || typeof error.data !== "object" || error.data === null) {
+    return null;
+  }
+  const code = (error.data as Record<string, unknown>).code;
+  if (code === "ALLERGY_STATUS_REQUIRED") return "Record the patient's allergy status before signing.";
+  if (code === "ALLERGY_REVIEW_REQUIRED" || code === "ALLERGY_REVIEW_STALE") {
+    return "Review the current allergy status before signing.";
+  }
+  return null;
+}
+
+function allergySignPrerequisiteMessage(encounter: Encounter | null) {
+  if (!encounter || encounter.allergy_status === "NOT_RECORDED") {
+    return "Record the patient's allergy status before signing.";
+  }
+  if (!encounter.allergies_review_is_current) {
+    return "Review the current allergy status before signing.";
+  }
+  return null;
+}
 const COMPLAINT_DURATION_UNITS: ComplaintDurationUnit[] = ["HOURS", "DAYS", "WEEKS", "MONTHS"];
 
 function emptyComplaint(): PresentingComplaint {
@@ -1177,6 +1266,7 @@ function ConsultationsWorkspace() {
   const [confirmingSign, setConfirmingSign] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [allergyMutationError, setAllergyMutationError] = useState("");
   const [conflictComparison, setConflictComparison] = useState<ConflictComparisonValues>({});
   const [complaintConflict, setComplaintConflict] = useState<PresentingComplaint[] | null>(null);
   const [reviewedNormalActionOpen, setReviewedNormalActionOpen] = useState(false);
@@ -1197,6 +1287,10 @@ function ConsultationsWorkspace() {
   const complaintsDirtyRef = useRef(false);
   const draftValuesRef = useRef<EditableDraftValues>(emptyDraftValues());
   const draftSessionRef = useRef(0);
+  const allergyFormDirtyRef = useRef(false);
+  const allergyMutationInFlightRef = useRef(false);
+  const activePatientIdRef = useRef<string | null>(null);
+  const activeEncounterIdRef = useRef<string | null>(null);
 
   function hasDirtyDraft() {
     return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current;
@@ -1213,7 +1307,16 @@ function ConsultationsWorkspace() {
     }
     retryActiveRef.current = false;
     retryAttemptRef.current = 0;
+    allergyFormDirtyRef.current = false;
+    allergyMutationInFlightRef.current = false;
+    activePatientIdRef.current = null;
+    activeEncounterIdRef.current = null;
+    draftSessionRef.current += 1;
   }, []);
+
+  function hasUnsavedContent() {
+    return hasDirtyDraft() || allergyFormDirtyRef.current;
+  }
 
   const queue = useQuery({
     queryKey: ["queue", "TRIAGED,IN_CONSULTATION"],
@@ -1225,6 +1328,55 @@ function ConsultationsWorkspace() {
     () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
     [queue.data, selectedId],
   );
+  function applyAllergySnapshot(snapshot: AllergyStateResponse) {
+    setEncounter((current) => {
+      if (!current || current.id !== activeEncounterIdRef.current) return current;
+      const reviewedAt = snapshot.allergies_reviewed_at !== undefined
+        ? snapshot.allergies_reviewed_at
+        : current.allergies_reviewed_at;
+      const reviewedRevision = snapshot.allergies_reviewed_revision !== undefined
+        ? snapshot.allergies_reviewed_revision
+        : current.allergies_reviewed_revision;
+      const reviewIsCurrent = snapshot.allergies_review_is_current ?? (
+        snapshot.allergy_status !== "NOT_RECORDED" &&
+        reviewedAt !== null &&
+        reviewedRevision === snapshot.allergy_revision
+      );
+      return {
+        ...current,
+        allergy_status: snapshot.allergy_status,
+        active_allergies: snapshot.active_allergies,
+        allergy_revision: snapshot.allergy_revision,
+        allergy_state_etag: snapshot.allergy_state_etag,
+        allergies_reviewed_at: reviewedAt ?? null,
+        allergies_reviewed_revision: reviewedRevision ?? null,
+        allergies_review_is_current: reviewIsCurrent,
+      };
+    });
+  }
+
+  function currentAllergyContext(): AllergyContext | null {
+    if (!encounter?.id || !selected?.patient || !encounter.allergy_state_etag) {
+      setAllergyMutationError("The current allergy state is unavailable. Reload the consultation before trying again.");
+      return null;
+    }
+    return {
+      patientId: selected.patient,
+      encounterId: encounter.id,
+      queueEntryId: selected.id,
+      session: draftSessionRef.current,
+      etag: encounter.allergy_state_etag,
+    };
+  }
+
+  function isCurrentAllergyMutation(variables: Pick<AllergyContext, "session" | "patientId" | "encounterId" | "queueEntryId">) {
+    return (
+      variables.session === draftSessionRef.current &&
+      variables.patientId === activePatientIdRef.current &&
+      variables.encounterId === activeEncounterIdRef.current &&
+      variables.queueEntryId === selectedQueueEntryIdRef.current
+    );
+  }
   function closeReviewedNormalAction() {
     setReviewedNormalActionOpen(false);
     setReviewedNormalSelection([]);
@@ -1312,6 +1464,9 @@ function ConsultationsWorkspace() {
     const draft = consultationDraftFromEncounter(created);
     const values = editableDraftValuesFromContent(draft.content);
     encounterEtagRef.current = created.consultation_etag ?? null;
+    activePatientIdRef.current = created.patient;
+    activeEncounterIdRef.current = created.id;
+    setAllergyMutationError("");
     noteContentRef.current = draft.content;
     draftValuesRef.current = values;
     dirtyFieldsRef.current = new Set();
@@ -1438,7 +1593,7 @@ function ConsultationsWorkspace() {
   function selectEntry(entry: QueueEntry) {
     if (
       entry.id !== selectedId &&
-      hasDirtyDraft() &&
+      hasUnsavedContent() &&
       encounter &&
       !isTerminalEncounterStatus(encounter.status) &&
       !window.confirm("This consultation has unsaved changes. Leave and discard them?")
@@ -1463,6 +1618,11 @@ function ConsultationsWorkspace() {
     authoritativeComplaintsRef.current = [];
     complaintsDirtyRef.current = false;
     selectedQueueEntryIdRef.current = entry.id;
+    activePatientIdRef.current = entry.patient;
+    activeEncounterIdRef.current = null;
+    allergyFormDirtyRef.current = false;
+    allergyMutationInFlightRef.current = false;
+    setAllergyMutationError("");
     setSelectedId(entry.id);
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
@@ -1523,6 +1683,160 @@ function ConsultationsWorkspace() {
     startEncounter.mutate({ queueEntryId, session: draftSessionRef.current });
   }
 
+  const allergyStatusMutation = useMutation<AllergyStateResponse, unknown, AllergyStatusMutationVariables>({
+    mutationFn: ({ patientId, status, etag }) =>
+      apiRequest<AllergyStateResponse>("/api/v1/clinic/patients/" + patientId + "/allergy-status/", {
+        method: "POST",
+        headers: { "If-Match": etag },
+        body: JSON.stringify({ status }),
+      }),
+    onMutate: (variables) => {
+      if (isCurrentAllergyMutation(variables)) {
+        allergyMutationInFlightRef.current = true;
+        setAllergyMutationError("");
+        setNotice("");
+      }
+    },
+    onSuccess: (snapshot, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      applyAllergySnapshot(snapshot);
+      setAllergyMutationError("");
+      setNotice("Allergy information updated. Review the current status before signing.");
+    },
+    onError: (reason, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      const conflict = allergyStateConflict(reason);
+      if (conflict) applyAllergySnapshot(conflict);
+      setAllergyMutationError(allergyMutationErrorMessage(reason));
+    },
+  });
+
+  const addAllergyMutation = useMutation<AllergyStateResponse, unknown, AllergyAddMutationVariables>({
+    mutationFn: ({ patientId, values }) =>
+      apiRequest<AllergyStateResponse>("/api/v1/clinic/patients/" + patientId + "/allergies/", {
+        method: "POST",
+        body: JSON.stringify({
+          substance: values.substance,
+          reaction: values.reaction,
+          severity: values.severity,
+        }),
+      }),
+    onMutate: (variables) => {
+      if (isCurrentAllergyMutation(variables)) {
+        allergyMutationInFlightRef.current = true;
+        setAllergyMutationError("");
+        setNotice("");
+      }
+    },
+    onSuccess: (snapshot, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      applyAllergySnapshot(snapshot);
+      setAllergyMutationError("");
+      setNotice("Allergy recorded. Review the current status before signing.");
+    },
+    onError: (reason, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      const conflict = allergyStateConflict(reason);
+      if (conflict) applyAllergySnapshot(conflict);
+      setAllergyMutationError(allergyMutationErrorMessage(reason));
+    },
+  });
+
+  const enterAllergyInErrorMutation = useMutation<AllergyStateResponse, unknown, AllergyEnteredInErrorMutationVariables>({
+    mutationFn: ({ patientId, allergyId, reason, etag }) =>
+      apiRequest<AllergyStateResponse>("/api/v1/clinic/patients/" + patientId + "/allergies/" + allergyId + "/entered-in-error/", {
+        method: "POST",
+        headers: { "If-Match": etag },
+        body: JSON.stringify({ reason }),
+      }),
+    onMutate: (variables) => {
+      if (isCurrentAllergyMutation(variables)) {
+        allergyMutationInFlightRef.current = true;
+        setAllergyMutationError("");
+        setNotice("");
+      }
+    },
+    onSuccess: (snapshot, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      applyAllergySnapshot(snapshot);
+      setAllergyMutationError("");
+      setNotice("Allergy record updated. Review the current status before signing.");
+    },
+    onError: (reason, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      const conflict = allergyStateConflict(reason);
+      if (conflict) applyAllergySnapshot(conflict);
+      setAllergyMutationError(allergyMutationErrorMessage(reason));
+    },
+  });
+
+  const reviewAllergiesMutation = useMutation<AllergyStateResponse, unknown, AllergyReviewMutationVariables>({
+    mutationFn: ({ encounterId, etag }) =>
+      apiRequest<AllergyStateResponse>("/api/v1/clinic/encounters/" + encounterId + "/allergies/review/", {
+        method: "POST",
+        headers: { "If-Match": etag },
+        body: JSON.stringify({}),
+      }),
+    onMutate: (variables) => {
+      if (isCurrentAllergyMutation(variables)) {
+        allergyMutationInFlightRef.current = true;
+        setAllergyMutationError("");
+        setNotice("");
+      }
+    },
+    onSuccess: (snapshot, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      applyAllergySnapshot(snapshot);
+      setAllergyMutationError("");
+      setNotice("Allergy status reviewed for this encounter.");
+    },
+    onError: (reason, variables) => {
+      if (!isCurrentAllergyMutation(variables)) return;
+      allergyMutationInFlightRef.current = false;
+      const conflict = allergyStateConflict(reason);
+      if (conflict) applyAllergySnapshot(conflict);
+      setAllergyMutationError(allergyMutationErrorMessage(reason));
+    },
+  });
+
+  async function setAllergyStatus(status: Extract<AllergyStatus, "NKA" | "UNKNOWN">) {
+    const context = currentAllergyContext();
+    if (!context) return;
+    await allergyStatusMutation.mutateAsync({ ...context, status });
+  }
+
+  async function addAllergy(values: AllergyFormValues) {
+    const context = currentAllergyContext();
+    if (!context) throw new Error("The current allergy state is unavailable.");
+    const { etag: _etag, ...addContext } = context;
+    await addAllergyMutation.mutateAsync({ ...addContext, values });
+  }
+
+  async function enterAllergyInError(allergyId: string, reason: string) {
+    const context = currentAllergyContext();
+    if (!context) throw new Error("The current allergy state is unavailable.");
+    await enterAllergyInErrorMutation.mutateAsync({ ...context, allergyId, reason });
+  }
+
+  async function reviewAllergies() {
+    const context = currentAllergyContext();
+    if (!context) return;
+    await reviewAllergiesMutation.mutateAsync(context);
+  }
+
+  const allergyMutationPending =
+    allergyMutationInFlightRef.current ||
+    allergyStatusMutation.isPending ||
+    addAllergyMutation.isPending ||
+    enterAllergyInErrorMutation.isPending ||
+    reviewAllergiesMutation.isPending;
   const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
     mutationFn: ({ content, complaintSnapshot, encounterId, etag, origin }) =>
       apiRequest<NoteSaveResponse>(
@@ -1779,7 +2093,7 @@ function ConsultationsWorkspace() {
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
-      if (!hasDirtyDraft()) return;
+      if (!hasDirtyDraft() && !allergyFormDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     }
@@ -1847,6 +2161,12 @@ function ConsultationsWorkspace() {
       const conflict = clinicalNoteConflict(reason);
       setConfirmingSign(false);
       if (!conflict) {
+        const allergyMessage = signAllergyServerErrorMessage(reason);
+        if (allergyMessage) {
+          setActiveSection("summary");
+          setError(allergyMessage);
+          return;
+        }
         if (reason instanceof ApiRequestError && reason.status === 400 && typeof reason.data === "object" && reason.data !== null && (reason.data as Record<string, unknown>).code === "PRESENTING_COMPLAINT_REQUIRED") {
           setActiveSection("history");
           setError("Add at least one valid presenting complaint before signing this consultation.");
@@ -1969,8 +2289,21 @@ function ConsultationsWorkspace() {
   }
 
   function signCurrentDraft() {
+    const allergyPrerequisite = allergySignPrerequisiteMessage(encounter);
     const candidateComplaints = cloneComplaints(complaintsDraftRef.current);
     const complaintError = complaintsValidationMessage(candidateComplaints);
+    if (allergyPrerequisite) {
+      setActiveSection("summary");
+      setConfirmingSign(false);
+      setError(allergyPrerequisite);
+      document.getElementById("allergy-banner")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    if (allergyMutationInFlightRef.current) {
+      setConfirmingSign(false);
+      setError("Wait for the allergy update to finish before signing.");
+      return;
+    }
     if (candidateComplaints.length === 0 || complaintError) {
       setActiveSection("history");
       setConfirmingSign(false);
@@ -2094,6 +2427,22 @@ function ConsultationsWorkspace() {
                 ) : null}
               </div>
 
+              {encounter ? (
+                <AllergyBanner
+                encounter={encounter}
+                canManage={can("allergy.manage")}
+                canReview={can("clinical.note.sign")}
+                mutationPending={allergyMutationPending}
+                mutationError={allergyMutationError}
+                onSetStatus={setAllergyStatus}
+                onAddAllergy={addAllergy}
+                onEnterInError={enterAllergyInError}
+                onReview={reviewAllergies}
+                onFormDirtyChange={(dirty) => {
+                  allergyFormDirtyRef.current = dirty;
+                }}
+                />
+              ) : null}
               <WorkspaceSectionTabs activeSection={activeSection} onChange={handleWorkspaceSectionChange} />
 
               <ConflictComparisonPanel values={conflictComparison} />
@@ -2250,12 +2599,12 @@ function ConsultationsWorkspace() {
                         <Button variant="secondary" onClick={() => setConfirmingSign(false)}>
                           Cancel
                         </Button>
-                        <Button disabled={saveDraft.isPending || signNote.isPending} onClick={signCurrentDraft}>
+                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending} onClick={signCurrentDraft}>
                           {signNote.isPending ? "Signing…" : "Confirm signature"}
                         </Button>
                       </div>
                     ) : (
-                      <Button disabled={saveDraft.isPending || signNote.isPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
+                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
                     )}
                   </div>
                 )}

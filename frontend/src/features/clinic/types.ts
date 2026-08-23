@@ -79,7 +79,23 @@ export type Encounter = {
   consultation_etag?: string;
   complaints: PresentingComplaint[];
   triage_complaint: string | null;
+  allergy_status: AllergyStatus;
+  active_allergies: ActiveAllergy[];
+  allergy_revision: number;
+  allergy_state_etag: string;
+  allergies_reviewed_at: string | null;
+  allergies_reviewed_revision: number | null;
+  allergies_review_is_current: boolean;
   notes?: ClinicalNote[];
+};
+
+export type AllergyStatus = "NOT_RECORDED" | "NKA" | "UNKNOWN" | "RECORDED";
+
+export type ActiveAllergy = {
+  id: string;
+  substance: string;
+  reaction: string;
+  severity: "MILD" | "MODERATE" | "SEVERE";
 };
 
 export type Service = {

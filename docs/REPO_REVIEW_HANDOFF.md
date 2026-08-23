@@ -813,3 +813,70 @@ ENC-011 backend: COMPLETE
 TRI-004 shared backend: READY FOR UI
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1M-B — Clinician Allergy Banner + Review Workflow
+
+Status: COMPLETE
+
+Objective:
+
+- Complete ENC-011 clinician-facing allergy visibility and the encounter-specific review workflow in the consultation workspace.
+- Keep the implementation frontend-only on top of the Phase 1M-A backend contract; do not start triage redesign, prescribing, medication matching, CDS, or Phase 1N.
+
+Banner and workflow:
+
+- A reusable consultation allergy banner is visible across Summary, History, Examination, and Notes after an encounter is selected.
+- NOT_RECORDED, NKA, UNKNOWN, and RECORDED states render explicit, safe clinician-facing status text.
+- Active allergies render substance, reaction when present, and severity; multiple active allergies remain visible together.
+- Clinicians can record NKA/UNKNOWN only when no active allergy exists, add multiple active allergies, and enter an active allergy in error with a required reason. No allergy row is deleted.
+- Review is a separate encounter action. The banner distinguishes current review from stale/unreviewed state and exposes the review action only while the encounter is mutable.
+- No automatic drug matching, interpretation, CDS, medication suggestion, or triage redesign was introduced.
+
+Concurrency and session safety:
+
+- Status, entered-in-error, and review mutations send the current If-Match value; each successful response becomes the authoritative local snapshot.
+- 412 responses adopt the server-provided allergy snapshot and ETag, show a safe review message, and do not replay the stale mutation.
+- Patient/encounter/session guards prevent late responses from changing a different patient’s banner or review state.
+- Signing is blocked locally until allergy status is explicit and the encounter review is current; server allergy prerequisite codes map to safe clinician copy. Signing remains explicit and is not automatically retried.
+- Signed, closed, and cancelled encounters render the banner read-only. Existing clinical note conflict, autosave, dirty-state, and signed-immutability behavior remains authoritative.
+
+Navigation and safety:
+
+- Allergy form dirtiness participates in the existing patient-switch confirmation and beforeunload protection.
+- Section switching does not discard the in-memory allergy form or consultation draft.
+- Confirmed patient changes invalidate the session and clear the current in-memory draft; cancelled changes preserve it.
+- No browser PHI persistence was introduced. No localStorage, IndexedDB, service worker, offline queue, or persistent draft store was added.
+
+Validation:
+
+- Focused Phase 1M-B Playwright: 12 passed.
+- Existing Phase 1L-B complaint regression: 18 passed in the full run; the two sign-fixture cases passed in a subsequent targeted rerun after adding the required allergy-review precondition.
+- Full vertical consultation Playwright: 1 passed after aligning the stale examination expectation and establishing the required allergy-review precondition in the synthetic fixture.
+- Existing Phase 1J/1K consultation reliability regressions: PASS.
+- Backend production checks from the Phase 1M-A foundation: 182 passed, 7 skipped (PostgreSQL-only authentication/RLS and row-lock checks); Django check, makemigrations --check --dry-run, and migrate --plan: PASS.
+- Frontend typecheck, lint, and production build: PASS.
+- Migration status: NONE for Phase 1M-B. No backend production source or migration was changed.
+
+Files changed:
+
+- `frontend/src/features/clinic/types.ts`
+- `frontend/src/components/clinical/allergy-banner.tsx`
+- `frontend/src/app/(app)/consultations/page.tsx`
+- `frontend/tests/phase-1m-b-allergies.spec.ts`
+- `frontend/tests/phase-1l-b-complaints.spec.ts` (synthetic sign fixtures aligned with the new allergy prerequisite)
+- `frontend/tests/clinic-slice.spec.ts` (current examination expectation and synthetic allergy prerequisite)
+- `docs/REPO_REVIEW_HANDOFF.md`
+
+Known limitations:
+
+- Browser connectivity and server responses remain authoritative; no offline completion or persistent recovery queue exists.
+- Local authenticated Playwright verification uses only the existing synthetic development fixture and local SQLite. PostgreSQL-only checks remain environment-skipped.
+- The allergy workflow is wired to consultation only. TRI-004 triage UI, prescribing, drug matching, CDS, and other clinical modules remain outside this slice.
+
+ENC-011: COMPLETE
+
+TRI-004 shared backend: READY FOR TRIAGE UI
+
+No browser PHI persistence was introduced.
+
+Next approved phase: NOT YET AUTHORISED

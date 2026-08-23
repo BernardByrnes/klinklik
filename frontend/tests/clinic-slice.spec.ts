@@ -33,6 +33,15 @@ async function login(page: Page, username = "demo", password = DEMO_PASSWORD) {
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
+async function setNkaAndReview(page: Page) {
+  const statusResponse = page.waitForResponse((response) => response.url().endsWith("/allergy-status/") && response.status() === 200);
+  await page.getByRole("button", { name: "No known allergies", exact: true }).click();
+  await statusResponse;
+  const reviewResponse = page.waitForResponse((response) => response.url().endsWith("/allergies/review/") && response.status() === 200);
+  await page.getByRole("button", { name: "Review allergies", exact: true }).click();
+  await reviewResponse;
+}
+
 test("completes the clinic vertical slice across routed workspaces", async ({ page }) => {
   await login(page);
   await expect(page).toHaveURL(/\/overview$/);
@@ -98,9 +107,10 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByLabel("Consultation note").fill("Assessment: stable. Plan: hydration.");
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
-  await expect(page.getByRole("tabpanel")).toContainText("Not recorded yet");
+  await expect(page.getByRole("tabpanel")).toContainText("General Examination");
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(page.getByLabel("Consultation note")).toHaveValue("Assessment: stable. Plan: hydration.");
+  await setNkaAndReview(page);
   await page.getByRole("button", { name: "Sign consultation" }).click();
   await page.getByRole("button", { name: "Confirm signature" }).click();
   await expect(page.getByText("This consultation is signed and immutable.")).toBeVisible();
