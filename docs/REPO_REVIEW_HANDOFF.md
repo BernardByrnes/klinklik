@@ -1091,3 +1091,57 @@ No browser PHI persistence was introduced.
 Phase 1O started: NO.
 
 Next approved phase: NOT YET AUTHORISED
+### Phase 1N-B-F — Edit-Form Primary Switch Fix
+
+Status: COMPLETE / PASS.
+
+Baseline: 99923130e3ebd864b275e148141d5514a84ead32 on main, aligned with origin/main before this correction.
+
+Objective and scope: correct the edit-form switch from a secondary FINAL diagnosis to primary without changing backend production, the diagnosis model/API, ETag architecture, signing rules, soft removal, NO_DIAGNOSIS, allergy workflows, complaint workflows, or other clinical scope.
+
+Fix:
+
+- When an edited secondary FINAL diagnosis is submitted as primary while another FINAL diagnosis is primary, the existing primary is patched first with diagnosis_type FINAL and is_primary false.
+- The existing authoritative mutation flow adopts the response diagnoses and fresh consultation ETag before the edited target is patched.
+- The edited target is patched once with the complete edited payload, diagnosis_type FINAL, is_primary true, and the fresh ETag. No old ETag is reused and no duplicate target PATCH is sent.
+- If demotion fails, the edit flow does not claim success; existing safe error handling and authoritative state remain in force.
+
+Regression coverage:
+
+- Added a focused Playwright regression that creates primary A and secondary B, edits B, changes its label, promotes it through the edit form, asserts exactly two relevant PATCH requests in demotion-then-promotion order, verifies distinct If-Match values, confirms the edited payload survives, checks visible Primary/Secondary state, and rejects PRIMARY_DIAGNOSIS_INVALID.
+- Existing Make-primary behavior remains unchanged and passes.
+
+Tests and validation:
+
+- Focused edit-form regression: 1 passed.
+- Full focused Phase 1N-B Playwright: 11 passed with one retry permitted for local startup authentication.
+- Relevant consultation Playwright regressions: 33 passed.
+- Phase 1N-A backend suite: 17 passed.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS.
+- git diff --check: PASS.
+- Migration: NONE.
+
+Files changed:
+
+- frontend/src/app/(app)/consultations/page.tsx
+- frontend/tests/phase-1n-b-diagnoses.spec.ts
+- docs/REPO_REVIEW_HANDOFF.md
+
+Scope and safety:
+
+- Backend production changed: NO.
+- Canonical backlog changed: NO.
+- No browser PHI persistence was introduced.
+- No runtime artifact is included in the commit.
+- Phase 1O started: NO.
+
+Known limitations:
+
+- The local authenticated Playwright environment can emit expected initial refresh 401 responses and required one retry during a startup-authentication flake; the authoritative retry run passed all focused tests.
+- Existing PostgreSQL-only validation limitations remain unchanged.
+
+Ready for review: YES.
+
+Next approved phase: NOT YET AUTHORISED

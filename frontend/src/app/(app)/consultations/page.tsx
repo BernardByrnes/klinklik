@@ -2213,9 +2213,9 @@ function ConsultationsWorkspace() {
       payload.is_primary === true &&
       !current?.is_primary &&
       Boolean(primary && primary.id !== diagnosisId);
-    if (needsPrimarySwitch) {
-      await runDiagnosisMutation("update", diagnosisId, { ...payload, is_primary: false });
-      await runDiagnosisMutation("update", diagnosisId, { ...payload, is_primary: true });
+    if (needsPrimarySwitch && primary) {
+      await runDiagnosisMutation("update", primary.id, { diagnosis_type: "FINAL", is_primary: false });
+      await runDiagnosisMutation("update", diagnosisId, { ...payload, diagnosis_type: "FINAL", is_primary: true });
       return;
     }
     await runDiagnosisMutation("update", diagnosisId, payload);

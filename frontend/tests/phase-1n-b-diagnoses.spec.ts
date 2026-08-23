@@ -200,6 +200,45 @@ test.describe("Phase 1N-B clinician diagnosis workflow", () => {
     }
   });
 
+  test("edits a secondary final to primary by demoting first and using the fresh ETag", async ({ page }) => {
+    await createConsultation(page, "Phase1NBF-EditPrimary-");
+    await openDiagnosis(page);
+    const first = await saveFinal(page, "Phase 1N-B-F synthetic primary A", true);
+    const second = await saveFinal(page, "Phase 1N-B-F synthetic secondary B", false);
+    const primaryId = first.data.diagnoses[0].id;
+    const secondaryId = second.data.diagnoses[1].id;
+    const secondaryCard = page.getByTestId("diagnosis-" + secondaryId);
+
+    await secondaryCard.getByRole("button", { name: "Edit" }).click();
+    await steadyFill(page, "#edit-diagnosis-label", "Phase 1N-B-F synthetic edited secondary B");
+    await page.getByLabel("Primary diagnosis", { exact: true }).check();
+
+    const requests: Request[] = [];
+    const listener = (request: Request) => {
+      if (request.url().includes("/diagnoses/") && request.method() === "PATCH") requests.push(request);
+    };
+    page.on("request", listener);
+    try {
+      await page.getByRole("button", { name: "Save diagnosis changes", exact: true }).click();
+      await expect.poll(() => diagnosisPatchRequests(requests).length).toBe(2);
+      const patches = diagnosisPatchRequests(requests);
+      expect(patches[0].url()).toContain("/diagnoses/" + primaryId + "/");
+      expect(patches[1].url()).toContain("/diagnoses/" + secondaryId + "/");
+      expect(JSON.parse(patches[0].postData() ?? "{}")).toEqual({ diagnosis_type: "FINAL", is_primary: false });
+      expect(JSON.parse(patches[1].postData() ?? "{}")).toMatchObject({
+        diagnosis_type: "FINAL",
+        label: "Phase 1N-B-F synthetic edited secondary B",
+        is_primary: true,
+      });
+      expect(patches[0].headers()["if-match"]).not.toBe(patches[1].headers()["if-match"]);
+      await expect(secondaryCard).toContainText("Phase 1N-B-F synthetic edited secondary B");
+      await expect(secondaryCard).toContainText("Primary");
+      await expect(page.getByTestId("diagnosis-" + primaryId)).toContainText("Secondary");
+      await expect(page.getByText("PRIMARY_DIAGNOSIS_INVALID", { exact: false })).toHaveCount(0);
+    } finally {
+      page.off("request", listener);
+    }
+  });
   test("edits active diagnoses and soft-removes without DELETE", async ({ page }) => {
     await createConsultation(page, "Phase1NB-EditRemove-");
     await openDiagnosis(page);
