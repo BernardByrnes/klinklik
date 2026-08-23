@@ -11,12 +11,19 @@ import {
   ActiveAllergy,
   AllergyStatus,
   ClinicalNoteContent,
+  Diagnosis,
   ComplaintDurationUnit,
   Encounter,
   PresentingComplaint,
   QueueEntry,
 } from "../../../features/clinic";
 import { AllergyBanner, type AllergyFormValues } from "../../../components/clinical/allergy-banner";
+import {
+  DiagnosisSection,
+  emptyDiagnosisFormState,
+  type DiagnosisFormState,
+  type DiagnosisWritePayload,
+} from "../../../components/clinical/diagnosis-section";
 import { IconAlertTriangle, IconCheckCircle, IconConsultation } from "../../../components/icons";
 import {
   Button,
@@ -192,6 +199,29 @@ type AllergyEnteredInErrorMutationVariables = AllergyContext & {
 };
 
 type AllergyReviewMutationVariables = AllergyContext;
+type DiagnosisStateResponse = {
+  diagnoses: Diagnosis[];
+  consultation_etag: string;
+};
+
+type DiagnosisConflictData = DiagnosisStateResponse & {
+  detail: string;
+  encounter_status: string;
+};
+
+type DiagnosisContext = {
+  patientId: string;
+  encounterId: string;
+  queueEntryId: string;
+  session: number;
+  etag: string;
+};
+
+type DiagnosisMutationVariables = DiagnosisContext & {
+  action: "create" | "update" | "remove";
+  diagnosisId?: string;
+  payload?: DiagnosisWritePayload;
+};
 const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues> = {
   hpi: "hpi",
   past_medical_history: "pastMedicalHistory",
@@ -246,6 +276,7 @@ type ClinicalNoteConflictData = {
   encounter_status: string;
   content: ClinicalNoteContent;
   complaints: PresentingComplaint[];
+  diagnoses: Diagnosis[];
   saved_at: string | null;
 };
 
@@ -269,7 +300,8 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
     typeof data.encounter_status !== "string" ||
     typeof data.content !== "object" ||
     data.content === null ||
-    !Array.isArray(data.complaints)
+    !Array.isArray(data.complaints) ||
+    !Array.isArray(data.diagnoses)
   ) {
     return null;
   }
@@ -279,6 +311,7 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
     encounter_status: data.encounter_status,
     content: data.content as ClinicalNoteContent,
     complaints: data.complaints as PresentingComplaint[],
+    diagnoses: data.diagnoses as Diagnosis[],
     saved_at: typeof data.saved_at === "string" ? data.saved_at : null,
   };
 }
@@ -350,6 +383,74 @@ function allergySignPrerequisiteMessage(encounter: Encounter | null) {
   if (!encounter.allergies_review_is_current) {
     return "Review the current allergy status before signing.";
   }
+  return null;
+}
+function diagnosisStateConflict(error: unknown): DiagnosisConflictData | null {
+  if (
+    !(error instanceof ApiRequestError) ||
+    error.status !== 412 ||
+    typeof error.data !== "object" ||
+    error.data === null
+  ) {
+    return null;
+  }
+  const data = error.data as Record<string, unknown>;
+  const etag = typeof data.consultation_etag === "string" ? data.consultation_etag : data.etag;
+  if (
+    typeof etag !== "string" ||
+    typeof data.detail !== "string" ||
+    typeof data.encounter_status !== "string" ||
+    !Array.isArray(data.diagnoses)
+  ) {
+    return null;
+  }
+  return {
+    diagnoses: data.diagnoses as Diagnosis[],
+    consultation_etag: etag,
+    detail: data.detail,
+    encounter_status: data.encounter_status,
+  };
+}
+
+function diagnosisMutationErrorMessage(error: unknown) {
+  if (diagnosisStateConflict(error)) {
+    return "This consultation changed elsewhere. Review the latest diagnoses before trying again.";
+  }
+  if (error instanceof ApiRequestError && typeof error.data === "object" && error.data !== null) {
+    const code = (error.data as Record<string, unknown>).code;
+    if (code === "DIAGNOSIS_LABEL_REQUIRED") return "Enter the diagnosis.";
+    if (code === "NO_DIAGNOSIS_REASON_REQUIRED") return "Enter a reason for recording no final diagnosis.";
+    if (code === "PRIMARY_DIAGNOSIS_INVALID") return "Only one final diagnosis can be primary.";
+    if (code === "DIAGNOSIS_STATE_INVALID") return "The current final diagnosis state conflicts with this action. Review the diagnosis list first.";
+    if (code === "DIAGNOSIS_IMMUTABLE") return "This encounter is signed and diagnoses can no longer be changed.";
+  }
+  return errorMessage(error);
+}
+
+function diagnosisSignPrerequisiteMessage(diagnoses: Diagnosis[]) {
+  const finals = diagnoses.filter((diagnosis) => diagnosis.diagnosis_type === "FINAL");
+  const noDiagnoses = diagnoses.filter((diagnosis) => diagnosis.diagnosis_type === "NO_DIAGNOSIS");
+  if (finals.length > 0 && noDiagnoses.length > 0) {
+    return "Review the final diagnosis state before signing.";
+  }
+  if (noDiagnoses.length > 0) {
+    return noDiagnoses.length === 1 && Boolean(noDiagnoses[0].no_diagnosis_reason.trim())
+      ? null
+      : "Review the final diagnosis state before signing.";
+  }
+  if (finals.length === 0) return "Record a final diagnosis or document why no final diagnosis was reached before signing.";
+  const primaryCount = finals.filter((diagnosis) => diagnosis.is_primary).length;
+  if (primaryCount === 0) return "Choose one primary final diagnosis before signing.";
+  if (primaryCount !== 1) return "Review the final diagnosis state before signing.";
+  return null;
+}
+
+function diagnosisSignServerErrorMessage(error: unknown) {
+  if (!(error instanceof ApiRequestError) || typeof error.data !== "object" || error.data === null) return null;
+  const code = (error.data as Record<string, unknown>).code;
+  if (code === "DIAGNOSIS_REQUIRED") return "Record a final diagnosis or document why no final diagnosis was reached before signing.";
+  if (code === "PRIMARY_DIAGNOSIS_REQUIRED") return "Choose one primary final diagnosis before signing.";
+  if (code === "PRIMARY_DIAGNOSIS_INVALID" || code === "DIAGNOSIS_STATE_INVALID") return "Review the final diagnosis state before signing.";
   return null;
 }
 const COMPLAINT_DURATION_UNITS: ComplaintDurationUnit[] = ["HOURS", "DAYS", "WEEKS", "MONTHS"];
@@ -569,7 +670,7 @@ const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
   history: "Start the encounter to capture the presenting complaint, HPI, and relevant past history.",
   examination: "Record the general physical examination in the clinician-authored note.",
   investigations: "Investigations are not implemented in this foundation phase.",
-  diagnosis: "Diagnosis capture is reserved for a later consultation phase.",
+  diagnosis: "Start the encounter to record working, final, or no-final-diagnosis disposition.",
   treatment: "Treatment capture is reserved for a later consultation phase.",
 };
 
@@ -1272,6 +1373,9 @@ function ConsultationsWorkspace() {
   const [reviewedNormalActionOpen, setReviewedNormalActionOpen] = useState(false);
   const [reviewedNormalSelection, setReviewedNormalSelection] = useState<ExaminationField[]>([]);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [diagnosisFormState, setDiagnosisFormState] = useState<DiagnosisFormState>(emptyDiagnosisFormState());
+  const [diagnosisMutationError, setDiagnosisMutationError] = useState("");
+  const [diagnosisMutationBusy, setDiagnosisMutationBusy] = useState(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttemptRef = useRef(0);
@@ -1289,8 +1393,12 @@ function ConsultationsWorkspace() {
   const draftSessionRef = useRef(0);
   const allergyFormDirtyRef = useRef(false);
   const allergyMutationInFlightRef = useRef(false);
+  const diagnosisFormDirtyRef = useRef(false);
+  const diagnosisMutationInFlightRef = useRef(false);
+  const diagnosisReconciliationInFlightRef = useRef(false);
   const activePatientIdRef = useRef<string | null>(null);
   const activeEncounterIdRef = useRef<string | null>(null);
+  const signGuardErrorRef = useRef<string | null>(null);
 
   function hasDirtyDraft() {
     return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current;
@@ -1309,13 +1417,17 @@ function ConsultationsWorkspace() {
     retryAttemptRef.current = 0;
     allergyFormDirtyRef.current = false;
     allergyMutationInFlightRef.current = false;
+    diagnosisFormDirtyRef.current = false;
+    diagnosisMutationInFlightRef.current = false;
+    diagnosisReconciliationInFlightRef.current = false;
     activePatientIdRef.current = null;
     activeEncounterIdRef.current = null;
+    signGuardErrorRef.current = null;
     draftSessionRef.current += 1;
   }, []);
 
   function hasUnsavedContent() {
-    return hasDirtyDraft() || allergyFormDirtyRef.current;
+    return hasDirtyDraft() || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current;
   }
 
   const queue = useQuery({
@@ -1355,6 +1467,41 @@ function ConsultationsWorkspace() {
     });
   }
 
+  function applyDiagnosisSnapshot(diagnoses: Diagnosis[], etag?: string, encounterStatus?: string) {
+    if (etag && activeEncounterIdRef.current) encounterEtagRef.current = etag;
+    setEncounter((current) => {
+      if (!current || current.id !== activeEncounterIdRef.current) return current;
+      return {
+        ...current,
+        diagnoses,
+        ...(etag ? { consultation_etag: etag } : {}),
+        ...(encounterStatus ? { status: encounterStatus } : {}),
+      };
+    });
+  }
+
+  function currentDiagnosisContext(): DiagnosisContext | null {
+    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+      setDiagnosisMutationError("The current consultation revision is unavailable. Reload before changing diagnoses.");
+      return null;
+    }
+    return {
+      patientId: selected.patient,
+      encounterId: encounter.id,
+      queueEntryId: selected.id,
+      session: draftSessionRef.current,
+      etag: encounterEtagRef.current,
+    };
+  }
+
+  function isCurrentDiagnosisMutation(variables: Pick<DiagnosisContext, "session" | "patientId" | "encounterId" | "queueEntryId">) {
+    return (
+      variables.session === draftSessionRef.current &&
+      variables.patientId === activePatientIdRef.current &&
+      variables.encounterId === activeEncounterIdRef.current &&
+      variables.queueEntryId === selectedQueueEntryIdRef.current
+    );
+  }
   function currentAllergyContext(): AllergyContext | null {
     if (!encounter?.id || !selected?.patient || !encounter.allergy_state_etag) {
       setAllergyMutationError("The current allergy state is unavailable. Reload the consultation before trying again.");
@@ -1416,6 +1563,8 @@ function ConsultationsWorkspace() {
       !encounter?.id ||
       !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
+      diagnosisMutationInFlightRef.current ||
+      diagnosisReconciliationInFlightRef.current ||
       isTerminalEncounterStatus(encounter.status)
     ) {
       return;
@@ -1444,7 +1593,7 @@ function ConsultationsWorkspace() {
         markRetrying();
         return;
       }
-      if (clinicalMutationInFlightRef.current) {
+      if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
         autosaveDeferredRef.current = true;
         return;
       }
@@ -1461,11 +1610,18 @@ function ConsultationsWorkspace() {
     clinicalMutationInFlightRef.current = false;
     setSavedAt(null);
     closeReviewedNormalAction();
+    setDiagnosisFormState(emptyDiagnosisFormState());
+    setDiagnosisMutationError("");
+    setDiagnosisMutationBusy(false);
+    diagnosisFormDirtyRef.current = false;
+    diagnosisMutationInFlightRef.current = false;
+    diagnosisReconciliationInFlightRef.current = false;
     const draft = consultationDraftFromEncounter(created);
     const values = editableDraftValuesFromContent(draft.content);
     encounterEtagRef.current = created.consultation_etag ?? null;
     activePatientIdRef.current = created.patient;
     activeEncounterIdRef.current = created.id;
+    signGuardErrorRef.current = null;
     setAllergyMutationError("");
     noteContentRef.current = draft.content;
     draftValuesRef.current = values;
@@ -1540,6 +1696,10 @@ function ConsultationsWorkspace() {
       setError("The current consultation revision is unavailable. Reload before saving.");
       return null;
     }
+    if (diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+      autosaveDeferredRef.current = true;
+      return null;
+    }
     const values = { ...draftValuesRef.current };
     const fields = Array.from(dirtyFieldsRef.current);
     const complaintSnapshot = complaintsDirtyRef.current ? cloneComplaints(complaintsDraftRef.current) : undefined;
@@ -1566,6 +1726,7 @@ function ConsultationsWorkspace() {
   }
 
   function updateComplaints(next: PresentingComplaint[]) {
+    signGuardErrorRef.current = null;
     const snapshot = cloneComplaints(next);
     complaintsDraftRef.current = snapshot;
     setComplaints(snapshot);
@@ -1607,6 +1768,12 @@ function ConsultationsWorkspace() {
     clinicalMutationInFlightRef.current = false;
     setSavedAt(null);
     closeReviewedNormalAction();
+    setDiagnosisFormState(emptyDiagnosisFormState());
+    setDiagnosisMutationError("");
+    setDiagnosisMutationBusy(false);
+    diagnosisFormDirtyRef.current = false;
+    diagnosisMutationInFlightRef.current = false;
+    diagnosisReconciliationInFlightRef.current = false;
     draftSessionRef.current += 1;
     noteContentRef.current = {};
     encounterEtagRef.current = null;
@@ -1620,6 +1787,7 @@ function ConsultationsWorkspace() {
     selectedQueueEntryIdRef.current = entry.id;
     activePatientIdRef.current = entry.patient;
     activeEncounterIdRef.current = null;
+    signGuardErrorRef.current = null;
     allergyFormDirtyRef.current = false;
     allergyMutationInFlightRef.current = false;
     setAllergyMutationError("");
@@ -1837,6 +2005,237 @@ function ConsultationsWorkspace() {
     addAllergyMutation.isPending ||
     enterAllergyInErrorMutation.isPending ||
     reviewAllergiesMutation.isPending;
+  async function reconcileDiagnosisConflict(variables: DiagnosisMutationVariables, conflict: DiagnosisConflictData) {
+    if (!isCurrentDiagnosisMutation(variables)) return;
+    try {
+      const remote = await apiRequest<Encounter>("/api/v1/clinic/encounters/" + variables.encounterId + "/");
+      if (
+        !isCurrentDiagnosisMutation(variables) ||
+        remote.id !== variables.encounterId ||
+        remote.patient !== variables.patientId ||
+        remote.queue_entry !== variables.queueEntryId
+      ) {
+        return;
+      }
+      const remoteContent = consultationContent(remote);
+      const remoteValues = editableDraftValuesFromContent(remoteContent);
+      const remoteFields = changedClinicalFields(noteContentRef.current, remoteContent);
+      const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      const alreadyAppliedFields = overlappingFields.filter((field) => {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        return draftValuesRef.current[draftKey] === remoteValues[draftKey];
+      });
+      const trueOverlappingFields = overlappingFields.filter((field) => !alreadyAppliedFields.includes(field));
+      const serverComplaints = cloneComplaints(remote.complaints ?? []);
+      const complaintsChangedRemotely = !complaintsEqual(serverComplaints, authoritativeComplaintsRef.current);
+      const complaintWasAlreadyApplied = complaintsDirtyRef.current && complaintsChangedRemotely && complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const trueComplaintConflict = complaintsDirtyRef.current && complaintsChangedRemotely && !complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const latestEtag = remote.consultation_etag ?? conflict.consultation_etag;
+
+      noteContentRef.current = remoteContent;
+      encounterEtagRef.current = latestEtag;
+      authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
+      applyDiagnosisSnapshot(remote.diagnoses ?? conflict.diagnoses, latestEtag, remote.status);
+      if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
+        complaintsDraftRef.current = cloneComplaints(serverComplaints);
+        setComplaints(cloneComplaints(serverComplaints));
+        complaintsDirtyRef.current = false;
+        setComplaintConflict(null);
+      } else if (trueComplaintConflict) {
+        setComplaintConflict(cloneComplaints(serverComplaints));
+      }
+      for (const field of alreadyAppliedFields) {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        if (draftValuesRef.current[draftKey] === remoteValues[draftKey]) dirtyFieldsRef.current.delete(field);
+      }
+      rebaseVisibleDraft(remoteContent, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
+
+      if (isTerminalEncounterStatus(remote.status)) {
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+      }
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict) {
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+        setDraftSaveState("unsaved");
+        const complaintMessage = trueComplaintConflict
+          ? " Presenting complaints changed elsewhere; your unsaved complaint list has been preserved."
+          : "";
+        setError(conflictMessage(remoteFields, trueOverlappingFields, "save") + complaintMessage);
+      } else if (!hasDirtyDraft()) {
+        autosaveBlockedRef.current = false;
+        resetRetryState();
+        setDraftSaveState("saved");
+        setNotice("Latest consultation state loaded. The diagnosis change was not replayed.");
+        setError("");
+      } else {
+        autosaveBlockedRef.current = false;
+        setDraftSaveState("unsaved");
+        setNotice("Latest consultation state loaded. The diagnosis change was not replayed.");
+        setError("");
+        if (retryActiveRef.current) scheduleRetry();
+        else scheduleAutosave();
+      }
+    } catch {
+      if (isCurrentDiagnosisMutation(variables)) {
+        autosaveBlockedRef.current = hasDirtyDraft();
+        cancelAutosaveTimer();
+        resetRetryState();
+        setDiagnosisMutationError("The latest consultation could not be loaded. Reload before trying the diagnosis change again.");
+      }
+    } finally {
+      if (isCurrentDiagnosisMutation(variables)) {
+        diagnosisReconciliationInFlightRef.current = false;
+        diagnosisMutationInFlightRef.current = false;
+        setDiagnosisMutationBusy(false);
+      }
+    }
+  }
+
+  const diagnosisMutation = useMutation<DiagnosisStateResponse, unknown, DiagnosisMutationVariables>({
+    mutationFn: ({ action, encounterId, diagnosisId, etag, payload }) => {
+      const path = action === "create"
+        ? "/api/v1/clinic/encounters/" + encounterId + "/diagnoses/"
+        : action === "update"
+          ? "/api/v1/clinic/encounters/" + encounterId + "/diagnoses/" + diagnosisId + "/"
+          : "/api/v1/clinic/encounters/" + encounterId + "/diagnoses/" + diagnosisId + "/remove/";
+      return apiRequest<DiagnosisStateResponse>(path, {
+        method: action === "create" ? "POST" : action === "update" ? "PATCH" : "POST",
+        headers: { "If-Match": etag },
+        body: JSON.stringify(action === "remove" ? {} : payload ?? {}),
+      });
+    },
+    onMutate: (variables) => {
+      if (!isCurrentDiagnosisMutation(variables)) return;
+      diagnosisMutationInFlightRef.current = true;
+      diagnosisReconciliationInFlightRef.current = false;
+      setDiagnosisMutationBusy(true);
+      setDiagnosisMutationError("");
+      setNotice("");
+      cancelAutosaveTimer();
+      cancelRetryTimer();
+      autosaveDeferredRef.current = true;
+    },
+    onSuccess: (saved, variables) => {
+      if (!isCurrentDiagnosisMutation(variables)) return;
+      diagnosisMutationInFlightRef.current = false;
+      diagnosisReconciliationInFlightRef.current = false;
+      setDiagnosisMutationBusy(false);
+      signGuardErrorRef.current = null;
+      setError("");
+      applyDiagnosisSnapshot(saved.diagnoses, saved.consultation_etag);
+      setDiagnosisMutationError("");
+      setNotice("Diagnosis record updated.");
+      autosaveDeferredRef.current = false;
+      if (hasDirtyDraft()) {
+        if (retryActiveRef.current) scheduleRetry();
+        else scheduleAutosave();
+      }
+    },
+    onError: (reason, variables) => {
+      if (!variables || !isCurrentDiagnosisMutation(variables)) return;
+      diagnosisMutationInFlightRef.current = false;
+      autosaveDeferredRef.current = false;
+      const conflict = diagnosisStateConflict(reason);
+      if (conflict) {
+        setDiagnosisMutationError("This consultation changed elsewhere. Review the latest diagnoses before trying again.");
+        if (hasDirtyDraft()) {
+          diagnosisReconciliationInFlightRef.current = true;
+          setDiagnosisMutationBusy(true);
+          void reconcileDiagnosisConflict(variables, conflict);
+          return;
+        }
+        applyDiagnosisSnapshot(conflict.diagnoses, conflict.consultation_etag, conflict.encounter_status);
+        setDiagnosisMutationBusy(false);
+        if (isTerminalEncounterStatus(conflict.encounter_status)) {
+          cancelAutosaveTimer();
+          resetRetryState();
+        }
+        setNotice("Latest diagnoses loaded. Review them before trying this action again.");
+        return;
+      }
+      diagnosisReconciliationInFlightRef.current = false;
+      setDiagnosisMutationBusy(false);
+      setDiagnosisMutationError(diagnosisMutationErrorMessage(reason));
+      setNotice("");
+      if (hasDirtyDraft()) {
+        if (retryActiveRef.current) scheduleRetry();
+        else scheduleAutosave();
+      }
+    },
+  });
+  async function runDiagnosisMutation(
+    action: DiagnosisMutationVariables["action"],
+    diagnosisId: string | undefined,
+    payload?: DiagnosisWritePayload,
+  ): Promise<DiagnosisStateResponse> {
+    if (clinicalMutationInFlightRef.current) {
+      setDiagnosisMutationError("Wait for the consultation save or sign request to finish before changing diagnoses.");
+      throw new Error("A consultation mutation is already in flight.");
+    }
+    if (diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+      setDiagnosisMutationError("Wait for the diagnosis update to finish before trying another diagnosis action.");
+      throw new Error("A diagnosis mutation is already in flight.");
+    }
+    const context = currentDiagnosisContext();
+    if (!context) throw new Error("The current consultation revision is unavailable.");
+    return diagnosisMutation.mutateAsync({ ...context, action, diagnosisId, payload });
+  }
+
+  async function createDiagnosis(payload: DiagnosisWritePayload) {
+    const currentPrimary = encounter?.diagnoses?.find(
+      (diagnosis) => diagnosis.diagnosis_type === "FINAL" && diagnosis.is_primary,
+    );
+    if (payload.diagnosis_type === "FINAL" && payload.is_primary && currentPrimary) {
+      const existingIds = new Set((encounter?.diagnoses ?? []).map((diagnosis) => diagnosis.id));
+      const created = await runDiagnosisMutation("create", undefined, { ...payload, is_primary: false });
+      const createdFinal = created.diagnoses.find(
+        (diagnosis) => diagnosis.diagnosis_type === "FINAL" && !existingIds.has(diagnosis.id),
+      );
+      if (!createdFinal) {
+        setDiagnosisMutationError("The new final diagnosis could not be identified. Review the diagnosis list before trying again.");
+        throw new Error("Created final diagnosis was not present in the authoritative response.");
+      }
+      await runDiagnosisMutation("update", currentPrimary.id, { diagnosis_type: "FINAL", is_primary: false });
+      await runDiagnosisMutation("update", createdFinal.id, { diagnosis_type: "FINAL", is_primary: true });
+      return;
+    }
+    await runDiagnosisMutation("create", undefined, payload);
+  }
+
+  async function saveDiagnosisEdit(diagnosisId: string, payload: DiagnosisWritePayload) {
+    const current = encounter?.diagnoses?.find((diagnosis) => diagnosis.id === diagnosisId);
+    const primary = encounter?.diagnoses?.find((diagnosis) => diagnosis.diagnosis_type === "FINAL" && diagnosis.is_primary);
+    const needsPrimarySwitch = payload.diagnosis_type === "FINAL" &&
+      payload.is_primary === true &&
+      !current?.is_primary &&
+      Boolean(primary && primary.id !== diagnosisId);
+    if (needsPrimarySwitch) {
+      await runDiagnosisMutation("update", diagnosisId, { ...payload, is_primary: false });
+      await runDiagnosisMutation("update", diagnosisId, { ...payload, is_primary: true });
+      return;
+    }
+    await runDiagnosisMutation("update", diagnosisId, payload);
+  }
+
+  async function setPrimaryDiagnosis(diagnosisId: string) {
+    const target = encounter?.diagnoses?.find((diagnosis) => diagnosis.id === diagnosisId && diagnosis.diagnosis_type === "FINAL");
+    if (!target || target.is_primary) return;
+    const currentPrimary = encounter?.diagnoses?.find((diagnosis) => diagnosis.diagnosis_type === "FINAL" && diagnosis.is_primary);
+    if (currentPrimary) {
+      await runDiagnosisMutation("update", currentPrimary.id, { diagnosis_type: "FINAL", is_primary: false });
+    }
+    await runDiagnosisMutation("update", target.id, { diagnosis_type: "FINAL", is_primary: true });
+  }
+
+  async function removeDiagnosis(diagnosisId: string) {
+    await runDiagnosisMutation("remove", diagnosisId);
+  }
+
+  const diagnosisMutationPending = diagnosisMutationBusy || diagnosisReconciliationInFlightRef.current;
   const saveDraft = useMutation<NoteSaveResponse, unknown, DraftMutationVariables>({
     mutationFn: ({ content, complaintSnapshot, encounterId, etag, origin }) =>
       apiRequest<NoteSaveResponse>(
@@ -1887,12 +2286,13 @@ function ConsultationsWorkspace() {
       setNotice(stillDirty
         ? "Consultation draft saved; newer edits remain unsaved."
         : (variables.origin === "autosave" ? "Consultation draft autosaved." : "Consultation draft saved."));
-      setError("");
+      setError(signGuardErrorRef.current ?? "");
       if (stillDirty) scheduleAutosave();
     },
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;
       clinicalMutationInFlightRef.current = false;
+      signGuardErrorRef.current = null;
       const conflict = clinicalNoteConflict(reason);
       if (!conflict) {
         autosaveDeferredRef.current = false;
@@ -1906,6 +2306,7 @@ function ConsultationsWorkspace() {
         return;
       }
 
+      applyDiagnosisSnapshot(conflict.diagnoses, conflict.etag, conflict.encounter_status);
       const remoteValues = editableDraftValuesFromContent(conflict.content);
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
@@ -1992,6 +2393,8 @@ function ConsultationsWorkspace() {
       !retryActiveRef.current ||
       offlineRef.current ||
       clinicalMutationInFlightRef.current ||
+      diagnosisMutationInFlightRef.current ||
+      diagnosisReconciliationInFlightRef.current ||
       !encounter?.id ||
       !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
@@ -2036,7 +2439,7 @@ function ConsultationsWorkspace() {
       ) {
         return;
       }
-      if (offlineRef.current || clinicalMutationInFlightRef.current) return;
+      if (offlineRef.current || clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) return;
       attemptRetryNow();
     }, delay);
   }
@@ -2076,6 +2479,8 @@ function ConsultationsWorkspace() {
         hasDirtyDraft() &&
         !autosaveBlockedRef.current &&
         !clinicalMutationInFlightRef.current &&
+        !diagnosisMutationInFlightRef.current &&
+        !diagnosisReconciliationInFlightRef.current &&
         encounter?.id &&
         !isTerminalEncounterStatus(encounter.status)
       ) {
@@ -2093,7 +2498,7 @@ function ConsultationsWorkspace() {
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
-      if (!hasDirtyDraft() && !allergyFormDirtyRef.current) return;
+      if (!hasDirtyDraft() && !allergyFormDirtyRef.current && !diagnosisFormDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     }
@@ -2118,6 +2523,7 @@ function ConsultationsWorkspace() {
     onSuccess: (signed, variables) => {
       if (variables.session !== draftSessionRef.current) return;
       clinicalMutationInFlightRef.current = false;
+      signGuardErrorRef.current = null;
       resetRetryState();
       cancelAutosaveTimer();
       const signedDraft = editableDraftValuesFromContent(signed.content);
@@ -2157,10 +2563,17 @@ function ConsultationsWorkspace() {
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;
       clinicalMutationInFlightRef.current = false;
+      signGuardErrorRef.current = null;
       resetRetryState();
       const conflict = clinicalNoteConflict(reason);
       setConfirmingSign(false);
       if (!conflict) {
+        const diagnosisMessage = diagnosisSignServerErrorMessage(reason);
+        if (diagnosisMessage) {
+          setActiveSection("diagnosis");
+          setError(diagnosisMessage);
+          return;
+        }
         const allergyMessage = signAllergyServerErrorMessage(reason);
         if (allergyMessage) {
           setActiveSection("summary");
@@ -2175,6 +2588,7 @@ function ConsultationsWorkspace() {
         setError(errorMessage(reason));
         return;
       }
+      applyDiagnosisSnapshot(conflict.diagnoses, conflict.etag, conflict.encounter_status);
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
       const alreadyAppliedFields = overlappingFields.filter((field) => {
@@ -2220,6 +2634,7 @@ function ConsultationsWorkspace() {
     },
   });
   function updateClinicalField(field: ClinicalNoteField, value: string, setValue: (value: string) => void) {
+    signGuardErrorRef.current = null;
     setValue(value);
     draftValuesRef.current = {
       ...draftValuesRef.current,
@@ -2279,7 +2694,7 @@ function ConsultationsWorkspace() {
   }
 
   function saveCurrentDraft() {
-    if (clinicalMutationInFlightRef.current) return;
+    if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) return;
     cancelAutosaveTimer();
     resetRetryState();
     autosaveDeferredRef.current = false;
@@ -2288,31 +2703,56 @@ function ConsultationsWorkspace() {
     if (mutation) saveDraft.mutate(mutation);
   }
 
+  function showSignGuard(message: string) {
+    signGuardErrorRef.current = message;
+    setError(message);
+  }
+
   function signCurrentDraft() {
+    if (diagnosisFormDirtyRef.current) {
+      setActiveSection("diagnosis");
+      setConfirmingSign(false);
+      showSignGuard("Save or cancel the diagnosis changes before signing.");
+      return;
+    }
+    if (diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+      setActiveSection("diagnosis");
+      setConfirmingSign(false);
+      showSignGuard("Wait for the diagnosis update to finish before signing.");
+      return;
+    }
+    const diagnosisPrerequisite = diagnosisSignPrerequisiteMessage(encounter?.diagnoses ?? []);
+    if (diagnosisPrerequisite) {
+      setActiveSection("diagnosis");
+      setConfirmingSign(false);
+      showSignGuard(diagnosisPrerequisite);
+      return;
+    }
     const allergyPrerequisite = allergySignPrerequisiteMessage(encounter);
     const candidateComplaints = cloneComplaints(complaintsDraftRef.current);
     const complaintError = complaintsValidationMessage(candidateComplaints);
     if (allergyPrerequisite) {
       setActiveSection("summary");
       setConfirmingSign(false);
-      setError(allergyPrerequisite);
+      showSignGuard(allergyPrerequisite);
       document.getElementById("allergy-banner")?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
     if (allergyMutationInFlightRef.current) {
       setConfirmingSign(false);
-      setError("Wait for the allergy update to finish before signing.");
+      showSignGuard("Wait for the allergy update to finish before signing.");
       return;
     }
     if (candidateComplaints.length === 0 || complaintError) {
       setActiveSection("history");
       setConfirmingSign(false);
-      setError(candidateComplaints.length === 0
+      showSignGuard(candidateComplaints.length === 0
         ? "Add at least one valid presenting complaint before signing this consultation."
         : "Fix the presenting complaint before signing: " + complaintError);
       return;
     }
     if (clinicalMutationInFlightRef.current) return;
+    signGuardErrorRef.current = null;
     cancelAutosaveTimer();
     resetRetryState();
     autosaveDeferredRef.current = false;
@@ -2338,7 +2778,7 @@ function ConsultationsWorkspace() {
           {notice}
         </p>
       ) : null}
-      {error ? <ErrorBanner message={error} onDismiss={() => setError("")} /> : null}
+      {error ? <ErrorBanner message={error} onDismiss={() => { signGuardErrorRef.current = null; setError(""); }} /> : null}
 
       <section className="grid grid-cols-1 xl:grid-cols-[1fr_1.35fr] gap-5 items-start">
         <Card>
@@ -2528,6 +2968,34 @@ function ConsultationsWorkspace() {
                       onInsertReviewedNormalFindings={insertReviewedNormalFindings}
                     />
                   )
+                ) : activeSection === "diagnosis" ? (
+                  !encounter ? (
+                    <div className="space-y-3">
+                      <p className="text-[12.5px] font-medium text-secondary">
+                        Not recorded yet. Start the encounter to record the diagnosis disposition.
+                      </p>
+                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                        {startEncounter.isPending ? "Starting…" : "Start encounter"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <DiagnosisSection
+                      status={encounter.status}
+                      diagnoses={encounter.diagnoses ?? []}
+                      canManage={can("clinical.note.create")}
+                      mutationPending={diagnosisMutationPending || saveDraft.isPending || signNote.isPending}
+                      mutationError={diagnosisMutationError}
+                      formState={diagnosisFormState}
+                      onFormStateChange={setDiagnosisFormState}
+                      onCreate={createDiagnosis}
+                      onSaveEdit={saveDiagnosisEdit}
+                      onSetPrimary={setPrimaryDiagnosis}
+                      onRemove={removeDiagnosis}
+                      onFormDirtyChange={(dirty) => {
+                        diagnosisFormDirtyRef.current = dirty;
+                      }}
+                    />
+                  )
                 ) : activeSection !== "notes" ? (
                   activeSection === "summary" && !encounter ? (
                     <div className="space-y-3">
@@ -2584,7 +3052,7 @@ function ConsultationsWorkspace() {
                     </Field>
 
                     <div className="flex flex-wrap items-center gap-3">
-                      <Button variant="secondary" disabled={saveDraft.isPending || signNote.isPending} onClick={saveCurrentDraft}>
+                      <Button variant="secondary" disabled={saveDraft.isPending || signNote.isPending || diagnosisMutationPending} onClick={saveCurrentDraft}>
                         {saveDraft.isPending ? "Saving…" : "Save draft"}
                       </Button>
                       <DraftSaveStatus saveState={draftSaveState} savedAt={savedAt} />
@@ -2599,12 +3067,12 @@ function ConsultationsWorkspace() {
                         <Button variant="secondary" onClick={() => setConfirmingSign(false)}>
                           Cancel
                         </Button>
-                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending} onClick={signCurrentDraft}>
+                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending} onClick={signCurrentDraft}>
                           {signNote.isPending ? "Signing…" : "Confirm signature"}
                         </Button>
                       </div>
                     ) : (
-                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
+                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
                     )}
                   </div>
                 )}

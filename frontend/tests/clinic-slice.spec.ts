@@ -102,6 +102,11 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
 
   await page.getByRole("button", { name: "Start encounter" }).click();
   await expect(page.getByText(/ENC-/)).toBeVisible();
+  await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+  await page.getByRole("button", { name: "Record no final diagnosis", exact: true }).click();
+  await steadyFill(page, "Reason", "Phase 1N-B compatibility synthetic no final diagnosis");
+  await page.getByRole("button", { name: "Save no final diagnosis", exact: true }).click();
+  await expect(page.getByTestId("no-diagnosis-state")).toBeVisible();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await steadyFill(page, "Presenting complaint", "Phase 1L-A browser compatibility synthetic complaint");
   await page.getByRole("tab", { name: "Notes", exact: true }).click();

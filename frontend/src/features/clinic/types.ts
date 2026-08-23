@@ -69,6 +69,23 @@ export type ClinicalNote = {
   current_version: number;
 };
 
+export type DiagnosisType = "WORKING" | "FINAL" | "NO_DIAGNOSIS";
+
+export type Diagnosis = {
+  id: string;
+  encounter: string;
+  diagnosis_type: DiagnosisType;
+  code: string;
+  label: string;
+  coded: boolean;
+  certainty_note: string;
+  is_primary: boolean;
+  no_diagnosis_reason: string;
+  status: "ACTIVE";
+  recorded_by: string;
+  created_at: string;
+  updated_at: string;
+};
 export type Encounter = {
   id: string;
   encounter_no: string;
@@ -77,6 +94,7 @@ export type Encounter = {
   queue_entry: string;
   status: string;
   consultation_etag?: string;
+  diagnoses: Diagnosis[];
   complaints: PresentingComplaint[];
   triage_complaint: string | null;
   allergy_status: AllergyStatus;

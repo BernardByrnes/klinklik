@@ -62,12 +62,22 @@ async function triage(page: Page, patientName: string) {
   await expect(page.getByText(new RegExp("Triage recorded for " + patientName))).toBeVisible();
 }
 
+async function recordNoFinalDiagnosis(page: Page) {
+  await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+  await page.getByRole("button", { name: "Record no final diagnosis", exact: true }).click();
+  await steadyFill(page, "Reason", "Phase 1N-B compatibility synthetic no final diagnosis");
+  await page.getByRole("button", { name: "Save no final diagnosis", exact: true }).click();
+  await expect(page.getByTestId("no-diagnosis-state")).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+}
+
 async function createConsultation(page: Page, prefix: string) {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
   const patientName = await registerAndCheckIn(page, prefix + suffix, "078" + suffix);
   await triage(page, patientName);
   await openEncounter(page, patientName);
+  await recordNoFinalDiagnosis(page);
   return patientName;
 }
 

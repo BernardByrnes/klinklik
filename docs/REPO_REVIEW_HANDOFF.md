@@ -1014,3 +1014,80 @@ Scope and decision boundary:
 Ready for review: YES.
 
 Next approved phase: NOT YET AUTHORISED
+### Phase 1N-B — Working + Final Diagnosis Clinician Workflow
+
+Status: COMPLETE / PASS.
+
+Baseline: 8d4ea8fa6c8ce6e3b4e594a6601cbdba65a89c04 on main, aligned with origin/main before implementation.
+
+Objective and scope: complete the clinician-facing diagnosis workflow for ENC-015 using the Phase 1N-A backend foundation. This slice adds only the consultation Diagnosis section and its frontend coordination; treatment, prescriptions, laboratory workflows, reports, printing, CDS, suggestions, catalogue search, and Phase 1O work remain outside scope.
+
+Clinician workflow:
+
+- Added a real Diagnosis consultation section with separate WORKING, FINAL, and NO_DIAGNOSIS forms.
+- Working and final diagnoses support free-text labels, optional manual code snapshots, and optional certainty notes where applicable. No catalogue or diagnostic suggestion behavior was introduced.
+- Multiple active final diagnoses are supported with an explicit single-primary control. Working diagnoses can be explicitly promoted to final. Existing entries can be edited or soft-removed through the Phase 1N-A API.
+- NO_DIAGNOSIS requires an explicit reason and remains compatible with working diagnoses. Invalid or mutually exclusive combinations are blocked with safe clinician-facing validation.
+- The form is memory-only, survives History/Examination/Notes section switching, and becomes read-only for signed, closed, or cancelled encounters.
+
+Concurrency and conflict safety:
+
+- Diagnosis mutations use the existing authoritative consultation ETag and If-Match flow. Diagnosis mutation success adopts the returned active diagnosis snapshot and latest ETag before note autosave can resume.
+- Stale diagnosis mutations map 412 responses safely. A clean form adopts the authoritative diagnosis snapshot; a dirty form is rebased against the latest encounter state while preserving current local form input. The stale diagnosis mutation is never automatically replayed.
+- Existing note autosave/sign conflict responses now adopt authoritative diagnoses as part of the consultation snapshot. Non-overlapping note changes remain preserved, while overlapping diagnosis state is not silently overwritten.
+- Only one consultation mutation owns the shared ETag at a time. Diagnosis actions coordinate with note save/sign and Phase 1J/1K autosave and retry state.
+
+Signing and immutability:
+
+- Client-side sign guards require a valid final diagnosis with one primary or a valid explicit no-diagnosis state; working-only and final-without-primary states remain blocked.
+- Sign remains an explicit action and is not automatically retried. Diagnosis mutation, note save, and sign requests cannot overlap.
+- After signing, diagnosis controls and forms are read-only. Existing signed/closed/cancelled immutability remains authoritative.
+
+Navigation and session safety:
+
+- Unsaved diagnosis form state participates in patient-switch confirmation and the browser-native beforeunload warning without putting PHI into the warning.
+- Cancelling a patient switch keeps the current patient, diagnosis form, and in-memory consultation state. Confirming discards the in-memory state, invalidates the session, and prevents late responses from writing into the next patient.
+- Section switching does not warn or discard the shared consultation state. No browser PHI persistence was introduced.
+
+Audit and security:
+
+- No backend production source, audit schema, or migration was changed in Phase 1N-B. Existing Phase 1N-A diagnosis audit semantics remain authoritative.
+- No raw diagnosis content was added to audit payloads by the frontend. No localStorage, sessionStorage, IndexedDB, service worker, offline queue, background sync, or persistent draft cache was introduced.
+- The canonical backlog was not modified.
+
+Files changed:
+
+- frontend/src/app/(app)/consultations/page.tsx
+- frontend/src/features/clinic/types.ts
+- frontend/src/components/clinical/diagnosis-section.tsx
+- frontend/tests/phase-1n-b-diagnoses.spec.ts
+- frontend/tests/phase-1m-b-allergies.spec.ts (synthetic signing prerequisite fixture)
+- frontend/tests/phase-1l-b-complaints.spec.ts (synthetic signing prerequisite and reconnect timing fixture)
+- frontend/tests/clinic-slice.spec.ts (synthetic signing prerequisite fixture)
+- docs/REPO_REVIEW_HANDOFF.md
+
+Tests and validation:
+
+- Focused Phase 1N-B Playwright: 10 passed.
+- Relevant consultation Playwright regressions: 33 passed.
+- Focused Phase 1N-A/M-A/L-A backend suites: 63 passed.
+- Full backend pytest suite: 199 passed, 7 skipped. The skips are the existing PostgreSQL-only authentication/RLS and row-lock checks.
+- Django check: PASS.
+- makemigrations --check --dry-run: PASS; no changes detected.
+- migrate --plan: PASS; it identified the pre-existing Phase 1N-A clinical.0006_diagnosis_certainty_note_diagnosis_coded_and_more migration. The local development SQLite database required that existing migration to be applied for authenticated UI verification; no Phase 1N-B migration was added.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS.
+- git diff --check: PASS.
+
+Known limitations:
+
+- Diagnosis codes remain clinician-entered snapshots; diagnosis catalogue/search, coding validation, suggestions, and clinical decision support are intentionally deferred.
+- PostgreSQL/RLS and PostgreSQL row-lock checks remain environment-skipped in the local validation environment.
+- The consultation diagnosis workflow is limited to the approved Phase 1N-B slice; no treatment, prescriptions, laboratory, reports, printing, or other clinical modules were started.
+
+No browser PHI persistence was introduced.
+
+Phase 1O started: NO.
+
+Next approved phase: NOT YET AUTHORISED

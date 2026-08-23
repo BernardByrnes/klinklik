@@ -68,12 +68,22 @@ async function openHistory(page: Page, patientName: string) {
   await expect(page.getByTestId("presenting-complaints-editor")).toBeVisible();
 }
 
+async function recordNoFinalDiagnosis(page: Page) {
+  await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+  await page.getByRole("button", { name: "Record no final diagnosis", exact: true }).click();
+  await steadyFill(page, "Reason", "Phase 1N-B compatibility synthetic no final diagnosis");
+  await page.getByRole("button", { name: "Save no final diagnosis", exact: true }).click();
+  await expect(page.getByTestId("no-diagnosis-state")).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+}
+
 async function createConsultation(page: Page, prefix: string) {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
   const patientName = await registerAndCheckIn(page, prefix + suffix, "078" + suffix);
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
+  await recordNoFinalDiagnosis(page);
   return patientName;
 }
 
@@ -207,10 +217,12 @@ test.describe("Phase 1L-B structured presenting complaints", () => {
       await steadyFill(page, "Presenting complaint", "Phase 1L-B synthetic first retry value");
       await firstFailure;
       await expect(page.getByText("Not saved — retrying", { exact: true })).toBeVisible();
+      await page.evaluate(() => window.dispatchEvent(new Event("offline")));
       await steadyFill(page, "Presenting complaint", "Phase 1L-B synthetic current retry value");
       await page.getByRole("button", { name: "Add complaint" }).click();
       await steadyFill(page, "Presenting complaint 2", "Phase 1L-B synthetic current second complaint");
       const retry = page.waitForResponse((response) => response.url().endsWith("/notes/") && response.status() === 200);
+      await page.evaluate(() => window.dispatchEvent(new Event("online")));
       await retry;
       expect(requests).toHaveLength(2);
       expect((requests[0].body.complaints as unknown[])[0]).toEqual({ text: "Phase 1L-B synthetic first retry value", duration_value: null, duration_unit: null });
