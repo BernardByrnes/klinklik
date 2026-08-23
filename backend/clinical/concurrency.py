@@ -4,6 +4,7 @@ import json
 
 from django.conf import settings
 
+from clinical.diagnosis_state import active_diagnosis_snapshot, diagnosis_revision_snapshot
 from clinical.models import ClinicalNote
 
 
@@ -14,6 +15,7 @@ class ClinicalNoteRevisionConflict(ValueError):
         self.current_encounter_status = encounter.status
         self.current_content = dict(note.content or {}) if note is not None else {}
         self.current_complaints = list(encounter.complaints or [])
+        self.current_diagnoses = active_diagnosis_snapshot(encounter)
         self.current_saved_at = note.updated_at.isoformat() if note is not None else None
         super().__init__("Clinical note revision is stale.")
 
@@ -42,6 +44,7 @@ def consultation_note_etag(*, encounter, note):
         "updated_at": note.updated_at.isoformat() if note is not None else None,
         "content": note.content if note is not None else None,
         "complaints": list(encounter.complaints or []),
+        "diagnoses": diagnosis_revision_snapshot(encounter),
     }
     payload = json.dumps(state, default=str, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hmac.new(settings.SECRET_KEY.encode("utf-8"), payload, hashlib.sha256).hexdigest()

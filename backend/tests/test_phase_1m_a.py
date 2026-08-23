@@ -12,7 +12,7 @@ from clinical.models import Allergy, ClinicalNote, ClinicalNoteVersion, Encounte
 from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility
-from tests.clinical_test_helpers import establish_synthetic_nka_review
+from tests.clinical_test_helpers import establish_synthetic_final_diagnosis, establish_synthetic_nka_review
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -58,6 +58,8 @@ def create_encounter_for_patient(tenant, client, patient_id):
         format="json",
     )
     assert encounter.status_code == 201, encounter.data
+    diagnosis = establish_synthetic_final_diagnosis(client, encounter.data["id"])
+    encounter.data["consultation_etag"] = diagnosis["consultation_etag"]
     return encounter.data
 
 

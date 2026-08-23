@@ -880,3 +880,88 @@ TRI-004 shared backend: READY FOR TRIAGE UI
 No browser PHI persistence was introduced.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1N-A — Working + Final Diagnosis Backend Foundation
+
+Status: COMPLETE / PASS WITH VALIDATION LIMITATION.
+
+Baseline: `64866f2b74fd4af2e2045379bbf59e8f30a0586c` on `main`, aligned with `origin/main` before implementation.
+
+Objective and scope: implement the backend foundation for ENC-015 diagnosis capture using the existing facility-scoped `clinical.Diagnosis` model. The model was evolved in place; no competing diagnosis model, catalogue workflow, reporting, printing, CDS, treatment, medication, or Phase 1N-B functionality was introduced. Frontend production code was not changed.
+
+Diagnosis state contract:
+
+- Supported diagnosis types are `WORKING`, `FINAL`, and `NO_DIAGNOSIS`.
+- Working and final entries require a non-blank label. Code is optional and remains a verbatim snapshot; `coded` is derived from a non-blank code. Certainty notes are optional verbatim snapshots.
+- Working diagnoses cannot be primary. Active final diagnoses may have at most one primary entry per Encounter through service validation and a conditional database uniqueness constraint.
+- No-diagnosis entries clear code, label, coded, certainty, and primary state and require a non-whitespace reason. Active `NO_DIAGNOSIS` is mutually exclusive with active `FINAL`; working entries may coexist with final entries and the sign gate ignores working-only state.
+- Diagnosis rows are never physically deleted. Removal records `REMOVED`, actor, timestamp, and clears primary state; active serializers, Encounter reads, and signing exclude removed rows.
+
+API and concurrency:
+
+- Added scoped GET/POST `/api/v1/clinic/encounters/{id}/diagnoses/`, PATCH `/api/v1/clinic/encounters/{id}/diagnoses/{diagnosis_id}/`, and POST `/api/v1/clinic/encounters/{id}/diagnoses/{diagnosis_id}/remove/` endpoints.
+- Diagnosis mutations require the existing `clinical.note.create` capability, so receptionist/cashier and triage-only roles cannot mutate diagnoses. Organisation and facility scope is enforced server-side.
+- All diagnosis mutations require `If-Match`. Successful mutations return authoritative active `diagnoses`, `consultation_etag`, and an `ETag` header. Stale writes return HTTP 412 with the current active diagnosis state and latest consultation ETag.
+- Consultation ETags now include only diagnosis revision metadata: row ID, type, status, primary flag, and `updated_at`, wrapped in the existing HMAC opaque ETag. No diagnosis text is placed in the ETag payload.
+- Existing note autosave 412/409 reconciliation bodies retain their prior fields and now include authoritative active `diagnoses`.
+
+Signing and audit safety:
+
+- Signing preserves the existing allergy-state/review and presenting-complaint prerequisites, then requires either active final diagnosis entries with exactly one primary or exactly one active no-diagnosis entry with a non-blank reason and zero active finals. Working-only state returns `DIAGNOSIS_REQUIRED`; missing primary returns `PRIMARY_DIAGNOSIS_REQUIRED`; invalid primary/state combinations return `PRIMARY_DIAGNOSIS_INVALID` or `DIAGNOSIS_STATE_INVALID`.
+- Diagnosis mutations are rejected after `SIGNED`, `CLOSED`, or `CANCELLED` encounter state (and after signed/amended consultation-note state). Failed sign validation leaves the Encounter open, creates no ClinicalNoteVersion, and creates no sign audit event.
+- Diagnosis create/edit/remove audit events contain only safe state metadata such as type, coded flag, primary flag, status, and Encounter ID. Labels, codes, certainty notes, no-diagnosis reasons, and full diagnosis JSON are not written to generic audit payloads.
+- No browser PHI persistence was introduced: no localStorage, IndexedDB, service worker, offline queue, background sync, or persistent draft cache.
+
+Legacy migration:
+
+- `backend/clinical/migrations/0006_diagnosis_certainty_note_diagnosis_coded_and_more.py` adds the typed fields, soft-removal metadata, conditional uniqueness constraints, and a deterministic reconciliation step before constraints. Existing active legacy rows retain code and label verbatim, become `FINAL`, derive `coded` from code presence, and receive one deterministic primary per Encounter when none existed. ClinicalNote or ClinicalNoteVersion content is not rewritten.
+
+Files changed:
+
+- `backend/clinical/models.py`
+- `backend/clinical/diagnosis_state.py`
+- `backend/clinical/diagnoses.py`
+- `backend/clinical/concurrency.py`
+- `backend/clinical/serializers.py`
+- `backend/clinical/services.py`
+- `backend/clinical/views.py`
+- `backend/clinical/urls.py`
+- `backend/clinical/migrations/0006_diagnosis_certainty_note_diagnosis_coded_and_more.py`
+- `backend/tests/clinical_test_helpers.py`
+- `backend/tests/test_phase_1n_a.py`
+- Existing synthetic signing fixtures in `backend/tests/` were explicitly given a synthetic primary final diagnosis and refreshed ETags; no production frontend fixtures or frontend production code changed.
+- `docs/REPO_REVIEW_HANDOFF.md`
+
+Tests and validation:
+
+- Focused Phase 1N-A backend suite: 14 passed.
+- Affected consultation/signing regression suite: 156 passed, 2 PostgreSQL-only row-lock tests skipped.
+- Full backend pytest suite: 196 passed, 7 skipped. Skips are the existing five PostgreSQL authentication/RLS tests and two PostgreSQL row-lock tests.
+- Django check: PASS.
+- `makemigrations --check --dry-run`: PASS; No changes detected.
+- `migrate --plan`: PASS; expected `clinical.0006_diagnosis_certainty_note_diagnosis_coded_and_more` field, data-reconciliation, and conditional-constraint operations are planned.
+- Ruff was not available in the local runtime (`ruff` executable and Python module were absent); no configured lint result is claimed for this backend-only phase.
+- Frontend typecheck, lint, production build, and Playwright were not rerun because this slice made no frontend production changes. No frontend production file changed.
+
+Architecture and decision boundary:
+
+- Business rules remain in the explicit `clinical.diagnoses` service module; views authorize/orchestrate, serializers validate request shape, and models persist local invariants.
+- Tenant/facility scope, append-only audit behavior, signed immutability, and opaque HMAC ETags remain authoritative. The canonical backlog was not modified.
+- Blueprint OD-C4 describes mandatory diagnosis before sign-off as an open clinical decision. The explicit Phase 1N-A authorization applies that prerequisite only for this approved slice; it does not silently resolve or generalize the broader blueprint decision beyond this phase.
+- DX-001 backend: COMPLETE. DX-002 backend: COMPLETE.
+
+Known limitations:
+
+- PostgreSQL/RLS and PostgreSQL row-lock execution remain environment-skipped in this local SQLite validation; the code retains the existing transaction/lock architecture and requires PostgreSQL verification before infrastructure approval.
+- Diagnosis snapshots are intentionally active-only in normal API/Encounter responses; removed history is retained in the database but has no Phase 1N-A history endpoint.
+- Phase 1N-B frontend work remains outside this slice and unauthorised.
+
+No browser PHI persistence was introduced.
+
+Canonical backlog changed: NO.
+
+Frontend production changed: NO.
+
+Phase 1N-B started: NO.
+
+Next approved phase: NOT YET AUTHORISED

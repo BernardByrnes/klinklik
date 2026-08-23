@@ -3,7 +3,8 @@ from rest_framework import serializers
 from clinical.allergies import patient_allergy_snapshot
 from clinical.complaints import ComplaintValidationError, normalize_complaints
 from clinical.concurrency import consultation_note_etag, consultation_note_for_encounter
-from clinical.models import Allergy, ClinicalNote, Encounter, TriageAssessment
+from clinical.diagnosis_state import active_diagnosis_snapshot
+from clinical.models import Allergy, ClinicalNote, Diagnosis, Encounter, TriageAssessment
 
 
 class TriageSerializer(serializers.Serializer):
@@ -18,6 +19,30 @@ class ClinicalNoteSerializer(serializers.ModelSerializer):
         model = ClinicalNote
         fields = ["id", "note_type", "content", "status", "author", "signed_by", "signed_at", "current_version"]
         read_only_fields = ["id", "status", "author", "signed_by", "signed_at", "current_version"]
+
+
+class DiagnosisSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Diagnosis
+        fields = [
+            "id", "encounter", "diagnosis_type", "code", "label", "coded", "certainty_note",
+            "is_primary", "no_diagnosis_reason", "status", "recorded_by", "created_at", "updated_at",
+            "removed_by", "removed_at",
+        ]
+        read_only_fields = [
+            "id", "encounter", "coded", "status", "recorded_by", "created_at", "updated_at",
+            "removed_by", "removed_at",
+        ]
+
+
+class DiagnosisWriteSerializer(serializers.Serializer):
+    diagnosis_type = serializers.ChoiceField(choices=Diagnosis.TYPE_CHOICES, required=False, default="FINAL")
+    code = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    label = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    certainty_note = serializers.CharField(max_length=4000, required=False, allow_blank=True)
+    is_primary = serializers.BooleanField(required=False, default=False)
+    no_diagnosis_reason = serializers.CharField(max_length=4000, required=False, allow_blank=True)
+
 
 
 def validate_note_content(value):
@@ -84,6 +109,7 @@ class AllergyEnteredInErrorSerializer(serializers.Serializer):
 class EncounterSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     notes = ClinicalNoteSerializer(many=True, read_only=True)
+    diagnoses = serializers.SerializerMethodField()
     complaints = serializers.JSONField(read_only=True)
     triage_complaint = serializers.SerializerMethodField()
     allergy_status = serializers.SerializerMethodField()
@@ -103,6 +129,9 @@ class EncounterSerializer(serializers.ModelSerializer):
                 patient=obj.patient,
             )
         return obj._allergy_snapshot
+
+    def get_diagnoses(self, obj):
+        return active_diagnosis_snapshot(obj)
 
     def get_triage_complaint(self, obj):
         if obj.queue_entry_id is None:
@@ -142,6 +171,6 @@ class EncounterSerializer(serializers.ModelSerializer):
             "id", "encounter_no", "patient", "patient_name", "queue_entry", "complaints", "triage_complaint",
             "allergy_status", "active_allergies", "allergy_revision", "allergy_state_etag",
             "allergies_reviewed_at", "allergies_reviewed_revision", "allergies_review_is_current",
-            "facility", "clinician", "status", "started_at", "signed_at", "closed_at", "notes",
+            "facility", "clinician", "status", "started_at", "signed_at", "closed_at", "notes", "diagnoses",
             "consultation_etag",
         ]

@@ -11,6 +11,7 @@ from audit.services import record_event
 from clinical.allergies import require_current_allergy_review
 from clinical.complaints import normalize_complaints, resolve_complaints
 from clinical.concurrency import require_current_consultation_etag
+from clinical.diagnoses import require_signable_diagnosis_state
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
 from patients.models import Patient
 from scheduling.models import QueueEntry
@@ -300,6 +301,7 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, complai
     )
     if not candidate_complaints:
         raise PresentingComplaintRequired()
+    require_signable_diagnosis_state(encounter=encounter)
     if note.status in {"SIGNED", "AMENDED"}:
         raise ValueError("This note is already signed.")
     if content is not None:

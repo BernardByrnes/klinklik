@@ -117,12 +117,48 @@ class VitalsObservation(FacilityScopedModel):
 
 
 class Diagnosis(FacilityScopedModel):
+    TYPE_CHOICES = [
+        ("WORKING", "Working diagnosis"),
+        ("FINAL", "Final diagnosis"),
+        ("NO_DIAGNOSIS", "No diagnosis"),
+    ]
+    STATUS_CHOICES = [
+        ("ACTIVE", "Active"),
+        ("REMOVED", "Removed"),
+    ]
+
     encounter = models.ForeignKey(Encounter, on_delete=models.PROTECT, related_name="diagnoses")
     code = models.CharField(max_length=40, blank=True)
-    label = models.CharField(max_length=200)
-    status = models.CharField(max_length=20, default="ACTIVE")
+    label = models.CharField(max_length=200, blank=True)
+    diagnosis_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="FINAL")
+    coded = models.BooleanField(default=False)
+    certainty_note = models.TextField(blank=True)
+    is_primary = models.BooleanField(default=False)
+    no_diagnosis_reason = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
     recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="removed_diagnoses",
+    )
+    removed_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["encounter"],
+                condition=models.Q(status="ACTIVE", diagnosis_type="FINAL", is_primary=True),
+                name="uniq_active_primary_final_diagnosis",
+            ),
+            models.UniqueConstraint(
+                fields=["encounter"],
+                condition=models.Q(status="ACTIVE", diagnosis_type="NO_DIAGNOSIS"),
+                name="uniq_active_no_diagnosis",
+            ),
+        ]
 
 class Allergy(FacilityScopedModel):
     STATUS_CHOICES = [

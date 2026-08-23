@@ -10,11 +10,15 @@ from clinical.allergies import (
     review_encounter_allergies,
     set_allergy_status,
 )
-from clinical.concurrency import ClinicalNoteRevisionConflict, consultation_note_etag
-from clinical.models import Allergy, Encounter
+from clinical.concurrency import ClinicalNoteRevisionConflict, consultation_note_etag, consultation_note_for_encounter
+from clinical.diagnoses import DiagnosisDomainError, DiagnosisRevisionConflict, create_diagnosis, remove_diagnosis, update_diagnosis
+from clinical.diagnosis_state import active_diagnosis_snapshot
+from clinical.models import Allergy, Diagnosis, Encounter
 from patients.models import Patient
 from clinical.serializers import (
     AllergyCreateSerializer,
+    DiagnosisSerializer,
+    DiagnosisWriteSerializer,
     AllergyEnteredInErrorSerializer,
     AllergyStatusSerializer,
     EncounterSerializer,
@@ -84,11 +88,41 @@ def _revision_conflict_response(exc, http_status=status.HTTP_409_CONFLICT):
             "encounter_status": exc.current_encounter_status,
             "content": exc.current_content,
             "complaints": exc.current_complaints,
+            "diagnoses": exc.current_diagnoses,
             "saved_at": exc.current_saved_at,
         },
         status=http_status,
     )
     response["ETag"] = exc.current_etag
+    return response
+
+
+def _diagnosis_conflict_response(exc):
+    response = Response(
+        {
+            "code": "DIAGNOSIS_REVISION_CONFLICT",
+            "detail": "This consultation changed elsewhere; review the current diagnoses before retrying.",
+            "etag": exc.current_etag,
+            "consultation_etag": exc.current_etag,
+            "encounter_status": exc.current_encounter_status,
+            "diagnoses": exc.current_diagnoses,
+        },
+        status=status.HTTP_412_PRECONDITION_FAILED,
+    )
+    response["ETag"] = exc.current_etag
+    return response
+
+
+def _diagnosis_state_response(*, encounter, note, diagnoses, status_code=status.HTTP_200_OK):
+    etag = consultation_note_etag(encounter=encounter, note=note)
+    response = Response(
+        {
+            "diagnoses": diagnoses,
+            "consultation_etag": etag,
+        },
+        status=status_code,
+    )
+    response["ETag"] = etag
     return response
 
 
@@ -320,12 +354,162 @@ class EncounterListCreateView(TenantAPIView):
         return response
 
 
+class EncounterDiagnosisListCreateView(TenantAPIView):
+    capability = "clinical.note.create"
+
+    def _encounter(self, request, pk):
+        return get_object_or_404(
+            Encounter,
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+
+    def get(self, request, pk):
+        encounter = self._encounter(request, pk)
+        note = consultation_note_for_encounter(encounter)
+        return _diagnosis_state_response(
+            encounter=encounter,
+            note=note,
+            diagnoses=active_diagnosis_snapshot(encounter),
+        )
+
+    def post(self, request, pk):
+        encounter = self._encounter(request, pk)
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for diagnosis mutations.",
+        )
+        if error_response is not None:
+            return error_response
+        serializer = DiagnosisWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = create_diagnosis(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                encounter=encounter,
+                data=serializer.validated_data,
+                expected_etag=expected_etag,
+                request=request,
+            )
+        except DiagnosisRevisionConflict as exc:
+            return _diagnosis_conflict_response(exc)
+        except DiagnosisDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        return _diagnosis_state_response(
+            encounter=result["encounter"],
+            note=result["note"],
+            diagnoses=result["diagnoses"],
+            status_code=status.HTTP_201_CREATED,
+        )
+
+
+class EncounterDiagnosisDetailView(TenantAPIView):
+    capability = "clinical.note.create"
+
+    def _encounter(self, request, pk):
+        return get_object_or_404(
+            Encounter,
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+
+    def _diagnosis(self, request, encounter, diagnosis_id):
+        return get_object_or_404(
+            Diagnosis,
+            id=diagnosis_id,
+            encounter=encounter,
+            organisation=request.organisation,
+            facility=request.facility,
+            status="ACTIVE",
+        )
+
+    def patch(self, request, pk, diagnosis_id):
+        encounter = self._encounter(request, pk)
+        self._diagnosis(request, encounter, diagnosis_id)
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for diagnosis mutations.",
+        )
+        if error_response is not None:
+            return error_response
+        serializer = DiagnosisWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = update_diagnosis(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                encounter=encounter,
+                diagnosis_id=diagnosis_id,
+                data=serializer.validated_data,
+                expected_etag=expected_etag,
+                request=request,
+            )
+        except DiagnosisRevisionConflict as exc:
+            return _diagnosis_conflict_response(exc)
+        except DiagnosisDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        return _diagnosis_state_response(
+            encounter=result["encounter"],
+            note=result["note"],
+            diagnoses=result["diagnoses"],
+        )
+
+
+class EncounterDiagnosisRemoveView(TenantAPIView):
+    capability = "clinical.note.create"
+
+    def post(self, request, pk, diagnosis_id):
+        encounter = get_object_or_404(
+            Encounter,
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+        get_object_or_404(
+            Diagnosis,
+            id=diagnosis_id,
+            encounter=encounter,
+            organisation=request.organisation,
+            facility=request.facility,
+            status="ACTIVE",
+        )
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for diagnosis mutations.",
+        )
+        if error_response is not None:
+            return error_response
+        try:
+            result = remove_diagnosis(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                encounter=encounter,
+                diagnosis_id=diagnosis_id,
+                expected_etag=expected_etag,
+                request=request,
+            )
+        except DiagnosisRevisionConflict as exc:
+            return _diagnosis_conflict_response(exc)
+        except DiagnosisDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        return _diagnosis_state_response(
+            encounter=result["encounter"],
+            note=result["note"],
+            diagnoses=result["diagnoses"],
+        )
+
 class EncounterDetailView(TenantAPIView):
     capability = "clinical.note.create"
 
     def get_object(self, request, pk):
         return get_object_or_404(
-            Encounter.objects.prefetch_related("notes"),
+            Encounter.objects.prefetch_related("notes", "diagnoses"),
             id=pk,
             organisation=request.organisation,
             facility=request.facility,
@@ -401,6 +585,11 @@ class EncounterSignView(TenantAPIView):
         except AllergyStateConflict as exc:
             return _allergy_conflict_response(exc)
         except AllergyDomainError as exc:
+            return Response(
+                {"code": exc.code, "detail": exc.detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DiagnosisDomainError as exc:
             return Response(
                 {"code": exc.code, "detail": exc.detail},
                 status=status.HTTP_400_BAD_REQUEST,

@@ -3,7 +3,7 @@ from clinical.models import ClinicalNoteVersion, Encounter
 from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility, Organisation
-from tests.clinical_test_helpers import establish_synthetic_nka_review, note_headers
+from tests.clinical_test_helpers import establish_synthetic_final_diagnosis, establish_synthetic_nka_review, note_headers
 
 import pytest
 
@@ -46,6 +46,7 @@ def test_full_patient_to_receipt_slice(tenant, authed_client):
     assert encounter_response.status_code == 201
     encounter_id = encounter_response.data["id"]
     establish_synthetic_nka_review(authed_client, encounter_id)
+    establish_synthetic_final_diagnosis(authed_client, encounter_id)
     sign = authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"assessment": "Stable", "plan": "Hydration"}, "complaints": [{"text": "Phase 1L-A vertical-slice synthetic complaint", "duration_value": None, "duration_unit": None}]},
@@ -147,6 +148,7 @@ def test_signed_note_is_immutable(tenant, authed_client):
     ).data
     encounter_id = encounter["id"]
     establish_synthetic_nka_review(authed_client, encounter_id)
+    establish_synthetic_final_diagnosis(authed_client, encounter_id)
     assert authed_client.post(
         f"/api/v1/clinic/encounters/{encounter_id}/sign/",
         {"content": {"assessment": "First"}, "complaints": [{"text": "Phase 1L-A vertical-slice synthetic complaint", "duration_value": None, "duration_unit": None}]},

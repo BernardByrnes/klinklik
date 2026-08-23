@@ -3,7 +3,7 @@ import pytest
 from audit.models import AuditEvent
 from clinical.models import ClinicalNote, ClinicalNoteVersion
 
-from tests.clinical_test_helpers import establish_synthetic_nka_review, note_headers
+from tests.clinical_test_helpers import establish_synthetic_final_diagnosis, establish_synthetic_nka_review, note_headers
 
 pytestmark = pytest.mark.django_db
 
@@ -46,6 +46,7 @@ def create_encounter(tenant, client, label="Phase1DF"):
     )
     assert encounter.status_code == 201
     establish_synthetic_nka_review(client, encounter.data["id"])
+    establish_synthetic_final_diagnosis(client, encounter.data["id"])
     return encounter.data["id"]
 
 
