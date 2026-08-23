@@ -723,3 +723,93 @@ Known limitations:
 ENC-005 status: COMPLETE
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1M-A — Patient Allergy State + Encounter Review Backend Foundation
+
+Status: COMPLETE
+
+Objective:
+
+- Establish the patient-level allergy-state backend foundation for ENC-011 and the shared encounter review prerequisite for TRI-004.
+- Keep this slice backend-only. No allergy banner UI, triage redesign, prescribing, CDS, medication workflow, or Phase 1M-B work was started.
+
+Model and state semantics:
+
+- The existing facility-scoped Allergy model was reused and evolved; no competing allergy-detail model was introduced.
+- PatientAllergyState is explicit and unique per organisation, facility, and patient. An absent state row is interpreted as NOT_RECORDED; encounter reads do not eagerly create a row.
+- Supported state values are NOT_RECORDED, NKA, UNKNOWN, and RECORDED.
+- NKA and UNKNOWN are explicit acknowledgements and cannot coexist with active allergy rows.
+- Recorded allergies remain Allergy rows with substance, optional reaction, and canonical severity values MILD, MODERATE, or SEVERE.
+- Allergy rows use ACTIVE and ENTERED_IN_ERROR. Entering an allergy in error preserves the row and stores the reason, actor, and timestamp; it is excluded from the active encounter banner.
+- NKA and UNKNOWN do not create fake allergy rows. Entering the last active allergy in error produces NOT_RECORDED, never inferred NKA.
+- Patient allergy-state revision increments on every authoritative status, add, and entered-in-error mutation.
+
+Review freshness and signing:
+
+- Encounter stores allergies_reviewed_at, allergies_reviewed_by, and allergies_reviewed_revision.
+- Review is encounter-specific and current only when the review revision equals the current patient allergy revision.
+- Signing now blocks with ALLERGY_STATUS_REQUIRED, ALLERGY_REVIEW_REQUIRED, or ALLERGY_REVIEW_STALE as appropriate.
+- Rejected signing creates no note version, terminal encounter state, or sign audit event. The existing presenting-complaint prerequisite remains authoritative after allergy prerequisites pass.
+- Signed encounters cannot be re-reviewed, while the patient allergy state may be updated later; that correctly makes prior reviews stale.
+
+API surface:
+
+- POST /api/v1/clinic/patients/{patient_id}/allergies/ records an active allergy and returns the state ETag/revision.
+- POST /api/v1/clinic/patients/{patient_id}/allergy-status/ accepts only NKA or UNKNOWN.
+- POST /api/v1/clinic/patients/{patient_id}/allergies/{allergy_id}/entered-in-error/ requires a nonblank reason.
+- POST /api/v1/clinic/encounters/{encounter_id}/allergies/review/ records the current state revision with no PHI request body.
+- Encounter reads expose allergy_status, active allergy details (id, substance, reaction, severity), allergy revision/ETag, review timestamp/revision, and allergies_review_is_current. Entered-in-error details are not included in the normal active banner.
+- Status, entered-in-error, and review mutations require If-Match; transactions lock the patient/state/affected records. The consultation ETag was not changed.
+- allergy.manage is granted to NURSE_TRIAGE and CLINICIAN, not RECEPTION_CASHIER. Review uses clinical.note.sign.
+
+Migration:
+
+- Added backend/clinical/migrations/0005_allergy_entered_in_error_at_and_more.py.
+- Existing scopes containing ACTIVE allergy rows are reconciled to RECORDED, revision 1.
+- Patients with no allergy rows remain absent from PatientAllergyState and therefore NOT_RECORDED. No NKA or UNKNOWN state is inferred.
+- makemigrations --check --dry-run: PASS (No changes detected).
+- migrate --plan: PASS; the migration includes the model/field changes and the reconciliation operation.
+
+Audit and safety:
+
+- Allergy mutations and encounter reviews are audited with safe metadata only.
+- Audit records contain field names, state/revision metadata, and a boolean reason_recorded marker; substance, reaction, severity, and the entered-in-error reason are not written to generic audit JSON.
+- No automatic drug/allergy matching or CDS was introduced.
+- No browser PHI persistence was introduced. No localStorage, IndexedDB, service worker, offline queue, or persistent draft store was added.
+
+Tests and validation:
+
+- Focused Phase 1M-A backend suite: 24 passed.
+- Full backend suite: 182 passed, 7 skipped (PostgreSQL-only authentication and row-lock checks).
+- Existing Phase 1J, Phase 1K, Phase 1L-A, vertical-slice, signing, permissions, audit, and consultation regression coverage passed.
+- Django check: PASS.
+- Frontend production code and frontend production validation were not changed or required for this backend-only slice.
+- No Playwright tests were added because Phase 1M-A is explicitly backend-only.
+
+Files changed:
+
+- backend/accounts/services.py
+- backend/clinical/models.py
+- backend/clinical/allergies.py
+- backend/clinical/migrations/0005_allergy_entered_in_error_at_and_more.py
+- backend/clinical/serializers.py
+- backend/clinical/services.py
+- backend/clinical/views.py
+- backend/clinical/urls.py
+- backend/tests/clinical_test_helpers.py
+- Existing sign/consultation regression fixtures in backend/tests/
+- backend/tests/test_phase_1m_a.py
+- backend/tests/test_session_roles_and_invoice_lookup.py
+- backend/tests/test_vertical_slice.py
+
+Known limitations:
+
+- PostgreSQL-only RLS/row-lock tests remain environment-skipped locally; the service uses transaction boundaries, patient row locks, state row locks, and ETags for the production concurrency path.
+- The allergy banner and clinician review workflow UI remain for Phase 1M-B and were not started.
+- No clinical interpretation, medication, prescribing, or CDS behavior is included.
+
+ENC-011 backend: COMPLETE
+
+TRI-004 shared backend: READY FOR UI
+
+Next approved phase: NOT YET AUTHORISED

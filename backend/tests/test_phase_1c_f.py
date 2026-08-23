@@ -6,7 +6,7 @@ from django.db import close_old_connections, connection, IntegrityError, transac
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter
 from clinical.services import save_note, sign_note
 from core.services import tenant_atomic
-from tests.clinical_test_helpers import note_headers
+from tests.clinical_test_helpers import establish_synthetic_nka_review, note_headers
 
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -39,6 +39,7 @@ def create_encounter(tenant, client, label="Phase1CF"):
         format="json",
     )
     assert encounter.status_code == 201
+    establish_synthetic_nka_review(client, encounter.data["id"])
     return encounter.data["id"]
 
 

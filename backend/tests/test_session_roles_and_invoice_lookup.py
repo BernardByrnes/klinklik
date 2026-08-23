@@ -13,7 +13,7 @@ from tenancy.models import Department, Facility, Organisation
 
 pytestmark = pytest.mark.django_db
 
-NURSE_CAPABILITIES = {"patient.view", "queue.view", "queue.claim", "triage.record"}
+NURSE_CAPABILITIES = {"patient.view", "queue.view", "queue.claim", "triage.record", "allergy.manage"}
 
 
 def login_client(username, password, organisation_id, facility_id):
@@ -75,7 +75,7 @@ def test_login_includes_roles_and_capabilities(tenant):
     assert owner_role["department_code"] == "OPD"
     assert "billing.payment.record" in session["capabilities"]
     assert "staff.permission.grant" in session["capabilities"]
-    assert len(session["capabilities"]) == 15
+    assert len(session["capabilities"]) == 16
 
 
 def test_me_includes_roles_and_capabilities(tenant):

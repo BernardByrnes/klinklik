@@ -2,9 +2,21 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 
+from clinical.allergies import (
+    AllergyDomainError,
+    AllergyStateConflict,
+    add_allergy,
+    enter_allergy_in_error,
+    review_encounter_allergies,
+    set_allergy_status,
+)
 from clinical.concurrency import ClinicalNoteRevisionConflict, consultation_note_etag
-from clinical.models import Encounter
+from clinical.models import Allergy, Encounter
+from patients.models import Patient
 from clinical.serializers import (
+    AllergyCreateSerializer,
+    AllergyEnteredInErrorSerializer,
+    AllergyStatusSerializer,
     EncounterSerializer,
     NoteAmendSerializer,
     NoteWriteSerializer,
@@ -49,13 +61,13 @@ class TriageView(TenantAPIView):
         }, status=status.HTTP_201_CREATED)
 
 
-def _required_if_match(request):
+def _required_if_match(request, detail="If-Match is required for clinical note mutations."):
     expected_etag = request.headers.get("If-Match")
     if not expected_etag:
         return None, Response(
             {
                 "code": "PRECONDITION_REQUIRED",
-                "detail": "If-Match is required for clinical note mutations.",
+                "detail": detail,
             },
             status=status.HTTP_428_PRECONDITION_REQUIRED,
         )
@@ -96,6 +108,193 @@ def _note_response(*, encounter, note, include_version=False):
     response = Response(data)
     response["ETag"] = data["etag"]
     return response
+
+
+def _allergy_conflict_response(exc):
+    snapshot = exc.snapshot
+    response = Response(
+        {
+            "code": exc.code,
+            "detail": exc.detail,
+            "allergy_status": snapshot["status"],
+            "active_allergies": snapshot["active_allergies"],
+            "allergy_revision": snapshot["revision"],
+            "allergy_state_etag": snapshot["etag"],
+        },
+        status=status.HTTP_412_PRECONDITION_FAILED,
+    )
+    response["ETag"] = snapshot["etag"]
+    return response
+
+
+def _allergy_state_response(*, snapshot, status_code=status.HTTP_200_OK, patient=None, allergy=None):
+    data = {
+        "allergy_status": snapshot["status"],
+        "active_allergies": snapshot["active_allergies"],
+        "allergy_revision": snapshot["revision"],
+        "allergy_state_etag": snapshot["etag"],
+    }
+    if patient is not None:
+        data["patient"] = str(patient.id)
+    if allergy is not None:
+        data["allergy"] = {
+            **{
+                "id": str(allergy.id),
+                "substance": allergy.substance,
+                "reaction": allergy.reaction,
+                "severity": allergy.severity,
+            },
+            "status": allergy.status,
+            "recorded_at": allergy.recorded_at.isoformat() if allergy.recorded_at else None,
+        }
+    response = Response(data, status=status_code)
+    response["ETag"] = snapshot["etag"]
+    return response
+
+
+class PatientAllergyView(TenantAPIView):
+    capability = "allergy.manage"
+
+    def post(self, request, patient_id):
+        patient = get_object_or_404(Patient, id=patient_id, organisation=request.organisation)
+        serializer = AllergyCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            allergy, snapshot = add_allergy(
+                organisation=request.organisation,
+                facility=request.facility,
+                patient=patient,
+                actor=request.user,
+                request=request,
+                **serializer.validated_data,
+            )
+        except AllergyStateConflict as exc:
+            return _allergy_conflict_response(exc)
+        except AllergyDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        return _allergy_state_response(
+            snapshot=snapshot,
+            status_code=status.HTTP_201_CREATED,
+            patient=patient,
+            allergy=allergy,
+        )
+
+
+class PatientAllergyStatusView(TenantAPIView):
+    capability = "allergy.manage"
+
+    def post(self, request, patient_id):
+        patient = get_object_or_404(Patient, id=patient_id, organisation=request.organisation)
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for patient allergy status mutations.",
+        )
+        if error_response is not None:
+            return error_response
+        serializer = AllergyStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            _, snapshot = set_allergy_status(
+                organisation=request.organisation,
+                facility=request.facility,
+                patient=patient,
+                actor=request.user,
+                expected_etag=expected_etag,
+                request=request,
+                **serializer.validated_data,
+            )
+        except AllergyStateConflict as exc:
+            return _allergy_conflict_response(exc)
+        except AllergyDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        return _allergy_state_response(snapshot=snapshot, patient=patient)
+
+
+class PatientAllergyEnteredInErrorView(TenantAPIView):
+    capability = "allergy.manage"
+
+    def post(self, request, patient_id, allergy_id):
+        patient = get_object_or_404(Patient, id=patient_id, organisation=request.organisation)
+        allergy = get_object_or_404(
+            Allergy,
+            id=allergy_id,
+            organisation=request.organisation,
+            facility=request.facility,
+            patient=patient,
+        )
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for entering an allergy in error.",
+        )
+        if error_response is not None:
+            return error_response
+        serializer = AllergyEnteredInErrorSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            entered, _, snapshot = enter_allergy_in_error(
+                organisation=request.organisation,
+                facility=request.facility,
+                patient=patient,
+                allergy=allergy,
+                actor=request.user,
+                expected_etag=expected_etag,
+                request=request,
+                **serializer.validated_data,
+            )
+        except AllergyStateConflict as exc:
+            return _allergy_conflict_response(exc)
+        except AllergyDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        return _allergy_state_response(
+            snapshot=snapshot,
+            patient=patient,
+            allergy=entered,
+        )
+
+
+class EncounterAllergyReviewView(TenantAPIView):
+    capability = "clinical.note.sign"
+
+    def post(self, request, pk):
+        encounter = get_object_or_404(
+            Encounter,
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for allergy review acknowledgement.",
+        )
+        if error_response is not None:
+            return error_response
+        try:
+            reviewed, snapshot = review_encounter_allergies(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                encounter=encounter,
+                expected_etag=expected_etag,
+                request=request,
+            )
+        except AllergyStateConflict as exc:
+            return _allergy_conflict_response(exc)
+        except AllergyDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+        response = Response(
+            {
+                "encounter": str(reviewed.id),
+                "allergy_status": snapshot["status"],
+                "active_allergies": snapshot["active_allergies"],
+                "allergy_revision": snapshot["revision"],
+                "allergy_state_etag": snapshot["etag"],
+                "allergies_reviewed_at": reviewed.allergies_reviewed_at.isoformat(),
+                "allergies_reviewed_revision": reviewed.allergies_reviewed_revision,
+                "allergies_review_is_current": True,
+            }
+        )
+        response["ETag"] = snapshot["etag"]
+        return response
 
 
 class EncounterListCreateView(TenantAPIView):
@@ -199,6 +398,13 @@ class EncounterSignView(TenantAPIView):
             )
         except ClinicalNoteRevisionConflict as exc:
             return _revision_conflict_response(exc)
+        except AllergyStateConflict as exc:
+            return _allergy_conflict_response(exc)
+        except AllergyDomainError as exc:
+            return Response(
+                {"code": exc.code, "detail": exc.detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except PresentingComplaintRequired as exc:
             return Response(
                 {"code": exc.code, "detail": str(exc)},

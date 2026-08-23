@@ -17,6 +17,15 @@ class Encounter(FacilityScopedModel):
         "scheduling.QueueEntry", on_delete=models.PROTECT, null=True, blank=True, related_name="encounter"
     )
     complaints = models.JSONField(default=list)
+    allergies_reviewed_at = models.DateTimeField(null=True, blank=True)
+    allergies_reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reviewed_allergy_encounters",
+    )
+    allergies_reviewed_revision = models.PositiveIntegerField(null=True, blank=True)
     encounter_no = models.CharField(max_length=50)
     clinician = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="clinical_encounters"
@@ -116,13 +125,60 @@ class Diagnosis(FacilityScopedModel):
 
 
 class Allergy(FacilityScopedModel):
+    STATUS_CHOICES = [
+        ("ACTIVE", "Active"),
+        ("ENTERED_IN_ERROR", "Entered in error"),
+    ]
+    SEVERITY_CHOICES = [
+        ("MILD", "Mild"),
+        ("MODERATE", "Moderate"),
+        ("SEVERE", "Severe"),
+    ]
+
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="allergies")
     substance = models.CharField(max_length=150)
     reaction = models.CharField(max_length=200, blank=True)
-    severity = models.CharField(max_length=30, blank=True)
-    status = models.CharField(max_length=20, default="ACTIVE")
+    severity = models.CharField(max_length=30, choices=SEVERITY_CHOICES, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
     recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    recorded_at = models.DateTimeField(null=True, blank=True)
+    entered_in_error_reason = models.TextField(blank=True)
+    entered_in_error_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="allergies_entered_in_error",
+    )
+    entered_in_error_at = models.DateTimeField(null=True, blank=True)
 
+
+class PatientAllergyState(FacilityScopedModel):
+    STATUS_CHOICES = [
+        ("NOT_RECORDED", "Not recorded"),
+        ("NKA", "No known allergies"),
+        ("UNKNOWN", "Unknown"),
+        ("RECORDED", "Recorded allergies"),
+    ]
+
+    patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="allergy_states")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="NOT_RECORDED")
+    revision = models.PositiveIntegerField(default=0)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="updated_patient_allergy_states",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "facility", "patient"],
+                name="uniq_patient_allergy_state_scope",
+            )
+        ]
 
 class Procedure(FacilityScopedModel):
     encounter = models.ForeignKey(Encounter, on_delete=models.PROTECT, related_name="procedures")

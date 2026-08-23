@@ -1,8 +1,9 @@
 from rest_framework import serializers
 
+from clinical.allergies import patient_allergy_snapshot
 from clinical.complaints import ComplaintValidationError, normalize_complaints
 from clinical.concurrency import consultation_note_etag, consultation_note_for_encounter
-from clinical.models import ClinicalNote, Encounter, TriageAssessment
+from clinical.models import Allergy, ClinicalNote, Encounter, TriageAssessment
 
 
 class TriageSerializer(serializers.Serializer):
@@ -66,12 +67,42 @@ class NoteAmendSerializer(serializers.Serializer):
         return validate_note_content(value)
 
 
+class AllergyCreateSerializer(serializers.Serializer):
+    substance = serializers.CharField(max_length=150, allow_blank=False)
+    reaction = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    severity = serializers.ChoiceField(choices=Allergy.SEVERITY_CHOICES)
+
+
+class AllergyStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=[("NKA", "No known allergies"), ("UNKNOWN", "Unknown")])
+
+
+class AllergyEnteredInErrorSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=1000, allow_blank=False)
+
+
 class EncounterSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     notes = ClinicalNoteSerializer(many=True, read_only=True)
     complaints = serializers.JSONField(read_only=True)
     triage_complaint = serializers.SerializerMethodField()
+    allergy_status = serializers.SerializerMethodField()
+    active_allergies = serializers.SerializerMethodField()
+    allergy_revision = serializers.SerializerMethodField()
+    allergy_state_etag = serializers.SerializerMethodField()
+    allergies_reviewed_at = serializers.DateTimeField(read_only=True)
+    allergies_reviewed_revision = serializers.IntegerField(read_only=True, allow_null=True)
+    allergies_review_is_current = serializers.SerializerMethodField()
     consultation_etag = serializers.SerializerMethodField()
+
+    def _allergy_snapshot(self, obj):
+        if not hasattr(obj, "_allergy_snapshot"):
+            obj._allergy_snapshot = patient_allergy_snapshot(
+                organisation=obj.organisation,
+                facility=obj.facility,
+                patient=obj.patient,
+            )
+        return obj._allergy_snapshot
 
     def get_triage_complaint(self, obj):
         if obj.queue_entry_id is None:
@@ -82,12 +113,35 @@ class EncounterSerializer(serializers.ModelSerializer):
             queue_entry_id=obj.queue_entry_id,
         ).values_list("chief_complaint", flat=True).first()
 
+    def get_allergy_status(self, obj):
+        return self._allergy_snapshot(obj)["status"]
+
+    def get_active_allergies(self, obj):
+        return self._allergy_snapshot(obj)["active_allergies"]
+
+    def get_allergy_revision(self, obj):
+        return self._allergy_snapshot(obj)["revision"]
+
+    def get_allergy_state_etag(self, obj):
+        return self._allergy_snapshot(obj)["etag"]
+
+    def get_allergies_review_is_current(self, obj):
+        snapshot = self._allergy_snapshot(obj)
+        return (
+            snapshot["status"] != "NOT_RECORDED"
+            and obj.allergies_reviewed_at is not None
+            and obj.allergies_reviewed_revision == snapshot["revision"]
+        )
+
     def get_consultation_etag(self, obj):
         return consultation_note_etag(encounter=obj, note=consultation_note_for_encounter(obj))
 
     class Meta:
         model = Encounter
         fields = [
-            "id", "encounter_no", "patient", "patient_name", "queue_entry", "complaints", "triage_complaint", "facility",
-            "clinician", "status", "started_at", "signed_at", "closed_at", "notes", "consultation_etag",
+            "id", "encounter_no", "patient", "patient_name", "queue_entry", "complaints", "triage_complaint",
+            "allergy_status", "active_allergies", "allergy_revision", "allergy_state_etag",
+            "allergies_reviewed_at", "allergies_reviewed_revision", "allergies_review_is_current",
+            "facility", "clinician", "status", "started_at", "signed_at", "closed_at", "notes",
+            "consultation_etag",
         ]

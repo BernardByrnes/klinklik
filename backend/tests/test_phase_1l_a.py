@@ -5,7 +5,7 @@ import pytest
 
 from audit.models import AuditEvent
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter
-
+from tests.clinical_test_helpers import establish_synthetic_nka_review
 
 pytestmark = pytest.mark.django_db
 
@@ -43,6 +43,7 @@ def create_encounter(tenant, client, label="Phase1LA"):
         format="json",
     )
     assert encounter.status_code == 201
+    establish_synthetic_nka_review(client, encounter.data["id"])
     return encounter.data
 
 
@@ -389,6 +390,7 @@ def test_phase_1l_a_complaint_audit_metadata_has_no_raw_text_and_autosave_is_sum
         action="UPDATE",
         entity_type="Encounter",
         entity_id=encounter["id"],
+        after__reason="ENCOUNTER_DRAFT_UPDATED",
     )
     assert autosave.status_code == 200
     assert summaries.count() == 1

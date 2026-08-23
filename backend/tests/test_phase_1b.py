@@ -11,7 +11,7 @@ from core.services import tenant_atomic
 from patients.models import Patient
 from tenancy.models import Facility, Organisation
 
-from tests.clinical_test_helpers import note_headers
+from tests.clinical_test_helpers import establish_synthetic_nka_review, note_headers
 
 
 pytestmark = pytest.mark.django_db
@@ -48,6 +48,7 @@ def create_encounter(tenant, client, label="Phase1B"):
         format="json",
     )
     assert encounter.status_code == 201
+    establish_synthetic_nka_review(client, encounter.data["id"])
     return encounter.data["id"]
 
 

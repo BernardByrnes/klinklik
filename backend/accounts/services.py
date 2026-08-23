@@ -113,6 +113,7 @@ def ensure_default_permissions(organisation):
         ("triage.record", "Record triage", "T1"),
         ("clinical.note.create", "Create clinical notes", "T1"),
         ("clinical.note.sign", "Sign clinical notes", "T2"),
+        ("allergy.manage", "Manage patient allergy state", "T2"),
         ("clinical.note.amend", "Amend clinical notes", "T2"),
         ("billing.invoice.create", "Create invoices", "T1"),
         ("billing.payment.record", "Record payments", "T1"),
@@ -138,13 +139,14 @@ def ensure_default_permissions(organisation):
             "billing.payment.record",
             "billing.receipt.print",
         ],
-        "NURSE_TRIAGE": ["patient.view", "queue.view", "queue.claim", "triage.record"],
+        "NURSE_TRIAGE": ["patient.view", "queue.view", "queue.claim", "triage.record", "allergy.manage"],
         "CLINICIAN": [
             "patient.view",
             "queue.view",
             "queue.claim",
             "clinical.note.create",
             "clinical.note.sign",
+            "allergy.manage",
             "clinical.note.amend",
         ],
     }

@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from audit.models import AuditEvent
 from audit.services import record_event
+from clinical.allergies import require_current_allergy_review
 from clinical.complaints import normalize_complaints, resolve_complaints
 from clinical.concurrency import require_current_consultation_etag
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
@@ -284,6 +285,7 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, complai
         encounter=encounter,
     )
     require_current_consultation_etag(encounter=encounter, note=note, expected_etag=expected_etag)
+    require_current_allergy_review(organisation=organisation, facility=facility, encounter=encounter)
     incoming_complaints = resolve_complaints(content=content or {}, complaints=complaints)
     if note is None:
         note = save_note(
