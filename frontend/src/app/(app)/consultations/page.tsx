@@ -2005,7 +2005,7 @@ function ConsultationsWorkspace() {
     addAllergyMutation.isPending ||
     enterAllergyInErrorMutation.isPending ||
     reviewAllergiesMutation.isPending;
-  async function reconcileDiagnosisConflict(variables: DiagnosisMutationVariables, conflict: DiagnosisConflictData) {
+  async function reconcileDiagnosisConflict(variables: DiagnosisMutationVariables, _conflict: DiagnosisConflictData) {
     if (!isCurrentDiagnosisMutation(variables)) return;
     try {
       const remote = await apiRequest<Encounter>("/api/v1/clinic/encounters/" + variables.encounterId + "/");
@@ -2030,12 +2030,25 @@ function ConsultationsWorkspace() {
       const complaintsChangedRemotely = !complaintsEqual(serverComplaints, authoritativeComplaintsRef.current);
       const complaintWasAlreadyApplied = complaintsDirtyRef.current && complaintsChangedRemotely && complaintsEqual(serverComplaints, complaintsDraftRef.current);
       const trueComplaintConflict = complaintsDirtyRef.current && complaintsChangedRemotely && !complaintsEqual(serverComplaints, complaintsDraftRef.current);
-      const latestEtag = remote.consultation_etag ?? conflict.consultation_etag;
+      const latestEtag = remote.consultation_etag;
+      if (!latestEtag || !Array.isArray(remote.diagnoses)) {
+        throw new Error("Authoritative consultation revision is unavailable.");
+      }
 
       noteContentRef.current = remoteContent;
       encounterEtagRef.current = latestEtag;
       authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
-      applyDiagnosisSnapshot(remote.diagnoses ?? conflict.diagnoses, latestEtag, remote.status);
+      setEncounter((current) => {
+        if (!current || current.id !== activeEncounterIdRef.current) return current;
+        return {
+          ...current,
+          ...remote,
+          complaints: serverComplaints,
+          diagnoses: remote.diagnoses,
+          consultation_etag: latestEtag,
+          status: remote.status,
+        };
+      });
       if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
         complaintsDraftRef.current = cloneComplaints(serverComplaints);
         setComplaints(cloneComplaints(serverComplaints));
@@ -2049,6 +2062,8 @@ function ConsultationsWorkspace() {
         if (draftValuesRef.current[draftKey] === remoteValues[draftKey]) dirtyFieldsRef.current.delete(field);
       }
       rebaseVisibleDraft(remoteContent, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
+      const draftStillDirty = hasDirtyDraft();
+      if (!draftStillDirty) setConflictComparison({});
 
       if (isTerminalEncounterStatus(remote.status)) {
         cancelAutosaveTimer();
@@ -2065,7 +2080,7 @@ function ConsultationsWorkspace() {
           ? " Presenting complaints changed elsewhere; your unsaved complaint list has been preserved."
           : "";
         setError(conflictMessage(remoteFields, trueOverlappingFields, "save") + complaintMessage);
-      } else if (!hasDirtyDraft()) {
+      } else if (!draftStillDirty) {
         autosaveBlockedRef.current = false;
         resetRetryState();
         setDraftSaveState("saved");
@@ -2081,7 +2096,7 @@ function ConsultationsWorkspace() {
       }
     } catch {
       if (isCurrentDiagnosisMutation(variables)) {
-        autosaveBlockedRef.current = hasDirtyDraft();
+        autosaveBlockedRef.current = true;
         cancelAutosaveTimer();
         resetRetryState();
         setDiagnosisMutationError("The latest consultation could not be loaded. Reload before trying the diagnosis change again.");
@@ -2142,19 +2157,9 @@ function ConsultationsWorkspace() {
       const conflict = diagnosisStateConflict(reason);
       if (conflict) {
         setDiagnosisMutationError("This consultation changed elsewhere. Review the latest diagnoses before trying again.");
-        if (hasDirtyDraft()) {
-          diagnosisReconciliationInFlightRef.current = true;
-          setDiagnosisMutationBusy(true);
-          void reconcileDiagnosisConflict(variables, conflict);
-          return;
-        }
-        applyDiagnosisSnapshot(conflict.diagnoses, conflict.consultation_etag, conflict.encounter_status);
-        setDiagnosisMutationBusy(false);
-        if (isTerminalEncounterStatus(conflict.encounter_status)) {
-          cancelAutosaveTimer();
-          resetRetryState();
-        }
-        setNotice("Latest diagnoses loaded. Review them before trying this action again.");
+        diagnosisReconciliationInFlightRef.current = true;
+        setDiagnosisMutationBusy(true);
+        void reconcileDiagnosisConflict(variables, conflict);
         return;
       }
       diagnosisReconciliationInFlightRef.current = false;

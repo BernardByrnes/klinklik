@@ -1145,3 +1145,54 @@ Known limitations:
 Ready for review: YES.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1N-B-F2 — Clean Diagnosis-412 Authoritative Refresh
+
+Status: COMPLETE / PASS.
+
+Baseline: c3970b793d81f82d3623ccf5158e435e66bc0216 on main, aligned with origin/main before this correction.
+
+Objective and scope: ensure every current-session diagnosis 412 response refreshes the complete authoritative Encounter before shared consultation state is adopted. This correction covers clean HPI and presenting-complaint refresh, diagnosis snapshot refresh, ETag alignment, dirty-draft reconciliation, and delayed-response session isolation. No Phase 1O work was started.
+
+Implementation:
+
+- Every current diagnosis 412 now performs an authoritative Encounter GET before adopting diagnoses or the shared consultation ETag. The response must contain the current Encounter, patient, queue entry, consultation ETag, and diagnosis snapshot for adoption.
+- The refresh adopts authoritative ClinicalNote content, presenting complaints, diagnoses, encounter status, and consultation ETag together. Clean HPI and complaint drafts visibly update without a conflict comparison panel and without replaying the rejected diagnosis command.
+- A later note edit uses the refreshed ETag. A dirty HPI or complaint remains local, the authoritative server value remains visible for reconciliation, autosave remains blocked, and the stale diagnosis command is not replayed.
+- If the authoritative GET fails or is incomplete, no new ETag is adopted and no diagnosis replay occurs. Autosave is stopped in an uncertain state and the clinician is told to reload before trying the diagnosis change again.
+- Existing patient, encounter, queue, and current-mutation session guards prevent a delayed refresh from applying to another patient session.
+
+Tests and validation:
+
+- Focused Phase 1N-B-F2 Playwright: 5 passed.
+- Existing diagnosis primary-switch/edit regressions: 2 passed.
+- Relevant consultation, complaint, and allergy Playwright regressions: 32 passed in the combined run; one existing NKA review test had a local UI timing flake and passed when rerun in isolation (33 effective passes).
+- Phase 1N-A backend suite: 17 passed.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS.
+- Django check: PASS.
+- makemigrations --check --dry-run: PASS; no changes detected.
+- migrate --plan: PASS; no planned migration operations.
+- git diff --check: PASS.
+
+Files changed:
+
+- frontend/src/app/(app)/consultations/page.tsx
+- frontend/tests/phase-1n-b-diagnoses.spec.ts
+- docs/REPO_REVIEW_HANDOFF.md
+
+Security and scope:
+
+- Backend production changed: NO. Migration: NONE.
+- No browser PHI persistence was introduced. No localStorage, sessionStorage, IndexedDB, service worker, offline queue, background sync, or persistent draft cache was added.
+- Verification used synthetic local development data only. No credentials, secrets, real patient data, PHI, or external side effects were used or exposed.
+- Canonical backlog changed: NO. Runtime artifacts changed: NO. Phase 1O started: NO.
+
+Known limitations:
+
+- The relevant combined Playwright run exposed one pre-existing local UI timing flake in the NKA review test; the isolated rerun passed. PostgreSQL-only checks remain environment-dependent as recorded in the prior handoff.
+
+Ready for review: YES.
+
+Next approved phase: NOT YET AUTHORISED

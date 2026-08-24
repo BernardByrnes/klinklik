@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test, type Page, type Request, type Response } from "@playwright/test";
 
 const DEMO_PASSWORD = process.env.CLINICOPUS_E2E_PASSWORD;
 if (!DEMO_PASSWORD) {
@@ -136,6 +136,93 @@ function diagnosisPatchRequests(requests: Request[]) {
   return requests.filter((request) => request.method() === "PATCH" && request.url().includes("/diagnoses/"));
 }
 
+function isEncounterDetailGet(request: Request) {
+  return request.method() === "GET" &&
+    /\/api\/v1\/clinic\/encounters\/[^/]+\/$/.test(new URL(request.url()).pathname);
+}
+
+function isNotePatchRequest(request: Request) {
+  return request.method() === "PATCH" &&
+    /\/api\/v1\/clinic\/encounters\/[^/]+\/notes\/$/.test(new URL(request.url()).pathname);
+}
+
+async function saveNoteField(page: Page, label: string, value: string) {
+  await steadyFill(page, label, value);
+  const requestPromise = page.waitForRequest((request) => isNotePatchRequest(request));
+  const responsePromise = page.waitForResponse((response) => isNotePatchRequest(response.request()) && response.status() === 200);
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  const request = await requestPromise;
+  const response = await responsePromise;
+  return {
+    request,
+    response,
+    body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>,
+  };
+}
+
+async function saveWorkingExpecting412(page: Page, label: string) {
+  await page.getByRole("button", { name: "Add working diagnosis", exact: true }).click();
+  await steadyFill(page, "Diagnosis / clinical impression", label);
+  const requestPromise = page.waitForRequest((request) => request.url().endsWith("/diagnoses/") && request.method() === "POST");
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/diagnoses/") && response.request().method() === "POST" && response.status() === 412);
+  await page.getByRole("button", { name: "Save working diagnosis", exact: true }).click();
+  const request = await requestPromise;
+  const response = await responsePromise;
+  return {
+    request,
+    response,
+    body: JSON.parse(request.postData() ?? "{}") as Record<string, unknown>,
+    data: await response.json() as { consultation_etag?: string; diagnoses?: Array<{ label?: string }> },
+  };
+}
+
+async function prepareRemoteDiagnosisState(
+  page: Page,
+  patientName: string,
+  fieldLabel: string,
+  remoteValue: string,
+  remoteDiagnosisLabel: string,
+) {
+  const remotePage = await page.context().newPage();
+  await remotePage.goto("/consultations");
+  await openEncounter(remotePage, patientName);
+  await remotePage.getByRole("tab", { name: "History", exact: true }).click();
+  await saveNoteField(remotePage, fieldLabel, remoteValue);
+  await openDiagnosis(remotePage);
+  await saveWorking(remotePage, remoteDiagnosisLabel, false);
+  return remotePage;
+}
+
+async function triggerDiagnosisConflict(page: Page, label: string) {
+  await openDiagnosis(page);
+  const diagnosisRequests: Request[] = [];
+  const diagnosisResponses: number[] = [];
+  const listener = (request: Request) => {
+    if (request.url().endsWith("/diagnoses/") && request.method() === "POST") diagnosisRequests.push(request);
+  };
+  const responseListener = (response: Response) => {
+    if (response.url().endsWith("/diagnoses/") && response.request().method() === "POST") diagnosisResponses.push(response.status());
+  };
+  page.on("request", listener);
+  page.on("response", responseListener);
+  const authoritativeResponsePromise = page.waitForResponse(
+    (response) => isEncounterDetailGet(response.request()) && response.status() === 200,
+  );
+  try {
+    const conflict = await saveWorkingExpecting412(page, label);
+    const authoritativeResponse = await authoritativeResponsePromise;
+    return {
+      ...conflict,
+      diagnosisRequests,
+      diagnosisResponses,
+      authoritativeResponse,
+      authoritativeData: await authoritativeResponse.json() as { consultation_etag?: string; diagnoses?: Array<{ label?: string }> },
+    };
+  } finally {
+    page.off("request", listener);
+    page.off("response", responseListener);
+  }
+}
 test.describe("Phase 1N-B clinician diagnosis workflow", () => {
   test("shows the empty diagnosis section and saves working free text plus optional coded snapshot", async ({ page }) => {
     await createConsultation(page, "Phase1NB-Working-");
@@ -426,5 +513,188 @@ test.describe("Phase 1N-B clinician diagnosis workflow", () => {
     await page.getByRole("button", { name: "Start encounter", exact: true }).click();
     await openDiagnosis(page);
     await expect(page.getByText("Phase 1N-B synthetic patient A unsent diagnosis")).toHaveCount(0);
+  });
+  test("refreshes clean HPI and diagnoses from the authoritative encounter after diagnosis 412", async ({ page }) => {
+    const patientName = await createConsultation(page, "Phase1NBF2-CleanHPI-");
+    const remoteHpi = "Phase 1N-B-F2 synthetic remote HPI B";
+    const remoteDiagnosis = "Phase 1N-B-F2 synthetic remote diagnosis";
+    const remotePage = await prepareRemoteDiagnosisState(page, patientName, "History of present illness (HPI)", remoteHpi, remoteDiagnosis);
+    try {
+      const result = await triggerDiagnosisConflict(page, "Phase 1N-B-F2 synthetic stale diagnosis");
+      expect(result.response.status()).toBe(412);
+      expect(result.authoritativeResponse.request().method()).toBe("GET");
+      expect(result.authoritativeData.consultation_etag).toBeTruthy();
+      expect(result.request.headers()["if-match"]).not.toBe(result.authoritativeData.consultation_etag);
+      expect(result.diagnosisResponses.filter((status) => status !== 401)).toEqual([412]);
+
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      await expect(page.getByLabel("History of present illness (HPI)", { exact: true })).toHaveValue(remoteHpi);
+      await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+      await expect(page.getByTestId("diagnosis-section")).toContainText(remoteDiagnosis);
+      await expect(page.getByRole("status", { name: "Latest saved conflict values", exact: true })).toHaveCount(0);
+      await expect(page.getByText("This consultation changed elsewhere. Review the latest diagnoses before trying again.", { exact: true })).toBeVisible();
+    } finally {
+      await remotePage.close();
+    }
+  });
+
+  test("refreshes clean complaints and diagnoses from the authoritative encounter after diagnosis 412", async ({ page }) => {
+    const patientName = await createConsultation(page, "Phase1NBF2-CleanComplaint-");
+    const remoteComplaint = "Phase 1N-B-F2 synthetic remote complaint";
+    const remoteDiagnosis = "Phase 1N-B-F2 synthetic complaint diagnosis";
+    const remotePage = await prepareRemoteDiagnosisState(page, patientName, "Presenting complaint", remoteComplaint, remoteDiagnosis);
+    try {
+      const result = await triggerDiagnosisConflict(page, "Phase 1N-B-F2 synthetic stale complaint diagnosis");
+      expect(result.response.status()).toBe(412);
+      expect(result.authoritativeData.consultation_etag).toBeTruthy();
+      expect(result.request.headers()["if-match"]).not.toBe(result.authoritativeData.consultation_etag);
+      expect(result.diagnosisResponses.filter((status) => status !== 401)).toEqual([412]);
+
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      await expect(page.getByLabel("Presenting complaint", { exact: true })).toHaveValue(remoteComplaint);
+      await expect(page.getByTestId("complaint-conflict")).toHaveCount(0);
+      await expect(page.getByRole("status", { name: "Latest saved conflict values", exact: true })).toHaveCount(0);
+      await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+      await expect(page.getByTestId("diagnosis-section")).toContainText(remoteDiagnosis);
+    } finally {
+      await remotePage.close();
+    }
+  });
+
+  test("uses the refreshed ETag for a later note edit after clean diagnosis reconciliation", async ({ page }) => {
+    const patientName = await createConsultation(page, "Phase1NBF2-RefreshedBaseline-");
+    const remoteHpi = "Phase 1N-B-F2 synthetic baseline HPI B";
+    const remotePage = await prepareRemoteDiagnosisState(
+      page,
+      patientName,
+      "History of present illness (HPI)",
+      remoteHpi,
+      "Phase 1N-B-F2 synthetic baseline diagnosis",
+    );
+    try {
+      const result = await triggerDiagnosisConflict(page, "Phase1NBF2 synthetic baseline stale diagnosis");
+      const refreshedEtag = result.authoritativeData.consultation_etag;
+      expect(refreshedEtag).toBeTruthy();
+
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      const intendedHpi = "Phase 1N-B-F2 synthetic intended HPI C";
+      const note = await saveNoteField(page, "History of present illness (HPI)", intendedHpi);
+      expect(note.body.content).toEqual({ hpi: intendedHpi });
+      expect(note.request.headers()["if-match"]).toBe(refreshedEtag);
+      await expect(page.getByLabel("History of present illness (HPI)", { exact: true })).toHaveValue(intendedHpi);
+    } finally {
+      await remotePage.close();
+    }
+  });
+
+  test("preserves dirty HPI reconciliation and blocks diagnosis replay after diagnosis 412", async ({ page }) => {
+    await page.clock.install({ time: Date.now() });
+    const patientName = await createConsultation(page, "Phase1NBF2-DirtyHPI-");
+    const remoteHpi = "Phase 1N-B-F2 synthetic server HPI";
+    const localHpi = "Phase 1N-B-F2 synthetic local HPI";
+    const remotePage = await prepareRemoteDiagnosisState(
+      page,
+      patientName,
+      "History of present illness (HPI)",
+      remoteHpi,
+      "Phase1NBF2 synthetic dirty-draft diagnosis",
+    );
+    await remotePage.close();
+    await page.clock.pauseAt(Date.now());
+    const noteRequests: Request[] = [];
+    const noteListener = (request: Request) => {
+      if (isNotePatchRequest(request)) noteRequests.push(request);
+    };
+    page.on("request", noteListener);
+    try {
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      await steadyFill(page, "History of present illness (HPI)", localHpi);
+      const result = await triggerDiagnosisConflict(page, "Phase1NBF2 synthetic dirty stale diagnosis");
+
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      await expect(page.getByLabel("History of present illness (HPI)", { exact: true })).toHaveValue(localHpi);
+      await expect(page.getByTestId("conflict-server-value-hpi")).toHaveText(remoteHpi);
+      await expect(page.getByRole("status", { name: "Latest saved conflict values", exact: true })).toBeVisible();
+      await expect(page.getByText("Not saved — use Save draft.", { exact: true })).toBeVisible();
+      expect(result.diagnosisResponses.filter((status) => status !== 401)).toEqual([412]);
+      await page.clock.runFor(2500);
+      expect(result.diagnosisResponses.filter((status) => status !== 401)).toEqual([412]);
+      expect(noteRequests).toHaveLength(0);
+    } finally {
+      page.off("request", noteListener);
+      if (!remotePage.isClosed()) await remotePage.close();
+    }
+  });
+
+  test("does not apply a delayed diagnosis reconciliation to another patient session", async ({ page }) => {
+    await login(page);
+    const suffix = Date.now().toString().slice(-6);
+    const patientA = await registerAndCheckIn(page, "Phase1NBF2-RaceA-" + suffix, "080" + suffix);
+    const patientB = await registerAndCheckIn(page, "Phase1NBF2-RaceB-" + suffix, "081" + suffix);
+    await triagePatient(page, patientA);
+    await triagePatient(page, patientB);
+    await openEncounter(page, patientA);
+
+    const remoteHpi = "Phase 1N-B-F2 synthetic Patient A remote HPI";
+    const remoteDiagnosis = "Phase 1N-B-F2 synthetic Patient A diagnosis";
+    const remotePage = await page.context().newPage();
+    await remotePage.goto("/consultations");
+    await openEncounter(remotePage, patientA);
+    await remotePage.getByRole("tab", { name: "History", exact: true }).click();
+    await saveNoteField(remotePage, "History of present illness (HPI)", remoteHpi);
+    await openDiagnosis(remotePage);
+    await saveWorking(remotePage, remoteDiagnosis, false);
+    await remotePage.close();
+
+    let release: (() => void) | null = null;
+    let delayedGetStarted = false;
+    const delayedGet = new Promise<void>((resolve) => { release = resolve; });
+    let delayNextEncounterGet = true;
+    await page.route("**/api/v1/clinic/encounters/**", async (route) => {
+      if (delayNextEncounterGet && isEncounterDetailGet(route.request())) {
+        delayNextEncounterGet = false;
+        delayedGetStarted = true;
+        await delayedGet;
+      }
+      await route.continue();
+    });
+
+    try {
+      await openDiagnosis(page);
+      const lateGetResponsePromise = page.waitForResponse(
+        (response) => isEncounterDetailGet(response.request()) && response.status() === 200,
+      );
+      const conflict = await saveWorkingExpecting412(page, "Phase1NBF2 synthetic Patient A stale diagnosis");
+      expect(conflict.response.status()).toBe(412);
+      await expect.poll(() => delayedGetStarted).toBe(true);
+
+      page.once("dialog", (dialog) => {
+        expect(dialog.message()).toBe("This consultation has unsaved changes. Leave and discard them?");
+        dialog.accept();
+      });
+      await page.getByRole("listitem").filter({ hasText: patientB }).click();
+      await expect(page.getByLabel("Patient and encounter context").getByText(patientB, { exact: true })).toBeVisible();
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      const patientBStart = page.waitForResponse(
+        (response) => response.url().endsWith("/encounters/") && response.request().method() === "POST" && response.status() === 201,
+      );
+      await page.getByRole("button", { name: "Start encounter", exact: true }).click();
+      const patientBEncounter = await patientBStart;
+      const patientBData = await patientBEncounter.json() as { consultation_etag?: string };
+      expect(patientBData.consultation_etag).toBeTruthy();
+
+      if (!release) throw new Error("The delayed authoritative GET was not prepared.");
+      release();
+      await lateGetResponsePromise;
+      await expect(page.getByLabel("Patient and encounter context").getByText(patientB, { exact: true })).toBeVisible();
+      await page.getByRole("tab", { name: "History", exact: true }).click();
+      await expect(page.getByLabel("History of present illness (HPI)", { exact: true })).toHaveValue("");
+      await expect(page.getByText(remoteDiagnosis, { exact: true })).toHaveCount(0);
+
+      const patientBEdit = await saveNoteField(page, "History of present illness (HPI)", "Phase 1N-B-F2 synthetic Patient B HPI");
+      expect(patientBEdit.request.headers()["if-match"]).toBe(patientBData.consultation_etag);
+    } finally {
+      if (!page.isClosed()) await page.unroute("**/api/v1/clinic/encounters/**");
+    }
   });
 });
