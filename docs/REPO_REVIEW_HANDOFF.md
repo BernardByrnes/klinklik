@@ -1187,7 +1187,7 @@ Security and scope:
 - Backend production changed: NO. Migration: NONE.
 - No browser PHI persistence was introduced. No localStorage, sessionStorage, IndexedDB, service worker, offline queue, background sync, or persistent draft cache was added.
 - Verification used synthetic local development data only. No credentials, secrets, real patient data, PHI, or external side effects were used or exposed.
-- Canonical backlog changed: NO. Runtime artifacts changed: NO. Phase 1O started: NO.
+- Canonical backlog changed: NO. Runtime artifacts changed: NO. Phase 1O started in this Phase 1N-B-F2 slice: NO.
 
 Known limitations:
 
@@ -1196,3 +1196,41 @@ Known limitations:
 Ready for review: YES.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1O-A — Treatment Plan Backend Foundation
+
+Status: COMPLETE / PASS (backend-only foundation; ready for review).
+
+Objective and canonical basis:
+
+- DX-004 canonical wording was inspected. This slice implements only the bounded free-text treatment-plan foundation for an Encounter.
+- The later structured prescription, procedure, investigation/LAB, referral, and follow-up items, patient-copy printing, reporting, and UI remain outside this slice.
+
+Storage and validation:
+
+- Treatment-plan text is stored in the existing `ClinicalNote.content["treatment_plan"]` JSON field; no new model or migration was introduced.
+- Existing `NoteWriteSerializer` validation now accepts a string up to 4000 characters and preserves multiline text exactly. Non-string and over-limit values are rejected.
+- Existing consultation PATCH behavior is reused, including dirty-field payload handling and authoritative saved response data.
+
+Concurrency and signing:
+
+- Treatment-plan changes participate in the existing consultation ETag, If-Match, stale-revision 412 response, authoritative conflict content, and conflict-field detection.
+- A stale treatment-plan PATCH returns 412 and is not replayed automatically.
+- The existing sign flow snapshots the exact treatment plan into `ClinicalNoteVersion`; later treatment-plan mutation is blocked by signed immutability.
+
+Audit and security:
+
+- Generic ClinicalNote audit metadata records that `treatment_plan` changed without storing the raw treatment text.
+- No browser PHI persistence, frontend production code, offline queue, CDS, diagnosis suggestion, printing, or external side effect was introduced.
+
+Validation:
+
+- Focused Phase 1O-A backend tests: PASS — 4 passed.
+- Diagnosis, allergy, complaint, concurrency, autosave, and retry regressions: PASS — 85 passed.
+- Full backend suite: PASS — 203 passed, 7 expected PostgreSQL-only skips.
+- Django check: PASS.
+- `makemigrations --check --dry-run`: PASS; no changes detected.
+- `migrate --plan`: PASS; no planned migration operations.
+- Migration status: NONE.
+
+Files changed:

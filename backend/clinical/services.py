@@ -183,7 +183,7 @@ def _note_audit_metadata(content, *, complaints_changed=False):
             "family_history", "social_history", "general_examination", "cardiovascular_examination", "respiratory_examination",
             "abdominal_examination", "neurological_examination",
             "genitourinary_examination", "musculoskeletal_examination",
-            "consultation", "assessment", "plan",
+            "consultation", "assessment", "plan", "treatment_plan",
         )
         if field in content
     )
