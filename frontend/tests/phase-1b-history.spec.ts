@@ -62,6 +62,38 @@ async function triageFromQueue(page: Page, patientName: string) {
   await expect(page.getByText(new RegExp("Triage recorded for " + patientName))).toBeVisible();
 }
 
+async function ensureSignable(page: Page, reason: string) {
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  const noKnownAllergies = page.getByRole("button", { name: "No known allergies", exact: true });
+  if (await noKnownAllergies.count() > 0) {
+    const statusResponse = page.waitForResponse(
+      (response) => response.url().endsWith("/allergy-status/") && response.status() === 200,
+    );
+    await noKnownAllergies.click();
+    await statusResponse;
+  }
+  const reviewAllergies = page.getByRole("button", { name: "Review allergies", exact: true });
+  if (await reviewAllergies.count() > 0) {
+    const reviewResponse = page.waitForResponse(
+      (response) => response.url().endsWith("/allergies/review/") && response.status() === 200,
+    );
+    await reviewAllergies.click();
+    await reviewResponse;
+  }
+  await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+  const recordNoDiagnosis = page.getByRole("button", { name: "Record no final diagnosis", exact: true });
+  if (await recordNoDiagnosis.count() > 0) {
+    await recordNoDiagnosis.click();
+    await steadyFill(page, "Reason", reason);
+    const responsePromise = page.waitForResponse(
+      (response) => response.url().endsWith("/diagnoses/") && response.status() === 201,
+    );
+    await page.getByRole("button", { name: "Save no final diagnosis", exact: true }).click();
+    await responsePromise;
+  }
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+}
+
 test("persists History fields, isolates patient drafts, and hydrates after reload", async ({ page }) => {
   await login(page);
   const consoleErrors: string[] = [];
@@ -100,6 +132,8 @@ test("persists History fields, isolates patient drafts, and hydrates after reloa
   await page.getByRole("button", { name: "Save draft" }).click();
   expect((await saveResponse).status()).toBe(200);
   await expect(page.getByText("Consultation draft saved.")).toBeVisible();
+
+  await ensureSignable(page, "Phase 1B synthetic no final diagnosis for signing");
 
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(page.getByLabel("Consultation note")).toBeVisible();

@@ -47,6 +47,7 @@ export type ClinicalNoteContent = {
   neurological_examination?: string;
   genitourinary_examination?: string;
   musculoskeletal_examination?: string;
+  treatment_plan?: string;
   [key: string]: unknown;
 };
 

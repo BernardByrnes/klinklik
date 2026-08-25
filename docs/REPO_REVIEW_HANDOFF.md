@@ -1234,3 +1234,63 @@ Validation:
 - Migration status: NONE.
 
 Files changed:
+
+### Phase 1O-B — Final Verification/Reconciliation Gate
+
+Status: COMPLETE / PASS — DX-004 treatment-plan foundation and frontend workflow are ready for review.
+
+Scope and implementation:
+
+- The approved slice adds only the bounded free-text Treatment section to the existing consultation workspace.
+- Treatment text uses the existing ClinicalNote content contract, dirty-field-only submission, autosave/manual-save/retry machinery, If-Match consultation ETag, conflict handling, session guards, signed read-only state, and patient-switch protection.
+- The frontend production implementation was already present in the Phase 1O-B working tree; no frontend production correction was required during this final reconciliation.
+- Backend production source was not changed. No migration was introduced.
+
+Initial legacy consultation failure reconciliation:
+
+- Initial legacy failures: 20.
+- Stale test expectations: 6. These were two obsolete exact complaint-label selectors and four obsolete transient Consultation draft saved. assertions while newer dirty edits were still pending.
+- Fixture prerequisite gaps: 9. These were sign scenarios missing the current complaint, allergy-status/review, and final-diagnosis or NO_DIAGNOSIS prerequisites.
+- Real product regressions: 0.
+- Timing/infrastructure issues: 5. These covered debounce/autosave/request sequencing, patient-switch timing, and retry timer timing.
+- The initial Phase 1O-B focused run also exposed test-only timing races; paused fake-clock/request-gating corrections made those scenarios deterministic.
+- No production code fix was required.
+
+Test-only reconciliation updates:
+
+- frontend/tests/phase-1b-history.spec.ts: added the current synthetic sign prerequisites.
+- frontend/tests/phase-1c-history.spec.ts: added the current synthetic sign prerequisites.
+- frontend/tests/phase-1d-history.spec.ts: aligned selectors and status expectations with current behavior, added sign prerequisites, and stabilized request/timer/session sequencing without weakening assertions.
+- frontend/tests/phase-1o-b-treatment-plan.spec.ts: added fake-clock stabilization for patient switching and the existing retry/rebase timing cases.
+- No raw credentials, PHI, or runtime artifacts were added.
+
+Final validation:
+
+- Previously failing legacy tests: PASS — all 20 initial failures were resolved through stale-expectation, fixture, and timing/infrastructure corrections; no product regression remained.
+- Full consultation reliability: PASS — 42 passed across the full invocation and fresh-worker partition reruns. One monolithic invocation also hit a worker-process crash; this was treated as infrastructure and did not reproduce as an assertion failure in the partitioned verification.
+- Phase 1O-B focused Playwright: PASS — 10 passed in the final clean invocation.
+- Diagnosis regressions: PASS — 16 passed. The current diagnosis file contains 16 tests; the earlier handoff count of 15 was stale.
+- Complaint regressions: PASS — 20 passed in the current suite; the earlier 21 total included an isolated rerun of a timing case.
+- Allergy regressions: PASS — 12 passed.
+- Phase 1O-A backend contract tests: PASS — 4 passed.
+- Django check: PASS — no issues identified.
+- makemigrations --check --dry-run: PASS — no changes detected.
+- migrate --plan: PASS — no planned migration operations.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS.
+- Migration status: NONE.
+
+Security and architecture:
+
+- No browser PHI persistence was introduced: no localStorage, IndexedDB, service worker, offline queue, or persistent draft store.
+- Generic audit behavior remains metadata-only; raw treatment or other clinical text is not added to generic audit payloads.
+- No prescriptions, medication selection, dosage, interaction checking, procedures, referrals, investigations/LAB, printing, reporting, CDS, AI assistance, or external side effects were introduced.
+- Synthetic local development records only; no real patient data or external services were used.
+- Canonical backlog changed: NO.
+- Canonical architecture touched: NO.
+- Phase 1O-C and later clinical work: NOT STARTED.
+- DX-004: COMPLETE.
+- Commit: final commit SHA is reported in the completion report; this is the single requested commit.
+- Push: normal push pending after the final commit.
+- Next approved phase: NOT YET AUTHORISED.

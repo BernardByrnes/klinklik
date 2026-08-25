@@ -60,7 +60,7 @@ const WORKSPACE_SECTIONS = [
 const WORKSPACE_PANEL_ID = "consultation-workspace-panel";
 
 type WorkspaceSectionId = (typeof WORKSPACE_SECTIONS)[number]["id"];
-type FoundationSectionId = Exclude<WorkspaceSectionId, "notes">;
+type FoundationSectionId = Exclude<WorkspaceSectionId, "notes" | "treatment">;
 const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
 const AUTOSAVE_DELAY_MS = 3000;
 const RETRY_BACKOFF_MS = [2000, 5000, 10000, 20000, 30000] as const;
@@ -84,6 +84,7 @@ type ConsultationDraft = {
   neurologicalExamination: string;
   genitourinaryExamination: string;
   musculoskeletalExamination: string;
+  treatmentPlan: string;
   consultation: string;
 };
 
@@ -100,6 +101,7 @@ type ClinicalNoteField =
   | "neurological_examination"
   | "genitourinary_examination"
   | "musculoskeletal_examination"
+  | "treatment_plan"
   | "consultation";
 
 type ExaminationField = Extract<
@@ -135,7 +137,7 @@ const REVIEWED_NORMAL_TEMPLATES: Record<ExaminationField, string> = {
 
 type EditableDraftValues = Pick<
   ConsultationDraft,
-  "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "cardiovascularExamination" | "respiratoryExamination" | "abdominalExamination" | "neurologicalExamination" | "genitourinaryExamination" | "musculoskeletalExamination" | "consultation"
+  "hpi" | "pastMedicalHistory" | "pastSurgicalHistory" | "familyHistory" | "socialHistory" | "generalExamination" | "cardiovascularExamination" | "respiratoryExamination" | "abdominalExamination" | "neurologicalExamination" | "genitourinaryExamination" | "musculoskeletalExamination" | "treatmentPlan" | "consultation"
 >;
 
 type DraftMutationVariables = {
@@ -235,6 +237,7 @@ const FIELD_TO_DRAFT_VALUE: Record<ClinicalNoteField, keyof EditableDraftValues>
   neurological_examination: "neurologicalExamination",
   genitourinary_examination: "genitourinaryExamination",
   musculoskeletal_examination: "musculoskeletalExamination",
+  treatment_plan: "treatmentPlan",
   consultation: "consultation",
 };
 
@@ -251,6 +254,7 @@ const CLINICAL_NOTE_FIELDS: ClinicalNoteField[] = [
   "neurological_examination",
   "genitourinary_examination",
   "musculoskeletal_examination",
+  "treatment_plan",
   "consultation",
 ];
 
@@ -267,6 +271,7 @@ const CLINICAL_FIELD_LABELS: Record<ClinicalNoteField, string> = {
   neurological_examination: "Neurological / CNS examination",
   genitourinary_examination: "Genitourinary examination",
   musculoskeletal_examination: "Musculoskeletal examination",
+  treatment_plan: "Treatment plan",
   consultation: "Consultation note",
 };
 
@@ -528,6 +533,7 @@ function emptyDraftValues(): EditableDraftValues {
     neurologicalExamination: "",
     genitourinaryExamination: "",
     musculoskeletalExamination: "",
+    treatmentPlan: "",
     consultation: DEFAULT_CONSULTATION_NOTE,
   };
 }
@@ -559,6 +565,7 @@ function editableDraftValuesFromContent(content: ClinicalNoteContent): EditableD
     neurologicalExamination: contentText(content, "neurological_examination"),
     genitourinaryExamination: contentText(content, "genitourinary_examination"),
     musculoskeletalExamination: contentText(content, "musculoskeletal_examination"),
+    treatmentPlan: contentText(content, "treatment_plan"),
     consultation: consultation || assessmentPlan,
   };
 }
@@ -671,7 +678,6 @@ const FOUNDATION_HINTS: Record<FoundationSectionId, string> = {
   examination: "Record the general physical examination in the clinician-authored note.",
   investigations: "Investigations are not implemented in this foundation phase.",
   diagnosis: "Start the encounter to record working, final, or no-final-diagnosis disposition.",
-  treatment: "Treatment capture is reserved for a later consultation phase.",
 };
 
 function WorkspaceSectionTabs({
@@ -1338,6 +1344,73 @@ function HistorySection({
 }
 
 function ConsultationsWorkspace() {
+type TreatmentSectionProps = {
+  status: string;
+  treatmentPlan: string;
+  onTreatmentPlanChange: (value: string) => void;
+  onSave: () => void;
+  savePending: boolean;
+  saveState: DraftSaveState;
+  savedAt: string | null;
+};
+
+function TreatmentSection({
+  status,
+  treatmentPlan,
+  onTreatmentPlanChange,
+  onSave,
+  savePending,
+  saveState,
+  savedAt,
+}: TreatmentSectionProps) {
+  if (status === "SIGNED") {
+    return (
+      <div data-testid="treatment-plan-section" className="space-y-4">
+        <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
+          <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+          This Treatment plan is signed and immutable.
+        </p>
+        <div className="rounded-[14px] border border-line bg-white p-4">
+          <h3 className="text-[13px] font-bold text-ink">Treatment plan</h3>
+          <p
+            data-testid="treatment-plan-read-only"
+            className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
+          >
+            {treatmentPlan || "Not recorded."}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="treatment-plan-section" className="space-y-4">
+      <p className="text-[12.5px] font-medium text-secondary">
+        Record clinician-authored treatment instructions only. Prescriptions, procedures, investigations, referrals, and follow-up are separate workflows.
+      </p>
+      <Field
+        label="Treatment plan"
+        htmlFor="treatment-plan"
+        hint="Free-text treatment plan or clinical instructions (4,000 characters maximum)."
+      >
+        <Textarea
+          id="treatment-plan"
+          className="min-h-[220px]"
+          maxLength={4000}
+          value={treatmentPlan}
+          onChange={(event) => onTreatmentPlanChange(event.target.value)}
+        />
+      </Field>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" disabled={savePending} onClick={onSave}>
+          {savePending ? "Saving..." : "Save draft"}
+        </Button>
+        <DraftSaveStatus saveState={saveState} savedAt={savedAt} />
+      </div>
+    </div>
+  );
+}
+
   const { can } = useSession();
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
@@ -1362,6 +1435,7 @@ function ConsultationsWorkspace() {
   const [neurologicalExamination, setNeurologicalExamination] = useState("");
   const [genitourinaryExamination, setGenitourinaryExamination] = useState("");
   const [musculoskeletalExamination, setMusculoskeletalExamination] = useState("");
+  const [treatmentPlan, setTreatmentPlan] = useState("");
   const [draftSaveState, setDraftSaveState] = useState<DraftSaveState>("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
@@ -1645,6 +1719,7 @@ function ConsultationsWorkspace() {
     setNeurologicalExamination(values.neurologicalExamination);
     setGenitourinaryExamination(values.genitourinaryExamination);
     setMusculoskeletalExamination(values.musculoskeletalExamination);
+    setTreatmentPlan(values.treatmentPlan);
     setNote(values.consultation);
     setDraftSaveState(Object.keys(draft.content).length > 0 || draft.complaints.length > 0 ? "saved" : "idle");
     setConflictComparison({});
@@ -1664,6 +1739,7 @@ function ConsultationsWorkspace() {
     if (field === "neurological_examination") setNeurologicalExamination(value);
     if (field === "genitourinary_examination") setGenitourinaryExamination(value);
     if (field === "musculoskeletal_examination") setMusculoskeletalExamination(value);
+    if (field === "treatment_plan") setTreatmentPlan(value);
     if (field === "consultation") setNote(value);
   }
 
@@ -1808,6 +1884,7 @@ function ConsultationsWorkspace() {
     setNeurologicalExamination("");
     setGenitourinaryExamination("");
     setMusculoskeletalExamination("");
+    setTreatmentPlan("");
     setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
@@ -2555,6 +2632,7 @@ function ConsultationsWorkspace() {
       setNeurologicalExamination(signedDraft.neurologicalExamination);
       setGenitourinaryExamination(signedDraft.genitourinaryExamination);
       setMusculoskeletalExamination(signedDraft.musculoskeletalExamination);
+      setTreatmentPlan(signedDraft.treatmentPlan);
       setNote(signedDraft.consultation);
       setConflictComparison({});
       setEncounter((current) => (current ? { ...current, status: "SIGNED" } : current));
@@ -2973,6 +3051,27 @@ function ConsultationsWorkspace() {
                       onInsertReviewedNormalFindings={insertReviewedNormalFindings}
                     />
                   )
+                ) : activeSection === "treatment" ? (
+                  !encounter ? (
+                    <div className="space-y-3">
+                      <p className="text-[12.5px] font-medium text-secondary">
+                        Not recorded yet. Start the encounter to capture the treatment plan.
+                      </p>
+                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                        {startEncounter.isPending ? "Starting…" : "Start encounter"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <TreatmentSection
+                      status={encounter.status}
+                      treatmentPlan={treatmentPlan}
+                      onTreatmentPlanChange={(value) => updateClinicalField("treatment_plan", value, setTreatmentPlan)}
+                      onSave={saveCurrentDraft}
+                      savePending={saveDraft.isPending || signNote.isPending}
+                      saveState={draftSaveState}
+                      savedAt={savedAt}
+                    />
+                )
                 ) : activeSection === "diagnosis" ? (
                   !encounter ? (
                     <div className="space-y-3">
