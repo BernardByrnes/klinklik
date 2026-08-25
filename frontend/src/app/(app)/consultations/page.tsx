@@ -1343,7 +1343,6 @@ function HistorySection({
   );
 }
 
-function ConsultationsWorkspace() {
 type TreatmentSectionProps = {
   status: string;
   treatmentPlan: string;
@@ -1411,6 +1410,7 @@ function TreatmentSection({
   );
 }
 
+function ConsultationsWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();

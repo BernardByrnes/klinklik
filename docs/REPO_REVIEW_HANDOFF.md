@@ -1294,3 +1294,51 @@ Security and architecture:
 - Commit: final commit SHA is reported in the completion report; this is the single requested commit.
 - Push: normal push pending after the final commit.
 - Next approved phase: NOT YET AUTHORISED.
+
+### Phase 1O-B-F — Stable TreatmentSection Component Identity
+
+Status: COMPLETE — the approved component-identity correction is implemented and the focused Phase 1O-B verification passed. The broader legacy regression gate remains PARTIAL because unrelated pre-existing tests failed in the combined and isolated runs.
+
+Objective:
+- Make `TreatmentSection` a stable module-level component alongside `HistorySection`.
+- Add real incremental keyboard-typing and populated-text caret regression coverage.
+- Preserve the existing treatment-plan state, autosave, navigation, and terminal-state behavior.
+
+Implementation:
+- Moved `TreatmentSectionProps` and `TreatmentSection` out of `ConsultationsWorkspace` without changing treatment-plan behavior.
+- Added incremental per-character assertions for value preservation and focus retention.
+- Added append-to-existing-value assertions for caret placement, value preservation, and focus retention.
+
+Validation:
+- Phase 1O-B focused Playwright: PASS — 12 passed, including the new incremental typing and populated caret tests.
+- Incremental keyboard typing: PASS.
+- Focus retained while typing: PASS.
+- Editing existing text preserves caret/value: PASS.
+- Consultation reliability regressions: PARTIAL — 37/42 passed in the combined run. The five failures were existing timing/fixture or test-code issues outside this correction; isolated rechecks passed for complaint patient-switch safety and delayed diagnosis reconciliation. Existing deterministic `respiratory is not defined` test errors at phase-1d lines 1480 and 1868 were not modified.
+- Diagnosis regressions: PARTIAL — 14/16 passed in the combined run. The delayed patient-session reconciliation case passed in isolation; the existing sign-prerequisite case remained a timeout.
+- Complaint regressions: PARTIAL — 18/20 passed in the combined run. The patient-switch case passed in isolation; the existing manual retry-marker assertion still observed an extra autosave marker.
+- Allergy regressions: PASS — 12 passed.
+- Phase 1O-A backend tests: PASS — 4 passed.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS.
+- Migration status: NONE.
+
+Scope and safety:
+- Backend production changed: NO.
+- No migration was created.
+- Canonical backlog changed: NO.
+- No Phase 1O-C or later work started.
+- No browser PHI persistence was introduced: no localStorage, IndexedDB, service worker, offline queue, or persistent draft store.
+- Only synthetic local development data was used for verification; no external side effects were performed.
+- No genuine TreatmentSection regression was found.
+
+Files changed for this phase:
+- frontend/src/app/(app)/consultations/page.tsx
+- frontend/tests/phase-1o-b-treatment-plan.spec.ts
+- docs/REPO_REVIEW_HANDOFF.md
+
+Known limitations:
+- The broader regression suite still contains unrelated timing/fixture failures and two existing test-code `ReferenceError`s. They were not changed because fixing them would broaden this tiny component-identity slice.
+
+Next approved phase: NOT YET AUTHORISED

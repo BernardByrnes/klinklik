@@ -173,6 +173,39 @@ test.describe("Phase 1O-B treatment plan frontend", () => {
     await expect(page.getByLabel("Treatment plan", { exact: true })).toHaveValue(value);
   });
 
+  test("keeps treatment-plan focus and characters during incremental keyboard typing", async ({ page }) => {
+    await createConsultation(page, "Phase1OB-Incremental-");
+    const treatmentPlan = page.getByLabel("Treatment plan", { exact: true });
+    const value = "Review in 7 days";
+    let typed = "";
+
+    await treatmentPlan.click();
+    for (const character of value) {
+      await treatmentPlan.pressSequentially(character);
+      typed += character;
+      await expect(treatmentPlan).toBeFocused();
+      await expect(treatmentPlan).toHaveValue(typed);
+    }
+  });
+
+  test("keeps the caret at the end when appending to an existing treatment plan", async ({ page }) => {
+    await createConsultation(page, "Phase1OB-Caret-");
+    const initialValue = "Supportive care";
+    const appendedValue = " and hydration";
+    await saveTreatment(page, initialValue);
+
+    const treatmentPlan = page.getByLabel("Treatment plan", { exact: true });
+    await treatmentPlan.click();
+    await treatmentPlan.press("End");
+    let typed = initialValue;
+    for (const character of appendedValue) {
+      await treatmentPlan.pressSequentially(character);
+      typed += character;
+      await expect(treatmentPlan).toBeFocused();
+      await expect(treatmentPlan).toHaveValue(typed);
+    }
+    await expect(treatmentPlan).toHaveValue("Supportive care and hydration");
+  });
   test("autosaves only treatment_plan with the existing marker and saved status", async ({ page }) => {
     await createConsultation(page, "Phase1OB-Autosave-");
     const value = "Phase 1O-B synthetic autosave plan";
