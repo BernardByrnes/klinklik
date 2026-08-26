@@ -14,6 +14,7 @@ import {
   Diagnosis,
   ComplaintDurationUnit,
   Encounter,
+  EncounterDisposition,
   PresentingComplaint,
   QueueEntry,
 } from "../../../features/clinic";
@@ -34,6 +35,7 @@ import {
   Field,
   PageHeader,
   SequenceCircle,
+  Select,
   StatusBadge,
   Textarea,
   UnauthorisedState,
@@ -65,6 +67,16 @@ const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
 const AUTOSAVE_DELAY_MS = 3000;
 const RETRY_BACKOFF_MS = [2000, 5000, 10000, 20000, 30000] as const;
 const TERMINAL_ENCOUNTER_STATUSES = ["SIGNED", "CLOSED", "CANCELLED"] as const;
+
+const DISPOSITION_OPTIONS: Array<{ value: EncounterDisposition; label: string }> = [
+  { value: "TREATED_AND_DISCHARGED", label: "Treated and discharged" },
+  { value: "REVIEW_SCHEDULED", label: "Review scheduled" },
+  { value: "REFERRED_OUT", label: "Referred out" },
+  { value: "ADMITTED_ELSEWHERE", label: "Admitted elsewhere" },
+  { value: "LEFT_AGAINST_ADVICE", label: "Left against advice" },
+  { value: "DECEASED", label: "Deceased" },
+  { value: "OTHER", label: "Other" },
+];
 
 type DraftSaveState = "idle" | "unsaved" | "saved" | "retrying";
 
@@ -167,6 +179,28 @@ type NoteSaveResponse = {
 
 type NoteSignResponse = NoteSaveResponse & {
   current_version: number;
+};
+
+type DispositionSaveState = "idle" | "unsaved" | "saved";
+
+type DispositionSaveResponse = {
+  disposition: EncounterDisposition | null;
+  disposition_note: string;
+  consultation_etag: string;
+  encounter_status: string;
+};
+
+type DispositionContext = {
+  patientId: string;
+  encounterId: string;
+  queueEntryId: string;
+  session: number;
+  etag: string;
+};
+
+type DispositionMutationVariables = DispositionContext & {
+  disposition: EncounterDisposition | null;
+  disposition_note: string;
 };
 
 type AllergyStateResponse = {
@@ -284,6 +318,11 @@ type ClinicalNoteConflictData = {
   diagnoses: Diagnosis[];
   saved_at: string | null;
 };
+type DispositionConflictValues = {
+  disposition: EncounterDisposition | null;
+  disposition_note: string;
+};
+
 
 type ConflictComparisonValues = Partial<
   Record<ClinicalNoteField, { serverValue: string; localDirty: boolean }>
@@ -456,6 +495,28 @@ function diagnosisSignServerErrorMessage(error: unknown) {
   if (code === "DIAGNOSIS_REQUIRED") return "Record a final diagnosis or document why no final diagnosis was reached before signing.";
   if (code === "PRIMARY_DIAGNOSIS_REQUIRED") return "Choose one primary final diagnosis before signing.";
   if (code === "PRIMARY_DIAGNOSIS_INVALID" || code === "DIAGNOSIS_STATE_INVALID") return "Review the final diagnosis state before signing.";
+  return null;
+}
+function dispositionLabel(disposition: EncounterDisposition | null) {
+  return DISPOSITION_OPTIONS.find((option) => option.value === disposition)?.label ?? "Not recorded";
+}
+
+function dispositionSignPrerequisiteMessage(disposition: EncounterDisposition | null, dispositionNote: string) {
+  if (!disposition) return "Choose a disposition before signing.";
+  if (disposition === "OTHER" && !dispositionNote.trim()) return "Enter a note for the Other disposition.";
+  if (disposition === "REFERRED_OUT") return "Complete the referral record before signing.";
+  if (disposition === "REVIEW_SCHEDULED") return "Record the follow-up date before signing.";
+  return null;
+}
+
+function dispositionServerErrorMessage(error: unknown) {
+  if (!(error instanceof ApiRequestError) || typeof error.data !== "object" || error.data === null) return null;
+  const code = (error.data as Record<string, unknown>).code;
+  if (code === "DISPOSITION_REQUIRED") return "Choose a disposition before signing.";
+  if (code === "DISPOSITION_NOTE_REQUIRED") return "Enter a note for the Other disposition.";
+  if (code === "REFERRAL_REQUIRED") return "Complete the referral record before signing.";
+  if (code === "FOLLOW_UP_REQUIRED") return "Record the follow-up date before signing.";
+  if (code === "DISPOSITION_IMMUTABLE") return "This encounter is closed and its disposition can no longer be changed.";
   return null;
 }
 const COMPLAINT_DURATION_UNITS: ComplaintDurationUnit[] = ["HOURS", "DAYS", "WEEKS", "MONTHS"];
@@ -1351,7 +1412,170 @@ type TreatmentSectionProps = {
   savePending: boolean;
   saveState: DraftSaveState;
   savedAt: string | null;
+  disposition: EncounterDisposition | null;
+  dispositionNote: string;
+  dispositionSaveState: DispositionSaveState;
+  dispositionSavePending: boolean;
+  dispositionError: string;
+  dispositionConflict: DispositionConflictValues | null;
+  dispositionFormDirty: boolean;
+  dispositionRevisionUncertain: boolean;
+  onDispositionChange: (value: EncounterDisposition | null) => void;
+  onDispositionNoteChange: (value: string) => void;
+  onSaveDisposition: () => void;
+  onDiscardDisposition: () => void;
 };
+
+function DispositionSection({
+  status,
+  disposition,
+  dispositionNote,
+  dispositionSaveState,
+  dispositionSavePending,
+  dispositionError,
+  dispositionConflict,
+  dispositionFormDirty,
+  dispositionRevisionUncertain,
+  onDispositionChange,
+  onDispositionNoteChange,
+  onSaveDisposition,
+  onDiscardDisposition,
+}: Pick<
+  TreatmentSectionProps,
+  | "status"
+  | "disposition"
+  | "dispositionNote"
+  | "dispositionSaveState"
+  | "dispositionSavePending"
+  | "dispositionError"
+  | "dispositionConflict"
+  | "dispositionFormDirty"
+  | "dispositionRevisionUncertain"
+  | "onDispositionChange"
+  | "onDispositionNoteChange"
+  | "onSaveDisposition"
+  | "onDiscardDisposition"
+>) {
+  const readOnly = isTerminalEncounterStatus(status);
+  const disabled = readOnly || dispositionSavePending || dispositionRevisionUncertain;
+
+  return (
+    <section data-testid="disposition-section" className="space-y-4 rounded-[14px] border border-line-soft bg-surface-muted p-4">
+      <div>
+        <h3 className="text-[13px] font-bold text-ink">Disposition</h3>
+        <p className="mt-1 text-[11.5px] font-medium leading-relaxed text-secondary">
+          Record the selected outcome for this encounter before signing.
+        </p>
+      </div>
+
+      {readOnly ? (
+        <div data-testid="disposition-read-only" className="rounded-[12px] border border-line bg-white p-3">
+          <p className="text-[11.5px] font-semibold text-muted">Saved disposition</p>
+          <p data-testid="disposition-read-only-value" className="mt-1 text-[13px] font-semibold text-ink">
+            {dispositionLabel(disposition)}
+          </p>
+          {dispositionNote ? (
+            <div className="mt-3 border-t border-line-soft pt-3">
+              <p className="text-[11.5px] font-semibold text-muted">Disposition note</p>
+              <p data-testid="disposition-read-only-note" className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+                {dispositionNote}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <Field
+            label="Disposition"
+            htmlFor="disposition"
+            hint="Choose deliberately; no disposition is selected by default."
+          >
+            <Select
+              id="disposition"
+              aria-label="Disposition"
+              value={disposition ?? ""}
+              disabled={disabled}
+              onChange={(event) => {
+                const value = event.target.value;
+                onDispositionChange(value ? value as EncounterDisposition : null);
+              }}
+            >
+              <option value="">Choose a disposition</option>
+              {DISPOSITION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </Select>
+          </Field>
+
+          {disposition === "OTHER" ? (
+            <Field
+              label="Disposition note"
+              htmlFor="disposition-note"
+              hint="Required for Other; maximum 1000 characters."
+            >
+              <Textarea
+                id="disposition-note"
+                aria-label="Disposition note"
+                aria-required="true"
+                maxLength={1000}
+                value={dispositionNote}
+                disabled={disabled}
+                onChange={(event) => onDispositionNoteChange(event.target.value)}
+              />
+            </Field>
+          ) : null}
+
+          {disposition === "REFERRED_OUT" ? (
+            <p data-testid="disposition-referral-notice" role="status" className="rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-2 text-[12px] font-medium text-ink">
+              A referral record is required before this encounter can be signed.
+            </p>
+          ) : null}
+          {disposition === "REVIEW_SCHEDULED" ? (
+            <p data-testid="disposition-follow-up-notice" role="status" className="rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-2 text-[12px] font-medium text-ink">
+              A follow-up date is required before this encounter can be signed.
+            </p>
+          ) : null}
+
+          {dispositionConflict ? (
+            <div data-testid="disposition-conflict" role="status" className="space-y-2 rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-3">
+              <p className="text-[12px] font-semibold text-ink">Current saved disposition from another update</p>
+              <p className="text-[12px] text-secondary">{dispositionLabel(dispositionConflict.disposition)}</p>
+              {dispositionConflict.disposition_note ? (
+                <p className="whitespace-pre-wrap text-[12px] text-secondary">{dispositionConflict.disposition_note}</p>
+              ) : null}
+              <p className="text-[11.5px] font-medium text-muted">Your unsaved disposition remains selected above.</p>
+            </div>
+          ) : null}
+
+          {dispositionRevisionUncertain ? (
+            <p role="alert" className="text-[12px] font-medium text-accent-orange">
+              The latest consultation state could not be loaded. Reload before trying the disposition again.
+            </p>
+          ) : null}
+          {dispositionError ? (
+            <p data-testid="disposition-error" role="alert" className="text-[12px] font-medium text-accent-orange">
+              {dispositionError}
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={disabled} onClick={onSaveDisposition}>
+              {dispositionSavePending ? "Saving disposition…" : "Save disposition"}
+            </Button>
+            {dispositionFormDirty ? (
+              <Button variant="secondary" disabled={dispositionSavePending} onClick={onDiscardDisposition}>
+                Cancel changes
+              </Button>
+            ) : null}
+            {dispositionSaveState === "saved" ? (
+              <span role="status" className="text-[12px] font-medium text-accent-teal">Disposition saved.</span>
+            ) : null}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
 
 function TreatmentSection({
   status,
@@ -1361,51 +1585,79 @@ function TreatmentSection({
   savePending,
   saveState,
   savedAt,
+  disposition,
+  dispositionNote,
+  dispositionSaveState,
+  dispositionSavePending,
+  dispositionError,
+  dispositionConflict,
+  dispositionFormDirty,
+  dispositionRevisionUncertain,
+  onDispositionChange,
+  onDispositionNoteChange,
+  onSaveDisposition,
+  onDiscardDisposition,
 }: TreatmentSectionProps) {
-  if (status === "SIGNED") {
-    return (
-      <div data-testid="treatment-plan-section" className="space-y-4">
-        <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
-          <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
-          This Treatment plan is signed and immutable.
-        </p>
-        <div className="rounded-[14px] border border-line bg-white p-4">
-          <h3 className="text-[13px] font-bold text-ink">Treatment plan</h3>
-          <p
-            data-testid="treatment-plan-read-only"
-            className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
-          >
-            {treatmentPlan || "Not recorded."}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div data-testid="treatment-plan-section" className="space-y-4">
-      <p className="text-[12.5px] font-medium text-secondary">
-        Record clinician-authored treatment instructions only. Prescriptions, procedures, investigations, referrals, and follow-up are separate workflows.
-      </p>
-      <Field
-        label="Treatment plan"
-        htmlFor="treatment-plan"
-        hint="Free-text treatment plan or clinical instructions (4,000 characters maximum)."
-      >
-        <Textarea
-          id="treatment-plan"
-          className="min-h-[220px]"
-          maxLength={4000}
-          value={treatmentPlan}
-          onChange={(event) => onTreatmentPlanChange(event.target.value)}
-        />
-      </Field>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="secondary" disabled={savePending} onClick={onSave}>
-          {savePending ? "Saving..." : "Save draft"}
-        </Button>
-        <DraftSaveStatus saveState={saveState} savedAt={savedAt} />
-      </div>
+    <div data-testid="treatment-plan-section" className="space-y-6">
+      {status === "SIGNED" ? (
+        <>
+          <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
+            <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+            This Treatment plan is signed and immutable.
+          </p>
+          <div className="rounded-[14px] border border-line bg-white p-4">
+            <h3 className="text-[13px] font-bold text-ink">Treatment plan</h3>
+            <p
+              data-testid="treatment-plan-read-only"
+              className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary"
+            >
+              {treatmentPlan || "Not recorded."}
+            </p>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-[12.5px] font-medium text-secondary">
+            Record clinician-authored treatment instructions only. Prescriptions, procedures, investigations, referrals, and follow-up are separate workflows.
+          </p>
+          <Field
+            label="Treatment plan"
+            htmlFor="treatment-plan"
+            hint="Free-text treatment plan or clinical instructions (4,000 characters maximum)."
+          >
+            <Textarea
+              id="treatment-plan"
+              className="min-h-[220px]"
+              maxLength={4000}
+              value={treatmentPlan}
+              onChange={(event) => onTreatmentPlanChange(event.target.value)}
+            />
+          </Field>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="secondary" disabled={savePending} onClick={onSave}>
+              {savePending ? "Saving..." : "Save draft"}
+            </Button>
+            <DraftSaveStatus saveState={saveState} savedAt={savedAt} />
+          </div>
+        </>
+      )}
+
+      <DispositionSection
+        status={status}
+        disposition={disposition}
+        dispositionNote={dispositionNote}
+        dispositionSaveState={dispositionSaveState}
+        dispositionSavePending={dispositionSavePending}
+        dispositionError={dispositionError}
+        dispositionConflict={dispositionConflict}
+        dispositionFormDirty={dispositionFormDirty}
+        dispositionRevisionUncertain={dispositionRevisionUncertain}
+        onDispositionChange={onDispositionChange}
+        onDispositionNoteChange={onDispositionNoteChange}
+        onSaveDisposition={onSaveDisposition}
+        onDiscardDisposition={onDiscardDisposition}
+      />
     </div>
   );
 }
@@ -1436,6 +1688,13 @@ function ConsultationsWorkspace() {
   const [genitourinaryExamination, setGenitourinaryExamination] = useState("");
   const [musculoskeletalExamination, setMusculoskeletalExamination] = useState("");
   const [treatmentPlan, setTreatmentPlan] = useState("");
+  const [disposition, setDisposition] = useState<EncounterDisposition | null>(null);
+  const [dispositionNote, setDispositionNote] = useState("");
+  const [dispositionSaveState, setDispositionSaveState] = useState<DispositionSaveState>("idle");
+  const [dispositionError, setDispositionError] = useState("");
+  const [dispositionConflict, setDispositionConflict] = useState<DispositionConflictValues | null>(null);
+  const [dispositionFormDirty, setDispositionFormDirty] = useState(false);
+  const [consultationRevisionUncertain, setConsultationRevisionUncertain] = useState(false);
   const [draftSaveState, setDraftSaveState] = useState<DraftSaveState>("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
   const [confirmingSign, setConfirmingSign] = useState(false);
@@ -1473,6 +1732,13 @@ function ConsultationsWorkspace() {
   const activePatientIdRef = useRef<string | null>(null);
   const activeEncounterIdRef = useRef<string | null>(null);
   const signGuardErrorRef = useRef<string | null>(null);
+  const dispositionDraftRef = useRef<EncounterDisposition | null>(null);
+  const dispositionNoteDraftRef = useRef("");
+  const authoritativeDispositionRef = useRef<EncounterDisposition | null>(null);
+  const authoritativeDispositionNoteRef = useRef("");
+  const dispositionFormDirtyRef = useRef(false);
+  const dispositionMutationInFlightRef = useRef(false);
+  const dispositionReconciliationInFlightRef = useRef(false);
 
   function hasDirtyDraft() {
     return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current;
@@ -1497,11 +1763,18 @@ function ConsultationsWorkspace() {
     activePatientIdRef.current = null;
     activeEncounterIdRef.current = null;
     signGuardErrorRef.current = null;
+    dispositionFormDirtyRef.current = false;
+    dispositionMutationInFlightRef.current = false;
+    dispositionReconciliationInFlightRef.current = false;
+    dispositionDraftRef.current = null;
+    dispositionNoteDraftRef.current = "";
+    authoritativeDispositionRef.current = null;
+    authoritativeDispositionNoteRef.current = "";
     draftSessionRef.current += 1;
   }, []);
 
   function hasUnsavedContent() {
-    return hasDirtyDraft() || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current;
+    return hasDirtyDraft() || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current || dispositionFormDirtyRef.current;
   }
 
   const queue = useQuery({
@@ -1559,6 +1832,10 @@ function ConsultationsWorkspace() {
       setDiagnosisMutationError("The current consultation revision is unavailable. Reload before changing diagnoses.");
       return null;
     }
+    if (consultationRevisionUncertain) {
+      setDiagnosisMutationError("Reload before changing diagnoses because the latest consultation revision is uncertain.");
+      return null;
+    }
     return {
       patientId: selected.patient,
       encounterId: encounter.id,
@@ -1576,6 +1853,33 @@ function ConsultationsWorkspace() {
       variables.queueEntryId === selectedQueueEntryIdRef.current
     );
   }
+  function currentDispositionContext(): DispositionContext | null {
+    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+      setDispositionError("The current consultation revision is unavailable. Reload before saving the disposition.");
+      return null;
+    }
+    if (consultationRevisionUncertain) {
+      setDispositionError("Reload before saving the disposition because the latest consultation revision is uncertain.");
+      return null;
+    }
+    return {
+      patientId: selected.patient,
+      encounterId: encounter.id,
+      queueEntryId: selected.id,
+      session: draftSessionRef.current,
+      etag: encounterEtagRef.current,
+    };
+  }
+
+  function isCurrentDispositionMutation(variables: Pick<DispositionContext, "session" | "patientId" | "encounterId" | "queueEntryId">) {
+    return (
+      variables.session === draftSessionRef.current &&
+      variables.patientId === activePatientIdRef.current &&
+      variables.encounterId === activeEncounterIdRef.current &&
+      variables.queueEntryId === selectedQueueEntryIdRef.current
+    );
+  }
+
   function currentAllergyContext(): AllergyContext | null {
     if (!encounter?.id || !selected?.patient || !encounter.allergy_state_etag) {
       setAllergyMutationError("The current allergy state is unavailable. Reload the consultation before trying again.");
@@ -1639,6 +1943,9 @@ function ConsultationsWorkspace() {
       autosaveBlockedRef.current ||
       diagnosisMutationInFlightRef.current ||
       diagnosisReconciliationInFlightRef.current ||
+      dispositionMutationInFlightRef.current ||
+      dispositionReconciliationInFlightRef.current ||
+      consultationRevisionUncertain ||
       isTerminalEncounterStatus(encounter.status)
     ) {
       return;
@@ -1658,6 +1965,9 @@ function ConsultationsWorkspace() {
         encounter?.id !== encounterId ||
         !hasDirtyDraft() ||
         autosaveBlockedRef.current ||
+        dispositionMutationInFlightRef.current ||
+        dispositionReconciliationInFlightRef.current ||
+        consultationRevisionUncertain ||
         isTerminalEncounterStatus(encounter.status)
       ) {
         return;
@@ -1667,7 +1977,7 @@ function ConsultationsWorkspace() {
         markRetrying();
         return;
       }
-      if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+      if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) {
         autosaveDeferredRef.current = true;
         return;
       }
@@ -1691,11 +2001,27 @@ function ConsultationsWorkspace() {
     diagnosisMutationInFlightRef.current = false;
     diagnosisReconciliationInFlightRef.current = false;
     const draft = consultationDraftFromEncounter(created);
+    const hydratedDisposition = created.disposition ?? null;
+    const hydratedDispositionNote = created.disposition_note ?? "";
     const values = editableDraftValuesFromContent(draft.content);
     encounterEtagRef.current = created.consultation_etag ?? null;
     activePatientIdRef.current = created.patient;
     activeEncounterIdRef.current = created.id;
     signGuardErrorRef.current = null;
+    setConsultationRevisionUncertain(false);
+    dispositionDraftRef.current = hydratedDisposition;
+    dispositionNoteDraftRef.current = hydratedDispositionNote;
+    authoritativeDispositionRef.current = hydratedDisposition;
+    authoritativeDispositionNoteRef.current = hydratedDispositionNote;
+    dispositionFormDirtyRef.current = false;
+    dispositionMutationInFlightRef.current = false;
+    dispositionReconciliationInFlightRef.current = false;
+    setDisposition(hydratedDisposition);
+    setDispositionNote(hydratedDispositionNote);
+    setDispositionSaveState(hydratedDisposition ? "saved" : "idle");
+    setDispositionError("");
+    setDispositionConflict(null);
+    setDispositionFormDirty(false);
     setAllergyMutationError("");
     noteContentRef.current = draft.content;
     draftValuesRef.current = values;
@@ -1763,6 +2089,40 @@ function ConsultationsWorkspace() {
     setConflictComparison(comparison);
   }
 
+  function applyRemoteDispositionState(remote: Encounter) {
+    const remoteDisposition = remote.disposition ?? null;
+    const remoteDispositionNote = typeof remote.disposition_note === "string" ? remote.disposition_note : "";
+    const changedRemotely =
+      remoteDisposition !== authoritativeDispositionRef.current ||
+      remoteDispositionNote !== authoritativeDispositionNoteRef.current;
+    const localMatchesRemote =
+      dispositionDraftRef.current === remoteDisposition &&
+      dispositionNoteDraftRef.current === remoteDispositionNote;
+    const alreadyApplied = dispositionFormDirtyRef.current && changedRemotely && localMatchesRemote;
+    const trueConflict = dispositionFormDirtyRef.current && changedRemotely && !localMatchesRemote;
+
+    authoritativeDispositionRef.current = remoteDisposition;
+    authoritativeDispositionNoteRef.current = remoteDispositionNote;
+
+    if (isTerminalEncounterStatus(remote.status) || !dispositionFormDirtyRef.current || alreadyApplied) {
+      dispositionDraftRef.current = remoteDisposition;
+      dispositionNoteDraftRef.current = remoteDispositionNote;
+      dispositionFormDirtyRef.current = false;
+      setDispositionFormDirty(false);
+      setDisposition(remoteDisposition);
+      setDispositionNote(remoteDispositionNote);
+      setDispositionSaveState(remoteDisposition ? "saved" : "idle");
+      setDispositionConflict(null);
+    } else if (trueConflict) {
+      setDispositionConflict({
+        disposition: remoteDisposition,
+        disposition_note: remoteDispositionNote,
+      });
+      setDispositionSaveState("unsaved");
+    }
+
+    return { changedRemotely, alreadyApplied, trueConflict };
+  }
   function currentDraftMutation(
     rebaseAttempt = 0,
     origin: "manual" | "autosave" = "manual",
@@ -1772,8 +2132,13 @@ function ConsultationsWorkspace() {
       setError("The current consultation revision is unavailable. Reload before saving.");
       return null;
     }
-    if (diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
       autosaveDeferredRef.current = true;
+      return null;
+    }
+    if (consultationRevisionUncertain) {
+      setDraftSaveState(hasDirtyDraft() ? "unsaved" : "idle");
+      setError("The latest consultation state is uncertain. Reload before saving the clinical draft.");
       return null;
     }
     const values = { ...draftValuesRef.current };
@@ -1885,6 +2250,20 @@ function ConsultationsWorkspace() {
     setGenitourinaryExamination("");
     setMusculoskeletalExamination("");
     setTreatmentPlan("");
+    dispositionDraftRef.current = null;
+    dispositionNoteDraftRef.current = "";
+    authoritativeDispositionRef.current = null;
+    authoritativeDispositionNoteRef.current = "";
+    dispositionFormDirtyRef.current = false;
+    dispositionMutationInFlightRef.current = false;
+    dispositionReconciliationInFlightRef.current = false;
+    setDisposition(null);
+    setDispositionNote("");
+    setDispositionSaveState("idle");
+    setDispositionError("");
+    setDispositionConflict(null);
+    setDispositionFormDirty(false);
+    setConsultationRevisionUncertain(false);
     setDraftSaveState("idle");
     setActiveSection("summary");
     setConfirmingSign(false);
@@ -2082,6 +2461,220 @@ function ConsultationsWorkspace() {
     addAllergyMutation.isPending ||
     enterAllergyInErrorMutation.isPending ||
     reviewAllergiesMutation.isPending;
+  const dispositionMutation = useMutation<DispositionSaveResponse, unknown, DispositionMutationVariables>({
+    mutationFn: ({ encounterId, etag, disposition, disposition_note }) =>
+      apiRequest<DispositionSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/disposition/", {
+        method: "PATCH",
+        headers: { "If-Match": etag },
+        body: JSON.stringify({ disposition, disposition_note }),
+      }),
+    onMutate: (variables) => {
+      if (!isCurrentDispositionMutation(variables)) return;
+      dispositionMutationInFlightRef.current = true;
+      dispositionReconciliationInFlightRef.current = false;
+      setDispositionError("");
+      setNotice("");
+      setError("");
+      cancelAutosaveTimer();
+      cancelRetryTimer();
+      autosaveDeferredRef.current = true;
+    },
+    onSuccess: (saved, variables) => {
+      if (!isCurrentDispositionMutation(variables)) return;
+      dispositionMutationInFlightRef.current = false;
+      dispositionReconciliationInFlightRef.current = false;
+      setConsultationRevisionUncertain(false);
+      encounterEtagRef.current = saved.consultation_etag;
+      authoritativeDispositionRef.current = saved.disposition ?? null;
+      authoritativeDispositionNoteRef.current = saved.disposition_note ?? "";
+      setEncounter((current) => {
+        if (!current || current.id !== activeEncounterIdRef.current) return current;
+        return {
+          ...current,
+          disposition: saved.disposition ?? null,
+          disposition_note: saved.disposition_note ?? "",
+          consultation_etag: saved.consultation_etag,
+          status: saved.encounter_status || current.status,
+        };
+      });
+      const localStillMatchesSubmitted =
+        dispositionDraftRef.current === variables.disposition &&
+        dispositionNoteDraftRef.current === variables.disposition_note;
+      if (localStillMatchesSubmitted) {
+        dispositionDraftRef.current = saved.disposition ?? null;
+        dispositionNoteDraftRef.current = saved.disposition_note ?? "";
+        dispositionFormDirtyRef.current = false;
+        setDispositionFormDirty(false);
+        setDisposition(saved.disposition ?? null);
+        setDispositionNote(saved.disposition_note ?? "");
+        setDispositionSaveState(saved.disposition ? "saved" : "idle");
+      } else {
+        dispositionFormDirtyRef.current = true;
+        setDispositionFormDirty(true);
+        setDispositionSaveState("unsaved");
+      }
+      setDispositionConflict(null);
+      setDispositionError("");
+      setNotice("Disposition saved.");
+      setError("");
+      autosaveDeferredRef.current = false;
+      if (hasDirtyDraft()) {
+        if (retryActiveRef.current) scheduleRetry();
+        else scheduleAutosave();
+      }
+    },
+    onError: (reason, variables) => {
+      if (!variables || !isCurrentDispositionMutation(variables)) return;
+      dispositionMutationInFlightRef.current = false;
+      if (reason instanceof ApiRequestError && reason.status === 412) {
+        dispositionReconciliationInFlightRef.current = true;
+        autosaveDeferredRef.current = true;
+        cancelAutosaveTimer();
+        cancelRetryTimer();
+        setDispositionError("This consultation changed elsewhere. Loading the latest record before retrying.");
+        setError("");
+        void reconcileDispositionConflict(variables);
+        return;
+      }
+      dispositionReconciliationInFlightRef.current = false;
+      autosaveDeferredRef.current = false;
+      setDispositionSaveState(dispositionFormDirtyRef.current ? "unsaved" : "idle");
+      setDispositionError(errorMessage(reason));
+      setNotice("");
+    },
+  });
+
+  const dispositionMutationPending =
+    dispositionMutation.isPending ||
+    dispositionMutationInFlightRef.current ||
+    dispositionReconciliationInFlightRef.current;
+
+  async function reconcileDispositionConflict(variables: DispositionMutationVariables) {
+    if (!isCurrentDispositionMutation(variables)) return;
+    let resumeNoteAutosave = false;
+    let reconciliationFailed = false;
+    try {
+      const remote = await apiRequest<Encounter>("/api/v1/clinic/encounters/" + variables.encounterId + "/");
+      if (
+        !isCurrentDispositionMutation(variables) ||
+        remote.id !== variables.encounterId ||
+        remote.patient !== variables.patientId ||
+        remote.queue_entry !== variables.queueEntryId
+      ) {
+        return;
+      }
+      const remoteContent = consultationContent(remote);
+      const remoteValues = editableDraftValuesFromContent(remoteContent);
+      const remoteFields = changedClinicalFields(noteContentRef.current, remoteContent);
+      const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      const alreadyAppliedFields = overlappingFields.filter((field) => {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        return draftValuesRef.current[draftKey] === remoteValues[draftKey];
+      });
+      const trueOverlappingFields = overlappingFields.filter((field) => !alreadyAppliedFields.includes(field));
+      const serverComplaints = cloneComplaints(remote.complaints ?? []);
+      const complaintsChangedRemotely = !complaintsEqual(serverComplaints, authoritativeComplaintsRef.current);
+      const complaintWasAlreadyApplied = complaintsDirtyRef.current &&
+        complaintsChangedRemotely &&
+        complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const trueComplaintConflict = complaintsDirtyRef.current &&
+        complaintsChangedRemotely &&
+        !complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const latestEtag = remote.consultation_etag;
+      if (typeof latestEtag !== "string" || !Array.isArray(remote.diagnoses)) {
+        throw new Error("Authoritative consultation revision is unavailable.");
+      }
+
+      noteContentRef.current = remoteContent;
+      encounterEtagRef.current = latestEtag;
+      authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
+      setEncounter((current) => {
+        if (!current || current.id !== activeEncounterIdRef.current) return current;
+        return {
+          ...current,
+          ...remote,
+          complaints: serverComplaints,
+          diagnoses: remote.diagnoses,
+          consultation_etag: latestEtag,
+          status: remote.status,
+        };
+      });
+      const dispositionState = applyRemoteDispositionState(remote);
+      if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
+        complaintsDraftRef.current = cloneComplaints(serverComplaints);
+        setComplaints(cloneComplaints(serverComplaints));
+        complaintsDirtyRef.current = false;
+        setComplaintConflict(null);
+      } else if (trueComplaintConflict) {
+        setComplaintConflict(cloneComplaints(serverComplaints));
+      }
+      for (const field of alreadyAppliedFields) {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        if (draftValuesRef.current[draftKey] === remoteValues[draftKey]) dirtyFieldsRef.current.delete(field);
+      }
+      rebaseVisibleDraft(remoteContent, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
+
+      if (isTerminalEncounterStatus(remote.status)) {
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+      }
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict) {
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+      } else {
+        autosaveBlockedRef.current = false;
+        resumeNoteAutosave = !isTerminalEncounterStatus(remote.status) && hasDirtyDraft();
+      }
+
+      if (dispositionState.trueConflict) {
+        setDispositionError("The saved disposition differs from your unsaved selection. Review it before saving again.");
+      } else if (dispositionFormDirtyRef.current) {
+        setDispositionError("The disposition change was not replayed. Review the latest record and save deliberately.");
+      } else {
+        setDispositionError("");
+      }
+
+      if (!hasDirtyDraft()) {
+        setDraftSaveState("saved");
+      } else {
+        setDraftSaveState("unsaved");
+      }
+      setConsultationRevisionUncertain(false);
+      setNotice("Latest consultation state loaded. The disposition change was not replayed.");
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict) {
+        const complaintMessage = trueComplaintConflict
+          ? " Presenting complaints changed elsewhere; your unsaved complaint list has been preserved."
+          : "";
+        setError(conflictMessage(remoteFields, trueOverlappingFields, "save") + complaintMessage);
+      } else {
+        setError("");
+      }
+    } catch {
+      reconciliationFailed = true;
+      if (isCurrentDispositionMutation(variables)) {
+        setConsultationRevisionUncertain(true);
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+        setDispositionSaveState(dispositionFormDirtyRef.current ? "unsaved" : "idle");
+        setDispositionError("The latest consultation could not be loaded. Reload before trying the disposition again.");
+        setError("The latest consultation could not be loaded. Reload before trying the disposition again.");
+      }
+    } finally {
+      if (isCurrentDispositionMutation(variables)) {
+        dispositionReconciliationInFlightRef.current = false;
+        dispositionMutationInFlightRef.current = false;
+        if (!reconciliationFailed && resumeNoteAutosave && hasDirtyDraft()) {
+          if (retryActiveRef.current) scheduleRetry();
+          else scheduleAutosave();
+        }
+      }
+    }
+  }
   async function reconcileDiagnosisConflict(variables: DiagnosisMutationVariables, _conflict: DiagnosisConflictData) {
     if (!isCurrentDiagnosisMutation(variables)) return;
     try {
@@ -2126,6 +2719,7 @@ function ConsultationsWorkspace() {
           status: remote.status,
         };
       });
+      applyRemoteDispositionState(remote);
       if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
         complaintsDraftRef.current = cloneComplaints(serverComplaints);
         setComplaints(cloneComplaints(serverComplaints));
@@ -2254,7 +2848,7 @@ function ConsultationsWorkspace() {
     diagnosisId: string | undefined,
     payload?: DiagnosisWritePayload,
   ): Promise<DiagnosisStateResponse> {
-    if (clinicalMutationInFlightRef.current) {
+    if (clinicalMutationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) {
       setDiagnosisMutationError("Wait for the consultation save or sign request to finish before changing diagnoses.");
       throw new Error("A consultation mutation is already in flight.");
     }
@@ -2477,9 +3071,15 @@ function ConsultationsWorkspace() {
       clinicalMutationInFlightRef.current ||
       diagnosisMutationInFlightRef.current ||
       diagnosisReconciliationInFlightRef.current ||
+      dispositionMutationInFlightRef.current ||
+      dispositionReconciliationInFlightRef.current ||
+      consultationRevisionUncertain ||
       !encounter?.id ||
       !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
+      dispositionMutationInFlightRef.current ||
+      dispositionReconciliationInFlightRef.current ||
+      consultationRevisionUncertain ||
       isTerminalEncounterStatus(encounter.status)
     ) {
       if (retryActiveRef.current && !hasDirtyDraft()) {
@@ -2502,6 +3102,9 @@ function ConsultationsWorkspace() {
       !encounter?.id ||
       !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
+      dispositionMutationInFlightRef.current ||
+      dispositionReconciliationInFlightRef.current ||
+      consultationRevisionUncertain ||
       isTerminalEncounterStatus(encounter.status)
     ) {
       return;
@@ -2517,11 +3120,14 @@ function ConsultationsWorkspace() {
         encounter?.id !== encounterId ||
         !hasDirtyDraft() ||
         autosaveBlockedRef.current ||
+        dispositionMutationInFlightRef.current ||
+        dispositionReconciliationInFlightRef.current ||
+        consultationRevisionUncertain ||
         isTerminalEncounterStatus(encounter.status)
       ) {
         return;
       }
-      if (offlineRef.current || clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) return;
+      if (offlineRef.current || clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
       attemptRetryNow();
     }, delay);
   }
@@ -2563,6 +3169,9 @@ function ConsultationsWorkspace() {
         !clinicalMutationInFlightRef.current &&
         !diagnosisMutationInFlightRef.current &&
         !diagnosisReconciliationInFlightRef.current &&
+        !dispositionMutationInFlightRef.current &&
+        !dispositionReconciliationInFlightRef.current &&
+        !consultationRevisionUncertain &&
         encounter?.id &&
         !isTerminalEncounterStatus(encounter.status)
       ) {
@@ -2576,11 +3185,11 @@ function ConsultationsWorkspace() {
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
     };
-  }, [encounter]);
+  }, [encounter, consultationRevisionUncertain]);
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
-      if (!hasDirtyDraft() && !allergyFormDirtyRef.current && !diagnosisFormDirtyRef.current) return;
+      if (!hasDirtyDraft() && !allergyFormDirtyRef.current && !diagnosisFormDirtyRef.current && !dispositionFormDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     }
@@ -2655,6 +3264,13 @@ function ConsultationsWorkspace() {
         if (diagnosisMessage) {
           setActiveSection("diagnosis");
           setError(diagnosisMessage);
+          return;
+        }
+        const dispositionMessage = dispositionServerErrorMessage(reason);
+        if (dispositionMessage) {
+          setActiveSection("treatment");
+          setError(dispositionMessage);
+          setDispositionError(dispositionMessage);
           return;
         }
         const allergyMessage = signAllergyServerErrorMessage(reason);
@@ -2735,6 +3351,85 @@ function ConsultationsWorkspace() {
     if (!retryActiveRef.current) scheduleAutosave();
   }
 
+  function setDispositionDraftValue(value: EncounterDisposition | null) {
+    signGuardErrorRef.current = null;
+    dispositionDraftRef.current = value;
+    setDisposition(value);
+    const dirty =
+      value !== authoritativeDispositionRef.current ||
+      dispositionNoteDraftRef.current !== authoritativeDispositionNoteRef.current;
+    dispositionFormDirtyRef.current = dirty;
+    setDispositionFormDirty(dirty);
+    setDispositionSaveState(dirty ? "unsaved" : (authoritativeDispositionRef.current ? "saved" : "idle"));
+    setDispositionConflict(null);
+    setDispositionError("");
+    setNotice("");
+    setError("");
+  }
+
+  function setDispositionDraftNote(value: string) {
+    signGuardErrorRef.current = null;
+    dispositionNoteDraftRef.current = value;
+    setDispositionNote(value);
+    const dirty =
+      dispositionDraftRef.current !== authoritativeDispositionRef.current ||
+      value !== authoritativeDispositionNoteRef.current;
+    dispositionFormDirtyRef.current = dirty;
+    setDispositionFormDirty(dirty);
+    setDispositionSaveState(dirty ? "unsaved" : (authoritativeDispositionRef.current ? "saved" : "idle"));
+    setDispositionConflict(null);
+    setDispositionError("");
+    setNotice("");
+    setError("");
+  }
+
+  function discardDispositionChanges() {
+    dispositionDraftRef.current = authoritativeDispositionRef.current;
+    dispositionNoteDraftRef.current = authoritativeDispositionNoteRef.current;
+    dispositionFormDirtyRef.current = false;
+    setDispositionFormDirty(false);
+    setDisposition(authoritativeDispositionRef.current);
+    setDispositionNote(authoritativeDispositionNoteRef.current);
+    setDispositionSaveState(authoritativeDispositionRef.current ? "saved" : "idle");
+    setDispositionConflict(null);
+    setDispositionError("");
+    signGuardErrorRef.current = null;
+    setNotice("Disposition changes discarded.");
+    setError("");
+  }
+
+  function saveCurrentDisposition() {
+    if (!encounter?.id || isTerminalEncounterStatus(encounter.status)) return;
+    if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+      setDispositionError("Wait for the current consultation update to finish before saving the disposition.");
+      return;
+    }
+    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
+
+    const draftDisposition = dispositionDraftRef.current;
+    const draftNote = dispositionNoteDraftRef.current;
+    const localError = dispositionSignPrerequisiteMessage(draftDisposition, draftNote);
+    if (draftDisposition === "OTHER" && localError) {
+      setDispositionSaveState("unsaved");
+      setDispositionError("Enter a note for the Other disposition.");
+      setNotice("");
+      return;
+    }
+
+    const context = currentDispositionContext();
+    if (!context) return;
+    cancelAutosaveTimer();
+    cancelRetryTimer();
+    autosaveDeferredRef.current = true;
+    setDispositionError("");
+    setNotice("");
+    setError("");
+    dispositionMutation.mutate({
+      ...context,
+      disposition: draftDisposition,
+      disposition_note: draftNote,
+    });
+  }
   function isExaminationFieldUnavailable(field: ExaminationField) {
     const draftValue = draftValuesRef.current[FIELD_TO_DRAFT_VALUE[field]];
     return draftValue.length > 0 || dirtyFieldsRef.current.has(field) || Boolean(conflictComparison[field]?.localDirty);
@@ -2777,7 +3472,7 @@ function ConsultationsWorkspace() {
   }
 
   function saveCurrentDraft() {
-    if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) return;
+    if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
     cancelAutosaveTimer();
     resetRetryState();
     autosaveDeferredRef.current = false;
@@ -2802,6 +3497,31 @@ function ConsultationsWorkspace() {
       setActiveSection("diagnosis");
       setConfirmingSign(false);
       showSignGuard("Wait for the diagnosis update to finish before signing.");
+      return;
+    }
+    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) {
+      setActiveSection("treatment");
+      setConfirmingSign(false);
+      showSignGuard("Wait for the disposition update to finish before signing.");
+      return;
+    }
+    if (dispositionFormDirtyRef.current) {
+      setActiveSection("treatment");
+      setConfirmingSign(false);
+      showSignGuard("Save or cancel the disposition changes before signing.");
+      return;
+    }
+    if (consultationRevisionUncertain) {
+      setActiveSection("treatment");
+      setConfirmingSign(false);
+      showSignGuard("Reload before signing because the latest consultation revision is uncertain.");
+      return;
+    }
+    const dispositionPrerequisite = dispositionSignPrerequisiteMessage(authoritativeDispositionRef.current, authoritativeDispositionNoteRef.current);
+    if (dispositionPrerequisite) {
+      setActiveSection("treatment");
+      setConfirmingSign(false);
+      showSignGuard(dispositionPrerequisite);
       return;
     }
     const diagnosisPrerequisite = diagnosisSignPrerequisiteMessage(encounter?.diagnoses ?? []);
@@ -2834,7 +3554,7 @@ function ConsultationsWorkspace() {
         : "Fix the presenting complaint before signing: " + complaintError);
       return;
     }
-    if (clinicalMutationInFlightRef.current) return;
+    if (clinicalMutationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
     signGuardErrorRef.current = null;
     cancelAutosaveTimer();
     resetRetryState();
@@ -3005,7 +3725,7 @@ function ConsultationsWorkspace() {
                       onFamilyHistoryChange={(value) => updateClinicalField("family_history", value, setFamilyHistory)}
                       onSocialHistoryChange={(value) => updateClinicalField("social_history", value, setSocialHistory)}
                       onSave={saveCurrentDraft}
-                      savePending={saveDraft.isPending || signNote.isPending}
+                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending}
                       saveState={draftSaveState}
                       savedAt={savedAt}
                     />
@@ -3038,7 +3758,7 @@ function ConsultationsWorkspace() {
                       onGenitourinaryExaminationChange={(value) => updateClinicalField("genitourinary_examination", value, setGenitourinaryExamination)}
                       onMusculoskeletalExaminationChange={(value) => updateClinicalField("musculoskeletal_examination", value, setMusculoskeletalExamination)}
                       onSave={saveCurrentDraft}
-                      savePending={saveDraft.isPending || signNote.isPending}
+                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending}
                       saveState={draftSaveState}
                       savedAt={savedAt}
                       reviewedNormalActionOpen={reviewedNormalActionOpen}
@@ -3067,9 +3787,21 @@ function ConsultationsWorkspace() {
                       treatmentPlan={treatmentPlan}
                       onTreatmentPlanChange={(value) => updateClinicalField("treatment_plan", value, setTreatmentPlan)}
                       onSave={saveCurrentDraft}
-                      savePending={saveDraft.isPending || signNote.isPending}
+                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending}
                       saveState={draftSaveState}
                       savedAt={savedAt}
+                      disposition={disposition}
+                      dispositionNote={dispositionNote}
+                      dispositionSaveState={dispositionSaveState}
+                      dispositionSavePending={dispositionMutationPending}
+                      dispositionError={dispositionError}
+                      dispositionConflict={dispositionConflict}
+                      dispositionFormDirty={dispositionFormDirty}
+                      dispositionRevisionUncertain={consultationRevisionUncertain}
+                      onDispositionChange={setDispositionDraftValue}
+                      onDispositionNoteChange={setDispositionDraftNote}
+                      onSaveDisposition={saveCurrentDisposition}
+                      onDiscardDisposition={discardDispositionChanges}
                     />
                 )
                 ) : activeSection === "diagnosis" ? (
@@ -3087,7 +3819,7 @@ function ConsultationsWorkspace() {
                       status={encounter.status}
                       diagnoses={encounter.diagnoses ?? []}
                       canManage={can("clinical.note.create")}
-                      mutationPending={diagnosisMutationPending || saveDraft.isPending || signNote.isPending}
+                      mutationPending={diagnosisMutationPending || saveDraft.isPending || signNote.isPending || dispositionMutationPending}
                       mutationError={diagnosisMutationError}
                       formState={diagnosisFormState}
                       onFormStateChange={setDiagnosisFormState}
@@ -3156,7 +3888,7 @@ function ConsultationsWorkspace() {
                     </Field>
 
                     <div className="flex flex-wrap items-center gap-3">
-                      <Button variant="secondary" disabled={saveDraft.isPending || signNote.isPending || diagnosisMutationPending} onClick={saveCurrentDraft}>
+                      <Button variant="secondary" disabled={saveDraft.isPending || signNote.isPending || diagnosisMutationPending || dispositionMutationPending} onClick={saveCurrentDraft}>
                         {saveDraft.isPending ? "Saving…" : "Save draft"}
                       </Button>
                       <DraftSaveStatus saveState={draftSaveState} savedAt={savedAt} />
@@ -3171,12 +3903,12 @@ function ConsultationsWorkspace() {
                         <Button variant="secondary" onClick={() => setConfirmingSign(false)}>
                           Cancel
                         </Button>
-                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending} onClick={signCurrentDraft}>
+                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending || dispositionMutationPending} onClick={signCurrentDraft}>
                           {signNote.isPending ? "Signing…" : "Confirm signature"}
                         </Button>
                       </div>
                     ) : (
-                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
+                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending || dispositionMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
                     )}
                   </div>
                 )}

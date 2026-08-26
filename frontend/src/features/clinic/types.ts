@@ -87,6 +87,16 @@ export type Diagnosis = {
   created_at: string;
   updated_at: string;
 };
+
+export type EncounterDisposition =
+  | "TREATED_AND_DISCHARGED"
+  | "REVIEW_SCHEDULED"
+  | "REFERRED_OUT"
+  | "ADMITTED_ELSEWHERE"
+  | "LEFT_AGAINST_ADVICE"
+  | "DECEASED"
+  | "OTHER";
+
 export type Encounter = {
   id: string;
   encounter_no: string;
@@ -95,6 +105,8 @@ export type Encounter = {
   queue_entry: string;
   status: string;
   consultation_etag?: string;
+  disposition: EncounterDisposition | null;
+  disposition_note: string;
   diagnoses: Diagnosis[];
   complaints: PresentingComplaint[];
   triage_complaint: string | null;

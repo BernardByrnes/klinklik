@@ -64,6 +64,7 @@ async function openHistory(page: Page, patientName: string) {
   await page.getByRole("listitem").filter({ hasText: patientName }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await expect(page.getByTestId("presenting-complaints-editor")).toBeVisible();
 }
@@ -77,6 +78,17 @@ async function recordNoFinalDiagnosis(page: Page) {
   await page.getByRole("tab", { name: "History", exact: true }).click();
 }
 
+async function saveTreatedDisposition(page: Page) {
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/disposition/") && response.status() === 200,
+  );
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await responsePromise;
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+}
+
 async function createConsultation(page: Page, prefix: string) {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
@@ -84,6 +96,7 @@ async function createConsultation(page: Page, prefix: string) {
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
   await recordNoFinalDiagnosis(page);
+  await saveTreatedDisposition(page);
   return patientName;
 }
 

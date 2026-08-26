@@ -42,6 +42,17 @@ async function setNkaAndReview(page: Page) {
   await reviewResponse;
 }
 
+async function saveTreatedDisposition(page: Page) {
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/disposition/") && response.status() === 200,
+  );
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await responsePromise;
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+}
+
 test("completes the clinic vertical slice across routed workspaces", async ({ page }) => {
   await login(page);
   await expect(page).toHaveURL(/\/overview$/);
@@ -116,6 +127,7 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(page.getByLabel("Consultation note")).toHaveValue("Assessment: stable. Plan: hydration.");
   await setNkaAndReview(page);
+  await saveTreatedDisposition(page);
   await page.getByRole("button", { name: "Sign consultation" }).click();
   await page.getByRole("button", { name: "Confirm signature" }).click();
   await expect(page.getByText("This consultation is signed and immutable.")).toBeVisible();

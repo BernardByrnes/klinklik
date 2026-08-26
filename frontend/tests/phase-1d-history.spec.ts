@@ -93,7 +93,8 @@ async function startEncounterAndWait(page: Page) {
       response.url().endsWith("/api/v1/clinic/encounters/") &&
       response.status() === 201,
   );
-  await startEncounter.click({ force: true });
+  await startEncounter.scrollIntoViewIfNeeded();
+  await startEncounter.click();
   await startResponse;
   await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
 }
@@ -107,6 +108,7 @@ async function openHistory(page: Page, patientName: string, entryId?: string) {
   await expect(page).toHaveURL(/\/consultations$/);
   const row = page.getByRole("listitem").filter({ hasText: patientName });
   await expect(row).toBeVisible({ timeout: 30_000 });
+  await row.scrollIntoViewIfNeeded();
   await row.click({ force: true });
   await expect(page.getByText(patientName, { exact: true }).last()).toBeVisible();
   }
@@ -120,7 +122,8 @@ async function openHistory(page: Page, patientName: string, entryId?: string) {
       response.url().endsWith("/api/v1/clinic/encounters/") &&
       response.status() === 201,
   );
-  await startEncounter.click({ force: true });
+  await startEncounter.scrollIntoViewIfNeeded();
+  await startEncounter.click();
   await startResponse;
   await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible({ timeout: 30_000 });
 
@@ -180,6 +183,13 @@ async function ensureSignable(page: Page, reason: string) {
     expect(clicked).toBe(true);
     await responsePromise;
   }
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  const dispositionResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/disposition/") && response.status() === 200,
+  );
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await dispositionResponse;
   await page.getByRole("tab", { name: "History", exact: true }).click({ force: true });
 }
 
@@ -256,6 +266,7 @@ test("persists and isolates family and social history", async ({ page }) => {
   await page.getByRole("listitem").filter({ hasText: patientB }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await expectHistory(page, {
     complaint: "",
@@ -270,6 +281,7 @@ test("persists and isolates family and social history", async ({ page }) => {
   await page.getByRole("listitem").filter({ hasText: patientA }).click();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await expectHistory(page, patientAHistory);
   await ensureSignable(page, "Phase 1D synthetic no final diagnosis for signing");
@@ -915,7 +927,8 @@ test("persists, isolates, reloads, signs, and locks cardiovascular and respirato
   const startEncounter = page.getByRole("button", { name: "Start encounter", exact: true });
   await expect(startEncounter).toHaveCount(1);
   await expect(startEncounter).toBeVisible();
-  await startEncounter.click({ force: true });
+  await startEncounter.scrollIntoViewIfNeeded();
+  await startEncounter.click();
   await expect(page.getByText("This consultation is signed and immutable.")).toBeVisible();
   const signedPatientBExamination = page.getByRole("tab", { name: "Examination", exact: true });
   await signedPatientBExamination.dispatchEvent("click");

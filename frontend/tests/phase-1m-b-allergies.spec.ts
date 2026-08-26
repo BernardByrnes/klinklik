@@ -71,6 +71,17 @@ async function recordNoFinalDiagnosis(page: Page) {
   await page.getByRole("tab", { name: "History", exact: true }).click();
 }
 
+async function saveTreatedDisposition(page: Page) {
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/disposition/") && response.status() === 200,
+  );
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await responsePromise;
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+}
+
 async function createConsultation(page: Page, prefix: string) {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
@@ -78,6 +89,7 @@ async function createConsultation(page: Page, prefix: string) {
   await triage(page, patientName);
   await openEncounter(page, patientName);
   await recordNoFinalDiagnosis(page);
+  await saveTreatedDisposition(page);
   return patientName;
 }
 

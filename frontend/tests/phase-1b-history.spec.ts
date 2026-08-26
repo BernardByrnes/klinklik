@@ -91,6 +91,13 @@ async function ensureSignable(page: Page, reason: string) {
     await page.getByRole("button", { name: "Save no final diagnosis", exact: true }).click();
     await responsePromise;
   }
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  const dispositionResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/disposition/") && response.status() === 200,
+  );
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await dispositionResponse;
   await page.getByRole("tab", { name: "History", exact: true }).click();
 }
 

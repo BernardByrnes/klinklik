@@ -68,12 +68,24 @@ async function openEncounter(page: Page, patientName: string) {
   await expect(page.getByTestId("allergy-banner")).toBeVisible();
 }
 
+async function saveTreatedDisposition(page: Page) {
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  const responsePromise = page.waitForResponse(
+    (response) => response.url().endsWith("/disposition/") && response.status() === 200,
+  );
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await responsePromise;
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+}
+
 async function createConsultation(page: Page, prefix: string) {
   await login(page);
   const suffix = Date.now().toString().slice(-6);
   const patientName = await registerAndCheckIn(page, prefix + suffix, "078" + suffix);
   await triagePatient(page, patientName);
   await openEncounter(page, patientName);
+  await saveTreatedDisposition(page);
   return patientName;
 }
 
@@ -419,6 +431,7 @@ test.describe("Phase 1N-B clinician diagnosis workflow", () => {
     const secondPatient = await registerAndCheckIn(page, "Phase1NB-SignNoPrimary-" + secondSuffix, "078" + secondSuffix);
     await triagePatient(page, secondPatient);
     await openEncounter(page, secondPatient);
+    await saveTreatedDisposition(page);
     await setNkaAndReview(page);
     await openDiagnosis(page);
     await saveFinal(page, "Phase 1N-B synthetic unselected final", false);

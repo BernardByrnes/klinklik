@@ -1476,3 +1476,72 @@ Scope and limitations:
 - PostgreSQL-specific RLS/row-lock execution remains for the PostgreSQL validation environment.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1P-B — Encounter Disposition Clinician UI
+
+Status: COMPLETE / ready for review.
+
+Objective:
+- Added clinician-facing Encounter disposition capture to the existing Treatment section using the Phase 1P-A backend contract.
+- Added the canonical choices TREATED_AND_DISCHARGED, REVIEW_SCHEDULED, REFERRED_OUT, ADMITTED_ELSEWHERE, LEFT_AGAINST_ADVICE, DECEASED, and OTHER.
+- The select has no default. OTHER requires a trimmed note and the note is bounded to 1000 characters. Saving is explicit and sends only the disposition payload with the current shared consultation ETag.
+- Disposition is coordinated with the existing note, complaint, diagnosis, autosave, sign, and patient/session state; the existing save architecture was preserved.
+
+Dependency and signing behavior:
+- REFERRED_OUT and REVIEW_SCHEDULED show neutral notices and remain blocked at signing until the corresponding existing referral/follow-up prerequisites are present. Those dependent workflows were not implemented.
+- Other dispositions can be saved and signed when the existing complaint, allergy, and diagnosis prerequisites also pass. A missing disposition blocks signing.
+- Signed/terminal encounters display disposition and note read-only. No deceased patient-state workflow was invented.
+
+Concurrency and recovery:
+- Disposition mutation uses PATCH /api/v1/clinic/encounters/{encounter_id}/disposition/ with If-Match and adopts the authoritative response ETag/state on success.
+- A disposition 412 performs an authoritative Encounter GET, reconciles note content, complaints, diagnoses, disposition, encounter status, and shared ETag under encounter/patient/queue/session guards, and does not replay the failed disposition command.
+- Dirty local note/complaint/diagnosis drafts are preserved or surfaced as conflicts according to the existing Phase 1J/1N behavior. Failed reconciliation does not adopt an uncertain ETag and blocks further mutation until reload.
+- Patient switching and beforeunload protection include unsaved disposition state. Section switching remains safe. In-flight and delayed responses cannot update a later patient session.
+
+Audit and security:
+- Existing autosave/audit summary semantics were preserved; no raw disposition note was added to generic audit payloads.
+- No browser PHI persistence was introduced: no localStorage, IndexedDB, service worker, offline queue, or persistent draft store.
+- All browser checks used synthetic local data and disposable SQLite databases only. Backend production code was not changed.
+
+Files changed:
+- frontend/src/app/(app)/consultations/page.tsx
+- frontend/src/features/clinic/types.ts
+- frontend/tests/phase-1p-b-disposition.spec.ts
+- frontend/tests/clinic-slice.spec.ts
+- frontend/tests/phase-1b-history.spec.ts
+- frontend/tests/phase-1c-history.spec.ts
+- frontend/tests/phase-1d-history.spec.ts
+- frontend/tests/phase-1l-b-complaints.spec.ts
+- frontend/tests/phase-1m-b-allergies.spec.ts
+- frontend/tests/phase-1n-b-diagnoses.spec.ts
+- frontend/tests/phase-1o-b-treatment-plan.spec.ts
+- docs/REPO_REVIEW_HANDOFF.md
+
+Tests:
+- Focused Phase 1P-B Playwright: PASS — 12 passed.
+- Consultation reliability / Phase 1D-F through Phase 1K regressions: PASS — 40 passed.
+- Phase 1L-B complaints: PASS — 20 passed.
+- Phase 1M-B allergies: PASS — 12 passed.
+- Phase 1N-B diagnoses: PASS — 16 passed.
+- Phase 1O-B treatment plan: PASS — 12 passed.
+- Clinic vertical slice plus Phase 1B and Phase 1C regression cases: PASS — 3 passed.
+- Phase 1P-A backend: PASS — 14 passed.
+- Django check: PASS — no issues identified.
+- makemigrations --check --dry-run: PASS — no changes detected.
+- migrate --plan: PASS — no planned migration operations.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS — Next.js 15.5.23.
+
+Migration status:
+- NONE for Phase 1P-B. The existing Phase 1P-A migration was used locally; no new migration was created.
+
+Known limitations:
+- Referral creation, follow-up scheduling, and downstream referral/follow-up workflows remain unimplemented.
+- DECEASED does not create a patient-status workflow.
+- Downstream reporting/printing integration remains outside this slice.
+- The local browser suite uses synthetic development records only.
+
+No browser PHI persistence was introduced.
+
+Next approved phase: NOT YET AUTHORISED
