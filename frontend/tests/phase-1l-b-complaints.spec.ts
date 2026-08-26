@@ -241,6 +241,8 @@ test.describe("Phase 1L-B structured presenting complaints", () => {
 
   test("manual Save cancels a pending complaint retry timer", async ({ page }) => {
     await createConsultation(page, "Phase1LB-ManualRetry-");
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now());
     let failFirst = true;
     const markers: string[] = [];
     page.on("request", (request) => {
@@ -257,12 +259,13 @@ test.describe("Phase 1L-B structured presenting complaints", () => {
     try {
       const failure = page.waitForResponse((response) => response.url().endsWith("/notes/") && response.status() === 503);
       await steadyFill(page, "Presenting complaint", "Phase 1L-B synthetic manual retry complaint");
+      await page.clock.fastForward(3000);
       await failure;
       await expect(page.getByText("Not saved — retrying", { exact: true })).toBeVisible();
       const manualSave = page.waitForResponse((response) => response.url().endsWith("/notes/") && response.status() === 200);
       await page.getByRole("button", { name: "Save draft" }).click();
       await manualSave;
-      await page.waitForTimeout(2500);
+      await page.clock.fastForward(2500);
       expect(markers).toEqual(["1", "manual"]);
       await expect(page.getByText(/^Saved \d{2}:\d{2}:\d{2}$/)).toBeVisible();
     } finally {

@@ -98,13 +98,18 @@ async function startEncounterAndWait(page: Page) {
   await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
 }
 
-async function openHistory(page: Page, patientName: string) {
+async function openHistory(page: Page, patientName: string, entryId?: string) {
+  if (entryId) {
+    await page.goto("/consultations?entry=" + encodeURIComponent(entryId));
+    await expect(page.getByText(patientName, { exact: true }).last()).toBeVisible();
+  } else {
   await page.locator('nav a[href="/consultations"]').click();
   await expect(page).toHaveURL(/\/consultations$/);
   const row = page.getByRole("listitem").filter({ hasText: patientName });
-  await expect(row).toBeVisible();
+  await expect(row).toBeVisible({ timeout: 30_000 });
   await row.click({ force: true });
   await expect(page.getByText(patientName, { exact: true }).last()).toBeVisible();
+  }
   await clickWorkspaceTab(page, "History");
   const startEncounter = page.getByRole("button", { name: "Start encounter", exact: true });
   await expect(startEncounter).toHaveCount(1);
@@ -117,7 +122,7 @@ async function openHistory(page: Page, patientName: string) {
   );
   await startEncounter.click({ force: true });
   await startResponse;
-  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save draft" })).toBeVisible({ timeout: 30_000 });
 
   await clickWorkspaceTab(page, "Notes");
 
@@ -1532,7 +1537,7 @@ test("retains a neurological edit made while an abdominal save is in flight", as
           return false;
         }
         const body = JSON.parse(request.postData() ?? "{}") as { content?: Record<string, unknown> };
-        return body.content?.respiratory_examination === respiratory;
+        return body.content?.neurological_examination === neurological;
       },
     );
     const secondResponse = page.waitForResponse(
@@ -1547,7 +1552,7 @@ test("retains a neurological edit made while an abdominal save is in flight", as
           return false;
         }
         const body = JSON.parse(response.request().postData() ?? "{}") as { content?: Record<string, unknown> };
-        return body.content?.respiratory_examination === respiratory;
+        return body.content?.neurological_examination === neurological;
       },
     );
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -1719,6 +1724,7 @@ test("persists, isolates, reloads, signs, and locks genitourinary and musculoske
 
 
 test("rebases a stale musculoskeletal examination after a neurological examination update", async ({ page }) => {
+  test.setTimeout(300_000);
   await login(page);
   const suffix = Date.now().toString().slice(-6);
   const patientName = await registerAndCheckIn(page, "Phase1H-Rebase-" + suffix, "0772" + suffix);
@@ -1920,7 +1926,7 @@ test("retains a musculoskeletal edit made while an genitourinary save is in flig
           return false;
         }
         const body = JSON.parse(request.postData() ?? "{}") as { content?: Record<string, unknown> };
-        return body.content?.respiratory_examination === respiratory;
+        return body.content?.musculoskeletal_examination === musculoskeletal;
       },
     );
     const secondResponse = page.waitForResponse(
@@ -1935,7 +1941,7 @@ test("retains a musculoskeletal edit made while an genitourinary save is in flig
           return false;
         }
         const body = JSON.parse(response.request().postData() ?? "{}") as { content?: Record<string, unknown> };
-        return body.content?.respiratory_examination === respiratory;
+        return body.content?.musculoskeletal_examination === musculoskeletal;
       },
     );
     await page.getByRole("button", { name: "Save draft" }).click();
@@ -2244,19 +2250,30 @@ test("closes and clears reviewed-normal state across sections and patients witho
 });
 
 test("handles same-field stale conflicts for a template-inserted examination field", async ({ page }) => {
+  test.setTimeout(300_000);
   await login(page);
   const suffix = Date.now().toString().slice(-6);
   const patientName = await registerAndCheckIn(page, "Phase1I-SameField-" + suffix, "0784" + suffix);
   await triageFromQueue(page, patientName);
+  const queueResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url().endsWith("/api/v1/clinic/queue/?status=TRIAGED,IN_CONSULTATION") &&
+      response.status() === 200,
+  );
   await openHistory(page, patientName);
+  const queueEntries = (await (await queueResponse).json()) as Array<{ id: string; patient_name: string }>;
+  const queueEntryId = queueEntries.find((entry) => entry.patient_name === patientName)?.id;
+  expect(queueEntryId).toBeTruthy();
+  if (!queueEntryId) throw new Error("Synthetic consultation queue entry was not returned.");
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
 
   const stalePage = await page.context().newPage();
   try {
-    await stalePage.goto("/consultations");
-    await expect(stalePage.locator('nav a[href="/consultations"]')).toBeVisible();
-    await openHistory(stalePage, patientName);
+    await openHistory(stalePage, patientName, queueEntryId);
     await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await stalePage.clock.install();
+    await stalePage.clock.pauseAt(Date.now());
 
     const serverCardiovascular = "Phase 1I verification - synthetic server cardiovascular documentation.";
     await steadyFill(page, "Cardiovascular Examination", serverCardiovascular);
@@ -2309,10 +2326,11 @@ test("handles same-field stale conflicts for a template-inserted examination fie
     expect(retry.request().headers()["if-match"]).toBe(conflict.headers()["etag"]);
     await expect(stalePage.getByText("Consultation draft saved.")).toBeVisible();
 
-    await page.reload();
-    await openHistory(page, patientName);
-    await page.getByRole("tab", { name: "Examination", exact: true }).click();
-    await expect(page.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(PHASE_1I_CARDIO_NORMAL);
+    await stalePage.clock.resume();
+    await stalePage.reload();
+    await openHistory(stalePage, patientName, queueEntryId);
+    await stalePage.getByRole("tab", { name: "Examination", exact: true }).click();
+    await expect(stalePage.getByLabel("Cardiovascular Examination", { exact: true })).toHaveValue(PHASE_1I_CARDIO_NORMAL);
   } finally {
     await stalePage.close();
   }
@@ -2414,6 +2432,8 @@ test("retains a reviewed-normal insertion made while another examination save is
   await triageFromQueue(page, patientName);
   await openHistory(page, patientName);
   await page.getByRole("tab", { name: "Examination", exact: true }).click();
+  await page.clock.install();
+  await page.clock.pauseAt(Date.now());
 
   let delayFirstSave = true;
   await page.route("**/api/v1/clinic/encounters/*/notes/", async (route) => {

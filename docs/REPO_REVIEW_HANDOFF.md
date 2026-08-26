@@ -1342,3 +1342,52 @@ Known limitations:
 - The broader regression suite still contains unrelated timing/fixture failures and two existing test-code `ReferenceError`s. They were not changed because fixing them would broaden this tiny component-identity slice.
 
 Next approved phase: NOT YET AUTHORISED
+
+### Phase 1O-B-F2 — Consultation Regression Gate Cleanup
+
+Status: COMPLETE / PASS — the Phase 1O regression gate is closed after test-only cleanup and full verification.
+
+Objective:
+- Remove the remaining deterministic test-code defect and stabilize the identified consultation regression tests without changing production behavior or weakening assertions.
+
+Initial failing-test classification:
+- Unique initial failing tests: 9.
+- Test-code defects: 2 — two in-flight examination predicates referenced `respiratory` instead of the field under test.
+- Stale expectations: 0.
+- Fixture prerequisite gaps: 0.
+- Timing/synchronization issues: 7 — request/timer/session sequencing in the retry, sign, navigation, and delayed-response scenarios.
+- Real product regressions: 0.
+
+Corrections:
+- Corrected the neurological and musculoskeletal in-flight request/response predicates to assert the actual field and value under test.
+- Stabilized the complaint manual-save retry test with Playwright fake-clock control so the pending retry cannot race the explicit save.
+- Added targeted request/session synchronization for examination rebase and delayed-response cases, including authoritative queue-entry selection for the stale page.
+- Added only per-test timeout allowances for the two long-running local synthetic scenarios; no global timeout was changed.
+- Assertions, selectors, retry markers, and product behavior were preserved.
+
+Validation:
+- Full consultation reliability: PASS — 90 passed, no tests skipped.
+- Phase 1O-B treatment Playwright: PASS — 12 passed.
+- Diagnosis regressions: PASS — 16 passed as part of the full consultation invocation.
+- Complaint regressions: PASS — 20 passed as part of the full consultation invocation.
+- Allergy regressions: PASS — 12 passed as part of the full consultation invocation.
+- Phase 1O-A backend tests: PASS — 4 passed with `python -m pytest tests/test_phase_1o_a.py -q`.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS.
+- Tests skipped: NO.
+- Migration status: NONE.
+
+Scope and safety:
+- Production frontend code changed: NO. Backend production code changed: NO.
+- Files changed: `frontend/tests/phase-1d-history.spec.ts`, `frontend/tests/phase-1l-b-complaints.spec.ts`, and this handoff file.
+- No browser PHI persistence was introduced. No localStorage, IndexedDB, service worker, offline queue, background sync, or persistent draft cache was added.
+- Verification used local synthetic development records only; no real patient data, secrets, credentials, or external side effects were used or exposed.
+- Canonical backlog changed: NO. Runtime artifacts changed: NO. Phase 1O-C or later work started: NO.
+
+Known limitations:
+- The local synthetic database now contains a large accumulated queue from repeated E2E runs, so the full one-worker suite is slow. The completed run was deterministic and fully green; no product regression was demonstrated.
+
+Phase 1O regression gate: CLOSED.
+
+Next approved phase: NOT YET AUTHORISED
