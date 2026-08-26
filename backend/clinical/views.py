@@ -13,12 +13,14 @@ from clinical.allergies import (
 from clinical.concurrency import ClinicalNoteRevisionConflict, consultation_note_etag, consultation_note_for_encounter
 from clinical.diagnoses import DiagnosisDomainError, DiagnosisRevisionConflict, create_diagnosis, remove_diagnosis, update_diagnosis
 from clinical.diagnosis_state import active_diagnosis_snapshot
+from clinical.dispositions import DispositionDomainError, DispositionRevisionConflict, set_disposition
 from clinical.models import Allergy, Diagnosis, Encounter
 from patients.models import Patient
 from clinical.serializers import (
     AllergyCreateSerializer,
     DiagnosisSerializer,
     DiagnosisWriteSerializer,
+    DispositionWriteSerializer,
     AllergyEnteredInErrorSerializer,
     AllergyStatusSerializer,
     EncounterSerializer,
@@ -84,11 +86,14 @@ def _revision_conflict_response(exc, http_status=status.HTTP_409_CONFLICT):
             "code": "CLINICAL_NOTE_REVISION_CONFLICT",
             "detail": "This consultation changed elsewhere; review the current record before retrying.",
             "etag": exc.current_etag,
+            "consultation_etag": exc.current_etag,
             "status": exc.current_status,
             "encounter_status": exc.current_encounter_status,
             "content": exc.current_content,
             "complaints": exc.current_complaints,
             "diagnoses": exc.current_diagnoses,
+            "disposition": exc.current_disposition,
+            "disposition_note": exc.current_disposition_note,
             "saved_at": exc.current_saved_at,
         },
         status=http_status,
@@ -113,6 +118,28 @@ def _diagnosis_conflict_response(exc):
     return response
 
 
+def _disposition_conflict_response(exc):
+    response = Response(
+        {
+            "code": "DISPOSITION_REVISION_CONFLICT",
+            "detail": "This consultation changed elsewhere; review the current disposition before retrying.",
+            "etag": exc.current_etag,
+            "consultation_etag": exc.current_etag,
+            "status": exc.current_status,
+            "encounter_status": exc.current_encounter_status,
+            "content": exc.current_content,
+            "complaints": exc.current_complaints,
+            "diagnoses": exc.current_diagnoses,
+            "disposition": exc.current_disposition,
+            "disposition_note": exc.current_disposition_note,
+            "saved_at": exc.current_saved_at,
+        },
+        status=status.HTTP_412_PRECONDITION_FAILED,
+    )
+    response["ETag"] = exc.current_etag
+    return response
+
+
 def _diagnosis_state_response(*, encounter, note, diagnoses, status_code=status.HTTP_200_OK):
     etag = consultation_note_etag(encounter=encounter, note=note)
     response = Response(
@@ -122,6 +149,22 @@ def _diagnosis_state_response(*, encounter, note, diagnoses, status_code=status.
         },
         status=status_code,
     )
+    response["ETag"] = etag
+    return response
+
+
+def _disposition_response(*, encounter, note, status_code=status.HTTP_200_OK):
+    encounter.refresh_from_db(fields=["disposition", "disposition_note", "status", "updated_at"])
+    if note is not None:
+        note.refresh_from_db(fields=["content", "status", "updated_at"])
+    etag = consultation_note_etag(encounter=encounter, note=note)
+    data = {
+        "disposition": encounter.disposition,
+        "disposition_note": encounter.disposition_note,
+        "consultation_etag": etag,
+        "encounter_status": encounter.status,
+    }
+    response = Response(data, status=status_code)
     response["ETag"] = etag
     return response
 
@@ -504,6 +547,42 @@ class EncounterDiagnosisRemoveView(TenantAPIView):
             diagnoses=result["diagnoses"],
         )
 
+
+class EncounterDispositionView(TenantAPIView):
+    capability = "clinical.note.create"
+
+    def patch(self, request, pk):
+        encounter = get_object_or_404(
+            Encounter, id=pk, organisation=request.organisation, facility=request.facility
+        )
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for disposition mutations.",
+        )
+        if error_response is not None:
+            return error_response
+        serializer = DispositionWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = set_disposition(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                encounter=encounter,
+                data=serializer.validated_data,
+                expected_etag=expected_etag,
+                request=request,
+            )
+        except DispositionRevisionConflict as exc:
+            return _disposition_conflict_response(exc)
+        except DispositionDomainError as exc:
+            return Response(
+                {"code": exc.code, "detail": exc.detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return _disposition_response(encounter=result["encounter"], note=result["note"])
+
+
 class EncounterDetailView(TenantAPIView):
     capability = "clinical.note.create"
 
@@ -590,6 +669,11 @@ class EncounterSignView(TenantAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except DiagnosisDomainError as exc:
+            return Response(
+                {"code": exc.code, "detail": exc.detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DispositionDomainError as exc:
             return Response(
                 {"code": exc.code, "detail": exc.detail},
                 status=status.HTTP_400_BAD_REQUEST,

@@ -45,6 +45,20 @@ class DiagnosisWriteSerializer(serializers.Serializer):
 
 
 
+class DispositionWriteSerializer(serializers.Serializer):
+    disposition = serializers.ChoiceField(
+        choices=Encounter.DISPOSITION_CHOICES,
+        allow_null=True,
+        required=True,
+    )
+    disposition_note = serializers.CharField(
+        max_length=1000,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )
+
+
 def validate_note_content(value):
     for field_name, max_length in {
         "presenting_complaint": 500,
@@ -172,6 +186,6 @@ class EncounterSerializer(serializers.ModelSerializer):
             "id", "encounter_no", "patient", "patient_name", "queue_entry", "complaints", "triage_complaint",
             "allergy_status", "active_allergies", "allergy_revision", "allergy_state_etag",
             "allergies_reviewed_at", "allergies_reviewed_revision", "allergies_review_is_current",
-            "facility", "clinician", "status", "started_at", "signed_at", "closed_at", "notes", "diagnoses",
+            "facility", "clinician", "status", "disposition", "disposition_note", "started_at", "signed_at", "closed_at", "notes", "diagnoses",
             "consultation_etag",
         ]

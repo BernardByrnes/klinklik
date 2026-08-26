@@ -12,7 +12,7 @@ from core.services import tenant_atomic
 from patients.models import Patient
 from scheduling.models import QueueEntry
 from tenancy.models import Facility
-from tests.clinical_test_helpers import establish_synthetic_nka_review
+from tests.clinical_test_helpers import establish_synthetic_disposition, establish_synthetic_nka_review
 
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -56,6 +56,8 @@ def create_encounter(tenant, client, label="Phase1NA"):
         format="json",
     )
     assert encounter.status_code == 201, encounter.data
+    disposition = establish_synthetic_disposition(client, encounter.data["id"])
+    encounter.data["consultation_etag"] = disposition["consultation_etag"]
     return encounter.data
 
 

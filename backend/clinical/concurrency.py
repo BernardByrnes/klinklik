@@ -16,6 +16,8 @@ class ClinicalNoteRevisionConflict(ValueError):
         self.current_content = dict(note.content or {}) if note is not None else {}
         self.current_complaints = list(encounter.complaints or [])
         self.current_diagnoses = active_diagnosis_snapshot(encounter)
+        self.current_disposition = encounter.disposition
+        self.current_disposition_note = encounter.disposition_note
         self.current_saved_at = note.updated_at.isoformat() if note is not None else None
         super().__init__("Clinical note revision is stale.")
 
@@ -45,6 +47,8 @@ def consultation_note_etag(*, encounter, note):
         "content": note.content if note is not None else None,
         "complaints": list(encounter.complaints or []),
         "diagnoses": diagnosis_revision_snapshot(encounter),
+        "disposition": encounter.disposition,
+        "disposition_note": encounter.disposition_note,
     }
     payload = json.dumps(state, default=str, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = hmac.new(settings.SECRET_KEY.encode("utf-8"), payload, hashlib.sha256).hexdigest()

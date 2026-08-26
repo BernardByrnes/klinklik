@@ -26,7 +26,20 @@ def establish_synthetic_nka_review(client, encounter_id):
     return review.data
 
 
-def establish_synthetic_final_diagnosis(client, encounter_id):
+def establish_synthetic_disposition(client, encounter_id, disposition="TREATED_AND_DISCHARGED", disposition_note=""):
+    encounter = client.get(f"/api/v1/clinic/encounters/{encounter_id}/")
+    assert encounter.status_code == 200, encounter.data
+    response = client.patch(
+        f"/api/v1/clinic/encounters/{encounter_id}/disposition/",
+        {"disposition": disposition, "disposition_note": disposition_note},
+        HTTP_IF_MATCH=encounter.data["consultation_etag"],
+        format="json",
+    )
+    assert response.status_code == 200, response.data
+    return response.data
+
+
+def establish_synthetic_final_diagnosis(client, encounter_id, *, include_disposition=True):
     encounter = client.get(f"/api/v1/clinic/encounters/{encounter_id}/")
     assert encounter.status_code == 200, encounter.data
     diagnosis = client.post(
@@ -42,4 +55,7 @@ def establish_synthetic_final_diagnosis(client, encounter_id):
         format="json",
     )
     assert diagnosis.status_code == 201, diagnosis.data
+    if include_disposition:
+        saved_disposition = establish_synthetic_disposition(client, encounter_id)
+        diagnosis.data["consultation_etag"] = saved_disposition["consultation_etag"]
     return diagnosis.data

@@ -11,6 +11,15 @@ class Encounter(FacilityScopedModel):
         ("CLOSED", "Closed"),
         ("CANCELLED", "Cancelled"),
     ]
+    DISPOSITION_CHOICES = [
+        ("TREATED_AND_DISCHARGED", "Treated and discharged"),
+        ("REVIEW_SCHEDULED", "Review scheduled"),
+        ("REFERRED_OUT", "Referred out"),
+        ("ADMITTED_ELSEWHERE", "Admitted elsewhere"),
+        ("LEFT_AGAINST_ADVICE", "Left against advice"),
+        ("DECEASED", "Deceased"),
+        ("OTHER", "Other"),
+    ]
 
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="encounters")
     queue_entry = models.OneToOneField(
@@ -31,6 +40,13 @@ class Encounter(FacilityScopedModel):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="clinical_encounters"
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="OPEN")
+    disposition = models.CharField(
+        max_length=30,
+        choices=DISPOSITION_CHOICES,
+        null=True,
+        blank=True,
+    )
+    disposition_note = models.TextField(max_length=1000, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     signed_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)

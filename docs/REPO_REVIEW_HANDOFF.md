@@ -1391,3 +1391,88 @@ Known limitations:
 Phase 1O regression gate: CLOSED.
 
 Next approved phase: NOT YET AUTHORISED
+
+
+### Phase 1P-A — Encounter Disposition Backend Foundation
+
+Status: COMPLETE / PASS for the visible Phase 1P-A requirements; backend-only and ready for review.
+
+Objective:
+- Added authoritative Encounter disposition state to the existing consultation revision and signing model.
+- Kept the work limited to DX-006 backend foundation. No frontend disposition UI, referral workflow, follow-up scheduling, prescriptions, procedures, investigations, or pharmacy work was started.
+- DX-006 backend foundation: COMPLETE.
+- DX-007: NOT STARTED.
+- DX-008: NOT STARTED.
+- Phase 1P-B: NOT STARTED.
+
+Canonical disposition choices:
+- TREATED_AND_DISCHARGED
+- REVIEW_SCHEDULED
+- REFERRED_OUT
+- ADMITTED_ELSEWHERE
+- LEFT_AGAINST_ADVICE
+- DECEASED
+- OTHER
+
+Storage and API:
+- Added nullable/blank Encounter.disposition and bounded Encounter.disposition_note (maximum 1000 characters).
+- Added PATCH /api/v1/clinic/encounters/{encounter_id}/disposition/.
+- Disposition mutations require the current If-Match consultation ETag and return authoritative disposition, disposition_note, encounter_status, consultation_etag, and the ETag response header.
+- Disposition and disposition_note are exposed by EncounterSerializer and are not stored inside ClinicalNote.content.
+- Mutations use transaction.atomic and lock the scoped Encounter and consultation note.
+
+Validation and signing:
+- OTHER requires a non-whitespace disposition note; other choices may have a blank note. Omitted notes preserve the existing note under PATCH semantics; explicit blank clears it.
+- Signing now requires a disposition after the existing complaint, allergy-review, and diagnosis prerequisites.
+- REFERRED_OUT can be stored OPEN but signing returns REFERRAL_REQUIRED unless an existing scoped Referral record is present.
+- REVIEW_SCHEDULED can be stored OPEN but signing returns FOLLOW_UP_REQUIRED unless an existing scoped FollowUpRecommendation with a date is present.
+- DECEASED can be stored and signed; no fake PAT-013 record or deceased workflow was created.
+- Dependent DX-007/DX-008 workflows were not implemented.
+
+Concurrency and immutability:
+- Disposition state participates in the shared consultation ETag.
+- A stale disposition mutation returns HTTP 412 with authoritative encounter, note, complaints, diagnoses, disposition, disposition_note, status, saved_at, and the current ETag; it never silently overwrites.
+- Signed, amended, closed, and cancelled encounters reject disposition mutation with DISPOSITION_IMMUTABLE.
+- The failed mutation does not create a false success audit event.
+
+Audit and security:
+- Disposition updates record only state metadata and disposition_note_present/changed_fields; the raw disposition note is not placed in generic audit payloads.
+- No browser PHI persistence was introduced. No localStorage, IndexedDB, service worker, offline queue, or persistent draft store was added.
+- All test data is synthetic development data only.
+
+Validation:
+- Focused Phase 1P-A backend tests: PASS — 14 passed.
+- Phase 1N-A, Phase 1M-A, and Phase 1O-A backend regressions plus Phase 1P-A: PASS — 59 passed.
+- Full backend suite: PASS — 217 passed, 7 expected PostgreSQL-only skips.
+- Skips: 5 PostgreSQL-only authentication/RLS tests and 2 PostgreSQL row-lock tests; the local validation database is SQLite.
+- Django check: PASS — no issues identified.
+- makemigrations --check --dry-run: PASS — no changes detected.
+- migrate --plan: PASS — only clinical.0007_encounter_disposition_encounter_disposition_note is planned.
+- Ruff: NOT RUN — the standalone command and Python module are unavailable in this environment.
+
+Migration:
+- Added clinical.0007_encounter_disposition_encounter_disposition_note.py.
+- No data migration, referral record, follow-up record, or PAT-013 workflow was created.
+
+Files changed:
+- backend/clinical/models.py
+- backend/clinical/serializers.py
+- backend/clinical/concurrency.py
+- backend/clinical/dispositions.py
+- backend/clinical/services.py
+- backend/clinical/urls.py
+- backend/clinical/views.py
+- backend/clinical/migrations/0007_encounter_disposition_encounter_disposition_note.py
+- backend/tests/clinical_test_helpers.py
+- backend/tests/test_phase_1n_a.py
+- backend/tests/test_phase_1p_a.py
+- docs/REPO_REVIEW_HANDOFF.md
+
+Scope and limitations:
+- Canonical backlog changed: NO.
+- Frontend disposition UI: NOT STARTED.
+- Phase 1P-B and later phases: NOT STARTED.
+- The supplied Phase 1P-A instruction attachment ended mid-SIGNING immediately after "Add:"; no requirements beyond the visible text were inferred.
+- PostgreSQL-specific RLS/row-lock execution remains for the PostgreSQL validation environment.
+
+Next approved phase: NOT YET AUTHORISED
