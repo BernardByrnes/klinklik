@@ -27,6 +27,7 @@ class DispositionRevisionConflict(ValueError):
         self.current_diagnoses = conflict.current_diagnoses
         self.current_disposition = conflict.current_disposition
         self.current_disposition_note = conflict.current_disposition_note
+        self.current_follow_up = conflict.current_follow_up
         self.current_saved_at = conflict.current_saved_at
         super().__init__("The consultation changed elsewhere; review the current disposition before retrying.")
 

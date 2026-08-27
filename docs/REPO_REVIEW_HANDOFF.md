@@ -1545,3 +1545,55 @@ Known limitations:
 No browser PHI persistence was introduced.
 
 Next approved phase: NOT YET AUTHORISED
+### Phase 1Q-A — DX-008 Follow-Up Backend Foundation
+
+Status: COMPLETE / PASS for the approved backend-only follow-up foundation; ready for review.
+
+Objective:
+- Reused the existing `scheduling.FollowUpRecommendation` model. No alternate follow-up model was created.
+- Added scoped GET/PATCH support at `/api/v1/clinic/encounters/{encounter_id}/follow-up/` for `recommended_date` and clinician-authored `instructions`.
+- Creation requires a valid recommended date; partial updates preserve omitted existing fields. Instruction text is stored and returned verbatim.
+- The recommendation is linked to the current Encounter and its Patient, and the endpoint serializes create/update on the locked Encounter so repeated/concurrent endpoint mutations reuse one authoritative current recommendation.
+
+Authorization and isolation:
+- The endpoint reuses the existing server-side `clinical.note.create` capability used for clinical authoring. A clinical MIDWIFE role with that capability is accepted; reception capability is denied in focused tests.
+- Encounter, follow-up, organisation, facility, and patient queries are scoped together. Cross-facility and cross-organisation records are not visible or mutable.
+
+Concurrency and signing:
+- Follow-up state is included in the shared consultation ETag. Every mutation requires `If-Match`; stale state returns HTTP 412 with the authoritative follow-up and consultation state, without applying the failed command.
+- Signed, closed, and cancelled encounters, plus signed/amended consultation notes, reject follow-up mutation.
+- `REVIEW_SCHEDULED` continues to require a scoped follow-up with a valid recommended date; once saved, the existing sign workflow succeeds. Without one, signing returns `FOLLOW_UP_REQUIRED`.
+
+Audit and security:
+- Follow-up audit events contain encounter/follow-up identifiers, field-presence metadata, and changed field names only; raw instruction text is never written to generic audit payloads.
+- No browser persistence, reminders, SMS/email, appointments, printing, referrals, or frontend production code was added. No PHI or credentials were used in validation.
+
+Files changed:
+- `backend/clinical/concurrency.py`
+- `backend/clinical/dispositions.py`
+- `backend/clinical/followups.py`
+- `backend/clinical/serializers.py`
+- `backend/clinical/urls.py`
+- `backend/clinical/views.py`
+- `backend/tests/test_phase_1q_a.py`
+- `docs/REPO_REVIEW_HANDOFF.md`
+
+Validation:
+- Focused Phase 1Q-A backend tests: PASS — 9 passed.
+- Phase 1P-A, diagnosis, allergy, and sign regressions: PASS — 57 passed; 2 existing PostgreSQL-only row-lock tests skipped under local SQLite.
+- Full backend suite: PASS — 226 passed; 7 existing PostgreSQL-only tests skipped (5 authentication/RLS and 2 row-lock checks).
+- Django check: PASS — no issues identified.
+- `makemigrations --check --dry-run`: PASS — no changes detected.
+- `migrate --plan`: PASS — no planned migration operations.
+
+Migration status:
+- NONE. The existing `scheduling.FollowUpRecommendation` schema already provides the required date/instructions fields; no migration was created.
+
+Known limitations:
+- Follow-up interval entry, appointment creation (APT-001), printing, reminders, referral/DX-007, and frontend UI remain outside this phase.
+- PostgreSQL-specific RLS and row-lock execution remains for the PostgreSQL validation environment; the local full-suite skips are recorded above.
+- No Phase 1R or later work was started.
+
+No browser PHI persistence was introduced.
+
+Next approved phase: NOT YET AUTHORISED

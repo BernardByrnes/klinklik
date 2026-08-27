@@ -5,6 +5,7 @@ from clinical.complaints import ComplaintValidationError, normalize_complaints
 from clinical.concurrency import consultation_note_etag, consultation_note_for_encounter
 from clinical.diagnosis_state import active_diagnosis_snapshot
 from clinical.models import Allergy, ClinicalNote, Diagnosis, Encounter, TriageAssessment
+from scheduling.models import FollowUpRecommendation
 
 
 class TriageSerializer(serializers.Serializer):
@@ -53,6 +54,32 @@ class DispositionWriteSerializer(serializers.Serializer):
     )
     disposition_note = serializers.CharField(
         max_length=1000,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )
+
+
+class FollowUpRecommendationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FollowUpRecommendation
+        fields = [
+            "id",
+            "patient",
+            "encounter",
+            "recommended_date",
+            "instructions",
+            "status",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class FollowUpWriteSerializer(serializers.Serializer):
+    recommended_date = serializers.DateField(required=False, allow_null=True)
+    instructions = serializers.CharField(
         required=False,
         allow_blank=True,
         trim_whitespace=False,
@@ -135,6 +162,7 @@ class EncounterSerializer(serializers.ModelSerializer):
     allergies_reviewed_revision = serializers.IntegerField(read_only=True, allow_null=True)
     allergies_review_is_current = serializers.SerializerMethodField()
     consultation_etag = serializers.SerializerMethodField()
+    follow_up = serializers.SerializerMethodField()
 
     def _allergy_snapshot(self, obj):
         if not hasattr(obj, "_allergy_snapshot"):
@@ -180,6 +208,14 @@ class EncounterSerializer(serializers.ModelSerializer):
     def get_consultation_etag(self, obj):
         return consultation_note_etag(encounter=obj, note=consultation_note_for_encounter(obj))
 
+    def get_follow_up(self, obj):
+        follow_up = getattr(obj, "_follow_up_for_serialization", None)
+        if not hasattr(obj, "_follow_up_for_serialization"):
+            from clinical.concurrency import follow_up_recommendation_for_encounter
+
+            follow_up = follow_up_recommendation_for_encounter(obj)
+        return FollowUpRecommendationSerializer(follow_up).data if follow_up is not None else None
+
     class Meta:
         model = Encounter
         fields = [
@@ -187,5 +223,5 @@ class EncounterSerializer(serializers.ModelSerializer):
             "allergy_status", "active_allergies", "allergy_revision", "allergy_state_etag",
             "allergies_reviewed_at", "allergies_reviewed_revision", "allergies_review_is_current",
             "facility", "clinician", "status", "disposition", "disposition_note", "started_at", "signed_at", "closed_at", "notes", "diagnoses",
-            "consultation_etag",
+            "follow_up", "consultation_etag",
         ]

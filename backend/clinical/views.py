@@ -10,10 +10,16 @@ from clinical.allergies import (
     review_encounter_allergies,
     set_allergy_status,
 )
-from clinical.concurrency import ClinicalNoteRevisionConflict, consultation_note_etag, consultation_note_for_encounter
+from clinical.concurrency import (
+    ClinicalNoteRevisionConflict,
+    consultation_note_etag,
+    consultation_note_for_encounter,
+    follow_up_recommendation_for_encounter,
+)
 from clinical.diagnoses import DiagnosisDomainError, DiagnosisRevisionConflict, create_diagnosis, remove_diagnosis, update_diagnosis
 from clinical.diagnosis_state import active_diagnosis_snapshot
 from clinical.dispositions import DispositionDomainError, DispositionRevisionConflict, set_disposition
+from clinical.followups import FollowUpDomainError, FollowUpRevisionConflict, save_follow_up
 from clinical.models import Allergy, Diagnosis, Encounter
 from patients.models import Patient
 from clinical.serializers import (
@@ -21,6 +27,8 @@ from clinical.serializers import (
     DiagnosisSerializer,
     DiagnosisWriteSerializer,
     DispositionWriteSerializer,
+    FollowUpRecommendationSerializer,
+    FollowUpWriteSerializer,
     AllergyEnteredInErrorSerializer,
     AllergyStatusSerializer,
     EncounterSerializer,
@@ -94,6 +102,7 @@ def _revision_conflict_response(exc, http_status=status.HTTP_409_CONFLICT):
             "diagnoses": exc.current_diagnoses,
             "disposition": exc.current_disposition,
             "disposition_note": exc.current_disposition_note,
+            "follow_up": exc.current_follow_up,
             "saved_at": exc.current_saved_at,
         },
         status=http_status,
@@ -132,6 +141,7 @@ def _disposition_conflict_response(exc):
             "diagnoses": exc.current_diagnoses,
             "disposition": exc.current_disposition,
             "disposition_note": exc.current_disposition_note,
+            "follow_up": exc.current_follow_up,
             "saved_at": exc.current_saved_at,
         },
         status=status.HTTP_412_PRECONDITION_FAILED,
@@ -583,12 +593,93 @@ class EncounterDispositionView(TenantAPIView):
         return _disposition_response(encounter=result["encounter"], note=result["note"])
 
 
+class EncounterFollowUpView(TenantAPIView):
+    capability = "clinical.note.create"
+
+    def _encounter(self, request, pk):
+        return get_object_or_404(
+            Encounter,
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+
+    def get(self, request, pk):
+        encounter = self._encounter(request, pk)
+        follow_up = follow_up_recommendation_for_encounter(encounter)
+        note = consultation_note_for_encounter(encounter)
+        etag = consultation_note_etag(encounter=encounter, note=note)
+        data = {
+            "follow_up": FollowUpRecommendationSerializer(follow_up).data if follow_up is not None else None,
+            "consultation_etag": etag,
+            "encounter_status": encounter.status,
+        }
+        response = Response(data)
+        response["ETag"] = etag
+        return response
+
+    def patch(self, request, pk):
+        encounter = self._encounter(request, pk)
+        expected_etag, error_response = _required_if_match(
+            request,
+            detail="If-Match is required for follow-up mutations.",
+        )
+        if error_response is not None:
+            return error_response
+        serializer = FollowUpWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = save_follow_up(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                encounter=encounter,
+                data=serializer.validated_data,
+                expected_etag=expected_etag,
+                request=request,
+            )
+        except FollowUpRevisionConflict as exc:
+            response = Response(
+                {
+                    "code": "FOLLOW_UP_REVISION_CONFLICT",
+                    "detail": "This consultation changed elsewhere; review the current follow-up before retrying.",
+                    "etag": exc.current_etag,
+                    "consultation_etag": exc.current_etag,
+                    "status": exc.current_status,
+                    "encounter_status": exc.current_encounter_status,
+                    "content": exc.current_content,
+                    "complaints": exc.current_complaints,
+                    "diagnoses": exc.current_diagnoses,
+                    "disposition": exc.current_disposition,
+                    "disposition_note": exc.current_disposition_note,
+                    "follow_up": exc.current_follow_up,
+                    "saved_at": exc.current_saved_at,
+                },
+                status=status.HTTP_412_PRECONDITION_FAILED,
+            )
+            response["ETag"] = exc.current_etag
+            return response
+        except FollowUpDomainError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+
+        saved = result["follow_up"]
+        saved.refresh_from_db()
+        etag = consultation_note_etag(encounter=result["encounter"], note=result["note"])
+        data = {
+            "follow_up": FollowUpRecommendationSerializer(saved).data,
+            "consultation_etag": etag,
+            "encounter_status": result["encounter"].status,
+        }
+        response = Response(data)
+        response["ETag"] = etag
+        return response
+
 class EncounterDetailView(TenantAPIView):
     capability = "clinical.note.create"
 
     def get_object(self, request, pk):
         return get_object_or_404(
-            Encounter.objects.prefetch_related("notes", "diagnoses"),
+            Encounter.objects.prefetch_related("notes", "diagnoses", "follow_ups"),
             id=pk,
             organisation=request.organisation,
             facility=request.facility,
