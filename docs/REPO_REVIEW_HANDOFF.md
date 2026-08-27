@@ -1597,3 +1597,59 @@ Known limitations:
 No browser PHI persistence was introduced.
 
 Next approved phase: NOT YET AUTHORISED
+### Phase 1Q-B — Follow-Up Clinician UI
+
+Status: COMPLETE / PASS for the approved frontend-only follow-up clinician UI; ready for review.
+
+Objective:
+- Added a small Follow-up section in the existing Treatment area using the Phase 1Q-A encounter follow-up endpoint.
+- Clinicians can enter a recommended date and instructions, then explicitly save the current recommendation.
+- No appointment, printing, interval conversion, DX-007, reminder, SMS/email, or other clinical workflow was added.
+
+UI and save behavior:
+- Existing `Encounter.follow_up` data hydrates into the date and instructions fields.
+- Save sends the complete current follow-up draft with the current shared consultation `If-Match` ETag.
+- Successful save adopts the authoritative follow-up, encounter status, and fresh shared consultation ETag.
+- Terminal encounter follow-up displays read-only; no appointment or print action is present.
+- Follow-up changes are explicit-save only and do not introduce a separate persistence layer.
+
+Signing:
+- `REVIEW_SCHEDULED` blocks locally only when the authoritative saved follow-up has no recommended date, with the message `Record the follow-up date before signing.`
+- A saved recommended date does not add a frontend block; the server remains authoritative for signing prerequisites.
+- Signed follow-up display is read-only.
+
+Concurrency and session safety:
+- Follow-up edits count as unsaved consultation state and reuse the existing beforeunload and patient-switch warning behavior.
+- Follow-up mutation pauses competing consultation/autosave writes and uses the current shared consultation ETag.
+- HTTP 412 performs an authoritative Encounter GET with patient/session/queue guards before adopting any new ETag; the failed follow-up command is never replayed.
+- Dirty clinical drafts remain preserved during reconciliation, and the current follow-up draft remains visible on a stale response.
+- No browser PHI persistence was introduced.
+
+Files changed:
+- `frontend/src/app/(app)/consultations/page.tsx`
+- `frontend/src/features/clinic/types.ts`
+- `frontend/tests/phase-1q-b-follow-up.spec.ts`
+- `docs/REPO_REVIEW_HANDOFF.md`
+
+Validation:
+- Focused Phase 1Q-B Playwright: PASS — 6 passed.
+- Relevant consultation feature regressions (Phase 1P-B disposition, 1N-B diagnosis, 1L-B complaints, 1M-B allergies, 1O-B treatment): 71 passed, 1 failed in aggregate; the isolated failed treatment fake-clock case passed 1/1 on rerun.
+- Consultation reliability: 37 passed, 3 aggregate failures under the default 120s per-test timeout; isolated reruns passed 2/2 for the examination cases, and the family/social case passed 1/1 with a 300s diagnostic timeout. Failures were timing/queue-rendering timeouts rather than follow-up assertions.
+- Phase 1P-A plus Phase 1Q-A backend tests: PASS — 23 passed.
+- Django check: PASS — no issues identified.
+- `makemigrations --check --dry-run`: PASS — no changes detected.
+- Frontend typecheck: PASS.
+- Frontend lint: PASS.
+- Frontend production build: PASS — Next.js 15.5.23.
+
+Migration status:
+- NONE. No backend production code or migration was changed in Phase 1Q-B.
+
+Known limitations:
+- Follow-up interval conversion, APT-001 appointment creation, printing, reminders, DX-007, SMS/email, and later clinical modules remain outside this slice.
+- The local browser validation uses synthetic local development data only.
+- The aggregate consultation reliability run includes pre-existing timing-sensitive failures documented above; no unrelated production changes were made to mask them.
+
+No browser PHI persistence was introduced.
+
+Next approved phase: NOT YET AUTHORISED

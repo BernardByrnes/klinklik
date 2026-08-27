@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -15,6 +15,7 @@ import {
   ComplaintDurationUnit,
   Encounter,
   EncounterDisposition,
+  FollowUpRecommendation,
   PresentingComplaint,
   QueueEntry,
 } from "../../../features/clinic";
@@ -37,6 +38,7 @@ import {
   SequenceCircle,
   Select,
   StatusBadge,
+  TextInput,
   Textarea,
   UnauthorisedState,
   formatTime,
@@ -190,6 +192,30 @@ type DispositionSaveResponse = {
   encounter_status: string;
 };
 
+type FollowUpDraftValues = {
+  recommendedDate: string;
+  instructions: string;
+};
+
+type FollowUpSaveState = "idle" | "unsaved" | "saved";
+
+type FollowUpContext = {
+  patientId: string;
+  encounterId: string;
+  queueEntryId: string;
+  session: number;
+  etag: string;
+};
+
+type FollowUpMutationVariables = FollowUpContext & {
+  values: FollowUpDraftValues;
+};
+
+type FollowUpSaveResponse = {
+  follow_up: FollowUpRecommendation;
+  consultation_etag: string;
+  encounter_status: string;
+};
 type DispositionContext = {
   patientId: string;
   encounterId: string;
@@ -317,6 +343,7 @@ type ClinicalNoteConflictData = {
   complaints: PresentingComplaint[];
   diagnoses: Diagnosis[];
   saved_at: string | null;
+  follow_up?: FollowUpRecommendation | null;
 };
 type DispositionConflictValues = {
   disposition: EncounterDisposition | null;
@@ -357,6 +384,7 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
     complaints: data.complaints as PresentingComplaint[],
     diagnoses: data.diagnoses as Diagnosis[],
     saved_at: typeof data.saved_at === "string" ? data.saved_at : null,
+    follow_up: "follow_up" in data ? data.follow_up as FollowUpRecommendation | null : undefined,
   };
 }
 
@@ -497,18 +525,39 @@ function diagnosisSignServerErrorMessage(error: unknown) {
   if (code === "PRIMARY_DIAGNOSIS_INVALID" || code === "DIAGNOSIS_STATE_INVALID") return "Review the final diagnosis state before signing.";
   return null;
 }
+function followUpDraftValues(followUp: FollowUpRecommendation | null | undefined): FollowUpDraftValues {
+  return {
+    recommendedDate: followUp?.recommended_date ?? "",
+    instructions: followUp?.instructions ?? "",
+  };
+}
+
+function followUpDraftsEqual(left: FollowUpDraftValues, right: FollowUpDraftValues) {
+  return left.recommendedDate === right.recommendedDate && left.instructions === right.instructions;
+}
 function dispositionLabel(disposition: EncounterDisposition | null) {
   return DISPOSITION_OPTIONS.find((option) => option.value === disposition)?.label ?? "Not recorded";
 }
 
-function dispositionSignPrerequisiteMessage(disposition: EncounterDisposition | null, dispositionNote: string) {
+function dispositionFormValidationMessage(disposition: EncounterDisposition | null, dispositionNote: string) {
   if (!disposition) return "Choose a disposition before signing.";
   if (disposition === "OTHER" && !dispositionNote.trim()) return "Enter a note for the Other disposition.";
   if (disposition === "REFERRED_OUT") return "Complete the referral record before signing.";
-  if (disposition === "REVIEW_SCHEDULED") return "Record the follow-up date before signing.";
   return null;
 }
 
+function dispositionSignPrerequisiteMessage(
+  disposition: EncounterDisposition | null,
+  dispositionNote: string,
+  followUpDate: string,
+) {
+  const formMessage = dispositionFormValidationMessage(disposition, dispositionNote);
+  if (formMessage) return formMessage;
+  if (disposition === "REVIEW_SCHEDULED" && !followUpDate) {
+    return "Record the follow-up date before signing.";
+  }
+  return null;
+}
 function dispositionServerErrorMessage(error: unknown) {
   if (!(error instanceof ApiRequestError) || typeof error.data !== "object" || error.data === null) return null;
   const code = (error.data as Record<string, unknown>).code;
@@ -580,6 +629,9 @@ function complaintDurationLabel(complaint: PresentingComplaint) {
   return complaint.duration_value + " " + (complaint.duration_value === 1 ? labels.singular : labels.plural);
 }
 
+function emptyFollowUpDraft(): FollowUpDraftValues {
+  return { recommendedDate: "", instructions: "" };
+}
 function emptyDraftValues(): EditableDraftValues {
   return {
     hpi: "",
@@ -1414,6 +1466,19 @@ type TreatmentSectionProps = {
   savedAt: string | null;
   disposition: EncounterDisposition | null;
   dispositionNote: string;
+  followUp: FollowUpRecommendation | null;
+  followUpRecommendedDate: string;
+  followUpInstructions: string;
+  followUpSaveState: FollowUpSaveState;
+  followUpSavePending: boolean;
+  followUpError: string;
+  followUpConflict: FollowUpDraftValues | null;
+  followUpFormDirty: boolean;
+  followUpRevisionUncertain: boolean;
+  onFollowUpRecommendedDateChange: (value: string) => void;
+  onFollowUpInstructionsChange: (value: string) => void;
+  onSaveFollowUp: () => void;
+  onDiscardFollowUp: () => void;
   dispositionSaveState: DispositionSaveState;
   dispositionSavePending: boolean;
   dispositionError: string;
@@ -1430,6 +1495,7 @@ function DispositionSection({
   status,
   disposition,
   dispositionNote,
+  followUp,
   dispositionSaveState,
   dispositionSavePending,
   dispositionError,
@@ -1445,6 +1511,7 @@ function DispositionSection({
   | "status"
   | "disposition"
   | "dispositionNote"
+  | "followUp"
   | "dispositionSaveState"
   | "dispositionSavePending"
   | "dispositionError"
@@ -1530,7 +1597,7 @@ function DispositionSection({
               A referral record is required before this encounter can be signed.
             </p>
           ) : null}
-          {disposition === "REVIEW_SCHEDULED" ? (
+          {disposition === "REVIEW_SCHEDULED" && !followUp?.recommended_date ? (
             <p data-testid="disposition-follow-up-notice" role="status" className="rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-2 text-[12px] font-medium text-ink">
               A follow-up date is required before this encounter can be signed.
             </p>
@@ -1577,6 +1644,137 @@ function DispositionSection({
   );
 }
 
+type FollowUpSectionProps = {
+  status: string;
+  recommendedDate: string;
+  instructions: string;
+  saveState: FollowUpSaveState;
+  savePending: boolean;
+  error: string;
+  conflict: FollowUpDraftValues | null;
+  formDirty: boolean;
+  revisionUncertain: boolean;
+  onRecommendedDateChange: (value: string) => void;
+  onInstructionsChange: (value: string) => void;
+  onSave: () => void;
+  onDiscard: () => void;
+};
+
+function FollowUpSection({
+  status,
+  recommendedDate,
+  instructions,
+  saveState,
+  savePending,
+  error,
+  conflict,
+  formDirty,
+  revisionUncertain,
+  onRecommendedDateChange,
+  onInstructionsChange,
+  onSave,
+  onDiscard,
+}: FollowUpSectionProps) {
+  const readOnly = isTerminalEncounterStatus(status);
+  const disabled = readOnly || savePending || revisionUncertain;
+
+  return (
+    <section data-testid="follow-up-section" className="space-y-4 rounded-[14px] border border-line-soft bg-surface-muted p-4">
+      <div>
+        <h3 className="text-[13px] font-bold text-ink">Follow-up</h3>
+        <p className="mt-1 text-[11.5px] font-medium leading-relaxed text-secondary">
+          Record the recommended review date and clinician instructions for this encounter.
+        </p>
+      </div>
+
+      {readOnly ? (
+        <div data-testid="follow-up-read-only" className="rounded-[12px] border border-line bg-white p-3">
+          <p className="text-[11.5px] font-semibold text-muted">Saved follow-up date</p>
+          <p data-testid="follow-up-read-only-date" className="mt-1 text-[13px] font-semibold text-ink">
+            {recommendedDate || "Not recorded"}
+          </p>
+          {instructions ? (
+            <div className="mt-3 border-t border-line-soft pt-3">
+              <p className="text-[11.5px] font-semibold text-muted">Instructions</p>
+              <p data-testid="follow-up-read-only-instructions" className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+                {instructions}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <Field
+            label="Follow-up date"
+            htmlFor="follow-up-date"
+            hint="Choose the date the patient should return for review."
+          >
+            <TextInput
+              id="follow-up-date"
+              type="date"
+              aria-label="Follow-up date"
+              required
+              value={recommendedDate}
+              disabled={disabled}
+              onChange={(event) => onRecommendedDateChange(event.target.value)}
+            />
+          </Field>
+
+          <Field
+            label="Instructions"
+            htmlFor="follow-up-instructions"
+            hint="Clinician-authored follow-up instructions."
+          >
+            <Textarea
+              id="follow-up-instructions"
+              aria-label="Instructions"
+              className="min-h-[150px]"
+              value={instructions}
+              disabled={disabled}
+              onChange={(event) => onInstructionsChange(event.target.value)}
+            />
+          </Field>
+
+          {conflict ? (
+            <div data-testid="follow-up-conflict" role="status" className="space-y-2 rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-3">
+              <p className="text-[12px] font-semibold text-ink">Current saved follow-up from another update</p>
+              <p className="text-[12px] text-secondary">Date: {conflict.recommendedDate || "Not recorded"}</p>
+              {conflict.instructions ? (
+                <p className="whitespace-pre-wrap text-[12px] text-secondary">{conflict.instructions}</p>
+              ) : null}
+              <p className="text-[11.5px] font-medium text-muted">Your unsaved follow-up remains above.</p>
+            </div>
+          ) : null}
+
+          {revisionUncertain ? (
+            <p role="alert" className="text-[12px] font-medium text-accent-orange">
+              The latest consultation state could not be loaded. Reload before trying the follow-up again.
+            </p>
+          ) : null}
+          {error ? (
+            <p data-testid="follow-up-error" role="alert" className="text-[12px] font-medium text-accent-orange">
+              {error}
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={disabled} onClick={onSave}>
+              {savePending ? "Saving follow-up…" : "Save follow-up"}
+            </Button>
+            {formDirty ? (
+              <Button variant="secondary" disabled={savePending} onClick={onDiscard}>
+                Cancel changes
+              </Button>
+            ) : null}
+            {saveState === "saved" ? (
+              <span role="status" className="text-[12px] font-medium text-accent-teal">Follow-up saved.</span>
+            ) : null}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
 function TreatmentSection({
   status,
   treatmentPlan,
@@ -1587,6 +1785,19 @@ function TreatmentSection({
   savedAt,
   disposition,
   dispositionNote,
+  followUp,
+  followUpRecommendedDate,
+  followUpInstructions,
+  followUpSaveState,
+  followUpSavePending,
+  followUpError,
+  followUpConflict,
+  followUpFormDirty,
+  followUpRevisionUncertain,
+  onFollowUpRecommendedDateChange,
+  onFollowUpInstructionsChange,
+  onSaveFollowUp,
+  onDiscardFollowUp,
   dispositionSaveState,
   dispositionSavePending,
   dispositionError,
@@ -1647,6 +1858,7 @@ function TreatmentSection({
         status={status}
         disposition={disposition}
         dispositionNote={dispositionNote}
+        followUp={followUp}
         dispositionSaveState={dispositionSaveState}
         dispositionSavePending={dispositionSavePending}
         dispositionError={dispositionError}
@@ -1657,6 +1869,21 @@ function TreatmentSection({
         onDispositionNoteChange={onDispositionNoteChange}
         onSaveDisposition={onSaveDisposition}
         onDiscardDisposition={onDiscardDisposition}
+      />
+      <FollowUpSection
+        status={status}
+        recommendedDate={followUpRecommendedDate}
+        instructions={followUpInstructions}
+        saveState={followUpSaveState}
+        savePending={followUpSavePending}
+        error={followUpError}
+        conflict={followUpConflict}
+        formDirty={followUpFormDirty}
+        revisionUncertain={followUpRevisionUncertain}
+        onRecommendedDateChange={onFollowUpRecommendedDateChange}
+        onInstructionsChange={onFollowUpInstructionsChange}
+        onSave={onSaveFollowUp}
+        onDiscard={onDiscardFollowUp}
       />
     </div>
   );
@@ -1694,6 +1921,12 @@ function ConsultationsWorkspace() {
   const [dispositionError, setDispositionError] = useState("");
   const [dispositionConflict, setDispositionConflict] = useState<DispositionConflictValues | null>(null);
   const [dispositionFormDirty, setDispositionFormDirty] = useState(false);
+  const [followUpRecommendedDate, setFollowUpRecommendedDate] = useState("");
+  const [followUpInstructions, setFollowUpInstructions] = useState("");
+  const [followUpSaveState, setFollowUpSaveState] = useState<FollowUpSaveState>("idle");
+  const [followUpError, setFollowUpError] = useState("");
+  const [followUpConflict, setFollowUpConflict] = useState<FollowUpDraftValues | null>(null);
+  const [followUpFormDirty, setFollowUpFormDirty] = useState(false);
   const [consultationRevisionUncertain, setConsultationRevisionUncertain] = useState(false);
   const [draftSaveState, setDraftSaveState] = useState<DraftSaveState>("idle");
   const [activeSection, setActiveSection] = useState<WorkspaceSectionId>("summary");
@@ -1739,6 +1972,11 @@ function ConsultationsWorkspace() {
   const dispositionFormDirtyRef = useRef(false);
   const dispositionMutationInFlightRef = useRef(false);
   const dispositionReconciliationInFlightRef = useRef(false);
+  const followUpDraftRef = useRef<FollowUpDraftValues>(emptyFollowUpDraft());
+  const authoritativeFollowUpRef = useRef<FollowUpDraftValues>(emptyFollowUpDraft());
+  const followUpFormDirtyRef = useRef(false);
+  const followUpMutationInFlightRef = useRef(false);
+  const followUpReconciliationInFlightRef = useRef(false);
 
   function hasDirtyDraft() {
     return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current;
@@ -1766,6 +2004,11 @@ function ConsultationsWorkspace() {
     dispositionFormDirtyRef.current = false;
     dispositionMutationInFlightRef.current = false;
     dispositionReconciliationInFlightRef.current = false;
+    followUpFormDirtyRef.current = false;
+    followUpMutationInFlightRef.current = false;
+    followUpReconciliationInFlightRef.current = false;
+    followUpDraftRef.current = emptyFollowUpDraft();
+    authoritativeFollowUpRef.current = emptyFollowUpDraft();
     dispositionDraftRef.current = null;
     dispositionNoteDraftRef.current = "";
     authoritativeDispositionRef.current = null;
@@ -1773,9 +2016,9 @@ function ConsultationsWorkspace() {
     draftSessionRef.current += 1;
   }, []);
 
-  function hasUnsavedContent() {
-    return hasDirtyDraft() || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current || dispositionFormDirtyRef.current;
-  }
+  const hasUnsavedContent = useCallback(() => {
+    return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current || dispositionFormDirtyRef.current || followUpFormDirtyRef.current;
+  }, []);
 
   const queue = useQuery({
     queryKey: ["queue", "TRIAGED,IN_CONSULTATION"],
@@ -1880,6 +2123,32 @@ function ConsultationsWorkspace() {
     );
   }
 
+  function currentFollowUpContext(): FollowUpContext | null {
+    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+      setFollowUpError("The current consultation revision is unavailable. Reload before saving the follow-up.");
+      return null;
+    }
+    if (consultationRevisionUncertain) {
+      setFollowUpError("Reload before saving the follow-up because the latest consultation revision is uncertain.");
+      return null;
+    }
+    return {
+      patientId: selected.patient,
+      encounterId: encounter.id,
+      queueEntryId: selected.id,
+      session: draftSessionRef.current,
+      etag: encounterEtagRef.current,
+    };
+  }
+
+  function isCurrentFollowUpMutation(variables: Pick<FollowUpContext, "session" | "patientId" | "encounterId" | "queueEntryId">) {
+    return (
+      variables.session === draftSessionRef.current &&
+      variables.patientId === activePatientIdRef.current &&
+      variables.encounterId === activeEncounterIdRef.current &&
+      variables.queueEntryId === selectedQueueEntryIdRef.current
+    );
+  }
   function currentAllergyContext(): AllergyContext | null {
     if (!encounter?.id || !selected?.patient || !encounter.allergy_state_etag) {
       setAllergyMutationError("The current allergy state is unavailable. Reload the consultation before trying again.");
@@ -1945,6 +2214,8 @@ function ConsultationsWorkspace() {
       diagnosisReconciliationInFlightRef.current ||
       dispositionMutationInFlightRef.current ||
       dispositionReconciliationInFlightRef.current ||
+      followUpMutationInFlightRef.current ||
+      followUpReconciliationInFlightRef.current ||
       consultationRevisionUncertain ||
       isTerminalEncounterStatus(encounter.status)
     ) {
@@ -1967,6 +2238,8 @@ function ConsultationsWorkspace() {
         autosaveBlockedRef.current ||
         dispositionMutationInFlightRef.current ||
         dispositionReconciliationInFlightRef.current ||
+        followUpMutationInFlightRef.current ||
+        followUpReconciliationInFlightRef.current ||
         consultationRevisionUncertain ||
         isTerminalEncounterStatus(encounter.status)
       ) {
@@ -1977,7 +2250,7 @@ function ConsultationsWorkspace() {
         markRetrying();
         return;
       }
-      if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) {
+      if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) {
         autosaveDeferredRef.current = true;
         return;
       }
@@ -2003,6 +2276,7 @@ function ConsultationsWorkspace() {
     const draft = consultationDraftFromEncounter(created);
     const hydratedDisposition = created.disposition ?? null;
     const hydratedDispositionNote = created.disposition_note ?? "";
+    const hydratedFollowUp = followUpDraftValues(created.follow_up);
     const values = editableDraftValuesFromContent(draft.content);
     encounterEtagRef.current = created.consultation_etag ?? null;
     activePatientIdRef.current = created.patient;
@@ -2022,6 +2296,17 @@ function ConsultationsWorkspace() {
     setDispositionError("");
     setDispositionConflict(null);
     setDispositionFormDirty(false);
+    followUpDraftRef.current = hydratedFollowUp;
+    authoritativeFollowUpRef.current = hydratedFollowUp;
+    followUpFormDirtyRef.current = false;
+    followUpMutationInFlightRef.current = false;
+    followUpReconciliationInFlightRef.current = false;
+    setFollowUpRecommendedDate(hydratedFollowUp.recommendedDate);
+    setFollowUpInstructions(hydratedFollowUp.instructions);
+    setFollowUpSaveState(created.follow_up ? "saved" : "idle");
+    setFollowUpError("");
+    setFollowUpConflict(null);
+    setFollowUpFormDirty(false);
     setAllergyMutationError("");
     noteContentRef.current = draft.content;
     draftValuesRef.current = values;
@@ -2123,6 +2408,38 @@ function ConsultationsWorkspace() {
 
     return { changedRemotely, alreadyApplied, trueConflict };
   }
+  function applyRemoteFollowUpState(remote: Pick<Encounter, "follow_up" | "status">) {
+    const remoteValues = followUpDraftValues(remote.follow_up);
+    const changedRemotely = !followUpDraftsEqual(remoteValues, authoritativeFollowUpRef.current);
+    const localMatchesRemote = followUpDraftsEqual(followUpDraftRef.current, remoteValues);
+    const alreadyApplied = followUpFormDirtyRef.current && changedRemotely && localMatchesRemote;
+    const trueConflict = followUpFormDirtyRef.current && changedRemotely && !localMatchesRemote;
+
+    authoritativeFollowUpRef.current = remoteValues;
+    setEncounter((current) => {
+      if (!current || current.id !== activeEncounterIdRef.current) return current;
+      return {
+        ...current,
+        follow_up: remote.follow_up,
+        status: remote.status,
+      };
+    });
+
+    if (isTerminalEncounterStatus(remote.status) || !followUpFormDirtyRef.current || alreadyApplied) {
+      followUpDraftRef.current = remoteValues;
+      followUpFormDirtyRef.current = false;
+      setFollowUpFormDirty(false);
+      setFollowUpRecommendedDate(remoteValues.recommendedDate);
+      setFollowUpInstructions(remoteValues.instructions);
+      setFollowUpConflict(null);
+      setFollowUpSaveState(remote.follow_up ? "saved" : "idle");
+    } else if (trueConflict) {
+      setFollowUpConflict(remoteValues);
+      setFollowUpSaveState("unsaved");
+    }
+
+    return { changedRemotely, alreadyApplied, trueConflict };
+  }
   function currentDraftMutation(
     rebaseAttempt = 0,
     origin: "manual" | "autosave" = "manual",
@@ -2132,7 +2449,7 @@ function ConsultationsWorkspace() {
       setError("The current consultation revision is unavailable. Reload before saving.");
       return null;
     }
-    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
+    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current) {
       autosaveDeferredRef.current = true;
       return null;
     }
@@ -2263,6 +2580,17 @@ function ConsultationsWorkspace() {
     setDispositionError("");
     setDispositionConflict(null);
     setDispositionFormDirty(false);
+    followUpDraftRef.current = emptyFollowUpDraft();
+    authoritativeFollowUpRef.current = emptyFollowUpDraft();
+    followUpFormDirtyRef.current = false;
+    followUpMutationInFlightRef.current = false;
+    followUpReconciliationInFlightRef.current = false;
+    setFollowUpRecommendedDate("");
+    setFollowUpInstructions("");
+    setFollowUpSaveState("idle");
+    setFollowUpError("");
+    setFollowUpConflict(null);
+    setFollowUpFormDirty(false);
     setConsultationRevisionUncertain(false);
     setDraftSaveState("idle");
     setActiveSection("summary");
@@ -2461,6 +2789,234 @@ function ConsultationsWorkspace() {
     addAllergyMutation.isPending ||
     enterAllergyInErrorMutation.isPending ||
     reviewAllergiesMutation.isPending;
+  const followUpMutation = useMutation<FollowUpSaveResponse, unknown, FollowUpMutationVariables>({
+    mutationFn: ({ encounterId, etag, values }) =>
+      apiRequest<FollowUpSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/follow-up/", {
+        method: "PATCH",
+        headers: { "If-Match": etag },
+        body: JSON.stringify({
+          recommended_date: values.recommendedDate || null,
+          instructions: values.instructions,
+        }),
+      }),
+    onMutate: (variables) => {
+      if (!isCurrentFollowUpMutation(variables)) return;
+      followUpMutationInFlightRef.current = true;
+      followUpReconciliationInFlightRef.current = false;
+      setFollowUpError("");
+      setFollowUpConflict(null);
+      setNotice("");
+      setError("");
+      cancelAutosaveTimer();
+      cancelRetryTimer();
+      autosaveDeferredRef.current = true;
+    },
+    onSuccess: (saved, variables) => {
+      if (!isCurrentFollowUpMutation(variables)) return;
+      followUpMutationInFlightRef.current = false;
+      followUpReconciliationInFlightRef.current = false;
+      setConsultationRevisionUncertain(false);
+      const savedValues = followUpDraftValues(saved.follow_up);
+      authoritativeFollowUpRef.current = savedValues;
+      encounterEtagRef.current = saved.consultation_etag;
+      setEncounter((current) => {
+        if (!current || current.id !== activeEncounterIdRef.current) return current;
+        return {
+          ...current,
+          follow_up: saved.follow_up,
+          consultation_etag: saved.consultation_etag,
+          status: saved.encounter_status || current.status,
+        };
+      });
+      const localStillMatchesSubmitted = followUpDraftsEqual(followUpDraftRef.current, variables.values);
+      if (localStillMatchesSubmitted) {
+        followUpDraftRef.current = savedValues;
+        followUpFormDirtyRef.current = false;
+        setFollowUpFormDirty(false);
+        setFollowUpRecommendedDate(savedValues.recommendedDate);
+        setFollowUpInstructions(savedValues.instructions);
+        setFollowUpSaveState("saved");
+      } else {
+        followUpFormDirtyRef.current = true;
+        setFollowUpFormDirty(true);
+        setFollowUpSaveState("unsaved");
+      }
+      setFollowUpConflict(null);
+      setFollowUpError("");
+      setNotice("Follow-up saved.");
+      setError("");
+      autosaveDeferredRef.current = false;
+      if (hasDirtyDraft()) {
+        if (retryActiveRef.current) scheduleRetry();
+        else scheduleAutosave();
+      }
+    },
+    onError: (reason, variables) => {
+      if (!variables || !isCurrentFollowUpMutation(variables)) return;
+      followUpMutationInFlightRef.current = false;
+      if (reason instanceof ApiRequestError && reason.status === 412) {
+        followUpReconciliationInFlightRef.current = true;
+        autosaveDeferredRef.current = true;
+        cancelAutosaveTimer();
+        cancelRetryTimer();
+        setFollowUpError("This consultation changed elsewhere. Loading the latest record before retrying.");
+        setError("");
+        void reconcileFollowUpConflict(variables);
+        return;
+      }
+      followUpReconciliationInFlightRef.current = false;
+      autosaveDeferredRef.current = false;
+      setFollowUpSaveState(followUpFormDirtyRef.current ? "unsaved" : "idle");
+      setFollowUpError(errorMessage(reason));
+      setNotice("");
+      if (hasDirtyDraft()) {
+        if (retryActiveRef.current) scheduleRetry();
+        else scheduleAutosave();
+      }
+    },
+  });
+
+  const followUpMutationPending =
+    followUpMutation.isPending ||
+    followUpMutationInFlightRef.current ||
+    followUpReconciliationInFlightRef.current;
+
+  async function reconcileFollowUpConflict(variables: FollowUpMutationVariables) {
+    if (!isCurrentFollowUpMutation(variables)) return;
+    let resumeNoteAutosave = false;
+    let reconciliationFailed = false;
+    try {
+      const remote = await apiRequest<Encounter>("/api/v1/clinic/encounters/" + variables.encounterId + "/");
+      if (
+        !isCurrentFollowUpMutation(variables) ||
+        remote.id !== variables.encounterId ||
+        remote.patient !== variables.patientId ||
+        remote.queue_entry !== variables.queueEntryId
+      ) {
+        return;
+      }
+      const remoteContent = consultationContent(remote);
+      const remoteValues = editableDraftValuesFromContent(remoteContent);
+      const remoteFields = changedClinicalFields(noteContentRef.current, remoteContent);
+      const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
+      const alreadyAppliedFields = overlappingFields.filter((field) => {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        return draftValuesRef.current[draftKey] === remoteValues[draftKey];
+      });
+      const trueOverlappingFields = overlappingFields.filter((field) => !alreadyAppliedFields.includes(field));
+      const serverComplaints = cloneComplaints(remote.complaints ?? []);
+      const complaintsChangedRemotely = !complaintsEqual(serverComplaints, authoritativeComplaintsRef.current);
+      const complaintWasAlreadyApplied = complaintsDirtyRef.current &&
+        complaintsChangedRemotely &&
+        complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const trueComplaintConflict = complaintsDirtyRef.current &&
+        complaintsChangedRemotely &&
+        !complaintsEqual(serverComplaints, complaintsDraftRef.current);
+      const latestEtag = remote.consultation_etag;
+      if (typeof latestEtag !== "string" || !Array.isArray(remote.diagnoses)) {
+        throw new Error("Authoritative consultation revision is unavailable.");
+      }
+
+      noteContentRef.current = remoteContent;
+      encounterEtagRef.current = latestEtag;
+      authoritativeComplaintsRef.current = cloneComplaints(serverComplaints);
+      setEncounter((current) => {
+        if (!current || current.id !== activeEncounterIdRef.current) return current;
+        return {
+          ...current,
+          ...remote,
+          complaints: serverComplaints,
+          diagnoses: remote.diagnoses,
+          consultation_etag: latestEtag,
+          status: remote.status,
+        };
+      });
+      const dispositionState = applyRemoteDispositionState(remote);
+      const followUpState = applyRemoteFollowUpState(remote);
+      if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
+        complaintsDraftRef.current = cloneComplaints(serverComplaints);
+        setComplaints(cloneComplaints(serverComplaints));
+        complaintsDirtyRef.current = false;
+        setComplaintConflict(null);
+      } else if (trueComplaintConflict) {
+        setComplaintConflict(cloneComplaints(serverComplaints));
+      }
+      for (const field of alreadyAppliedFields) {
+        const draftKey = FIELD_TO_DRAFT_VALUE[field];
+        if (draftValuesRef.current[draftKey] === remoteValues[draftKey]) dirtyFieldsRef.current.delete(field);
+      }
+      rebaseVisibleDraft(remoteContent, remoteFields.filter((field) => !alreadyAppliedFields.includes(field)));
+
+      if (isTerminalEncounterStatus(remote.status)) {
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+      }
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict || followUpState.trueConflict) {
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+      } else {
+        autosaveBlockedRef.current = false;
+        resumeNoteAutosave = !isTerminalEncounterStatus(remote.status) && hasDirtyDraft();
+      }
+
+      if (dispositionState.trueConflict) {
+        setDispositionError("The saved disposition differs from your unsaved selection. Review it before saving again.");
+      } else if (dispositionFormDirtyRef.current) {
+        setDispositionError("The disposition change was not replayed. Review the latest record and save deliberately.");
+      } else {
+        setDispositionError("");
+      }
+      if (followUpState.trueConflict) {
+        setFollowUpError("The saved follow-up differs from your unsaved draft. Review it before saving again.");
+      } else if (followUpFormDirtyRef.current) {
+        setFollowUpError("The follow-up change was not replayed. Review the latest record and save deliberately.");
+      } else {
+        setFollowUpError("");
+      }
+
+      if (!hasDirtyDraft()) {
+        setDraftSaveState("saved");
+      } else {
+        setDraftSaveState("unsaved");
+      }
+      setConsultationRevisionUncertain(false);
+      setNotice(followUpState.alreadyApplied && !followUpFormDirtyRef.current
+        ? "Latest consultation state loaded. The follow-up change was already present."
+        : "Latest consultation state loaded. The follow-up change was not replayed.");
+      if (trueOverlappingFields.length > 0 || trueComplaintConflict) {
+        const complaintMessage = trueComplaintConflict
+          ? " Presenting complaints changed elsewhere; your unsaved complaint list has been preserved."
+          : "";
+        setError(conflictMessage(remoteFields, trueOverlappingFields, "save") + complaintMessage);
+      } else {
+        setError("");
+      }
+    } catch {
+      reconciliationFailed = true;
+      if (isCurrentFollowUpMutation(variables)) {
+        setConsultationRevisionUncertain(true);
+        autosaveBlockedRef.current = true;
+        cancelAutosaveTimer();
+        resetRetryState();
+        autosaveDeferredRef.current = false;
+        setFollowUpSaveState(followUpFormDirtyRef.current ? "unsaved" : "idle");
+        setFollowUpError("The latest consultation could not be loaded. Reload before trying the follow-up again.");
+        setError("The latest consultation could not be loaded. Reload before trying the follow-up again.");
+      }
+    } finally {
+      if (isCurrentFollowUpMutation(variables)) {
+        followUpReconciliationInFlightRef.current = false;
+        followUpMutationInFlightRef.current = false;
+        if (!reconciliationFailed && resumeNoteAutosave && hasDirtyDraft()) {
+          if (retryActiveRef.current) scheduleRetry();
+          else scheduleAutosave();
+        }
+      }
+    }
+  }
   const dispositionMutation = useMutation<DispositionSaveResponse, unknown, DispositionMutationVariables>({
     mutationFn: ({ encounterId, etag, disposition, disposition_note }) =>
       apiRequest<DispositionSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/disposition/", {
@@ -2600,6 +3156,7 @@ function ConsultationsWorkspace() {
         };
       });
       const dispositionState = applyRemoteDispositionState(remote);
+      applyRemoteFollowUpState(remote);
       if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
         complaintsDraftRef.current = cloneComplaints(serverComplaints);
         setComplaints(cloneComplaints(serverComplaints));
@@ -2720,6 +3277,7 @@ function ConsultationsWorkspace() {
         };
       });
       applyRemoteDispositionState(remote);
+      applyRemoteFollowUpState(remote);
       if (!complaintsDirtyRef.current || complaintWasAlreadyApplied) {
         complaintsDraftRef.current = cloneComplaints(serverComplaints);
         setComplaints(cloneComplaints(serverComplaints));
@@ -2848,7 +3406,7 @@ function ConsultationsWorkspace() {
     diagnosisId: string | undefined,
     payload?: DiagnosisWritePayload,
   ): Promise<DiagnosisStateResponse> {
-    if (clinicalMutationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) {
+    if (clinicalMutationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) {
       setDiagnosisMutationError("Wait for the consultation save or sign request to finish before changing diagnoses.");
       throw new Error("A consultation mutation is already in flight.");
     }
@@ -2983,6 +3541,9 @@ function ConsultationsWorkspace() {
       }
 
       applyDiagnosisSnapshot(conflict.diagnoses, conflict.etag, conflict.encounter_status);
+      if (conflict.follow_up !== undefined) {
+        applyRemoteFollowUpState({ follow_up: conflict.follow_up, status: conflict.encounter_status });
+      }
       const remoteValues = editableDraftValuesFromContent(conflict.content);
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
@@ -3073,13 +3634,12 @@ function ConsultationsWorkspace() {
       diagnosisReconciliationInFlightRef.current ||
       dispositionMutationInFlightRef.current ||
       dispositionReconciliationInFlightRef.current ||
+      followUpMutationInFlightRef.current ||
+      followUpReconciliationInFlightRef.current ||
       consultationRevisionUncertain ||
       !encounter?.id ||
       !hasDirtyDraft() ||
       autosaveBlockedRef.current ||
-      dispositionMutationInFlightRef.current ||
-      dispositionReconciliationInFlightRef.current ||
-      consultationRevisionUncertain ||
       isTerminalEncounterStatus(encounter.status)
     ) {
       if (retryActiveRef.current && !hasDirtyDraft()) {
@@ -3104,6 +3664,8 @@ function ConsultationsWorkspace() {
       autosaveBlockedRef.current ||
       dispositionMutationInFlightRef.current ||
       dispositionReconciliationInFlightRef.current ||
+      followUpMutationInFlightRef.current ||
+      followUpReconciliationInFlightRef.current ||
       consultationRevisionUncertain ||
       isTerminalEncounterStatus(encounter.status)
     ) {
@@ -3122,12 +3684,14 @@ function ConsultationsWorkspace() {
         autosaveBlockedRef.current ||
         dispositionMutationInFlightRef.current ||
         dispositionReconciliationInFlightRef.current ||
+        followUpMutationInFlightRef.current ||
+        followUpReconciliationInFlightRef.current ||
         consultationRevisionUncertain ||
         isTerminalEncounterStatus(encounter.status)
       ) {
         return;
       }
-      if (offlineRef.current || clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
+      if (offlineRef.current || clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) return;
       attemptRetryNow();
     }, delay);
   }
@@ -3171,6 +3735,8 @@ function ConsultationsWorkspace() {
         !diagnosisReconciliationInFlightRef.current &&
         !dispositionMutationInFlightRef.current &&
         !dispositionReconciliationInFlightRef.current &&
+        !followUpMutationInFlightRef.current &&
+        !followUpReconciliationInFlightRef.current &&
         !consultationRevisionUncertain &&
         encounter?.id &&
         !isTerminalEncounterStatus(encounter.status)
@@ -3189,13 +3755,13 @@ function ConsultationsWorkspace() {
 
   useEffect(() => {
     function handleBeforeUnload(event: BeforeUnloadEvent) {
-      if (!hasDirtyDraft() && !allergyFormDirtyRef.current && !diagnosisFormDirtyRef.current && !dispositionFormDirtyRef.current) return;
+      if (!hasUnsavedContent()) return;
       event.preventDefault();
       event.returnValue = "";
     }
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, []);
+  }, [hasUnsavedContent]);
   const signNote = useMutation<NoteSignResponse, unknown, DraftMutationVariables>({
     mutationFn: ({ content, complaintSnapshot, encounterId, etag }) =>
       apiRequest<NoteSignResponse>("/api/v1/clinic/encounters/" + encounterId + "/sign/", {
@@ -3288,6 +3854,9 @@ function ConsultationsWorkspace() {
         return;
       }
       applyDiagnosisSnapshot(conflict.diagnoses, conflict.etag, conflict.encounter_status);
+      if (conflict.follow_up !== undefined) {
+        applyRemoteFollowUpState({ follow_up: conflict.follow_up, status: conflict.encounter_status });
+      }
       const remoteFields = changedClinicalFields(noteContentRef.current, conflict.content);
       const overlappingFields = remoteFields.filter((field) => dirtyFieldsRef.current.has(field));
       const alreadyAppliedFields = overlappingFields.filter((field) => {
@@ -3404,11 +3973,11 @@ function ConsultationsWorkspace() {
       setDispositionError("Wait for the current consultation update to finish before saving the disposition.");
       return;
     }
-    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
+    if (dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) return;
 
     const draftDisposition = dispositionDraftRef.current;
     const draftNote = dispositionNoteDraftRef.current;
-    const localError = dispositionSignPrerequisiteMessage(draftDisposition, draftNote);
+    const localError = dispositionFormValidationMessage(draftDisposition, draftNote);
     if (draftDisposition === "OTHER" && localError) {
       setDispositionSaveState("unsaved");
       setDispositionError("Enter a note for the Other disposition.");
@@ -3429,6 +3998,68 @@ function ConsultationsWorkspace() {
       disposition: draftDisposition,
       disposition_note: draftNote,
     });
+  }
+  function updateFollowUpDraft(values: Partial<FollowUpDraftValues>) {
+    signGuardErrorRef.current = null;
+    const next = { ...followUpDraftRef.current, ...values };
+    followUpDraftRef.current = next;
+    setFollowUpRecommendedDate(next.recommendedDate);
+    setFollowUpInstructions(next.instructions);
+    const dirty = !followUpDraftsEqual(next, authoritativeFollowUpRef.current);
+    followUpFormDirtyRef.current = dirty;
+    setFollowUpFormDirty(dirty);
+    setFollowUpSaveState(dirty ? "unsaved" : (encounter?.follow_up ? "saved" : "idle"));
+    setFollowUpConflict(null);
+    setFollowUpError("");
+    setNotice("");
+    setError("");
+  }
+
+  function discardFollowUpChanges() {
+    const authoritative = authoritativeFollowUpRef.current;
+    followUpDraftRef.current = authoritative;
+    followUpFormDirtyRef.current = false;
+    setFollowUpFormDirty(false);
+    setFollowUpRecommendedDate(authoritative.recommendedDate);
+    setFollowUpInstructions(authoritative.instructions);
+    setFollowUpSaveState(encounter?.follow_up ? "saved" : "idle");
+    setFollowUpConflict(null);
+    setFollowUpError("");
+    signGuardErrorRef.current = null;
+    setNotice("Follow-up changes discarded.");
+    setError("");
+  }
+
+  function saveCurrentFollowUp() {
+    if (!encounter?.id || isTerminalEncounterStatus(encounter.status)) return;
+    if (
+      clinicalMutationInFlightRef.current ||
+      diagnosisMutationInFlightRef.current ||
+      diagnosisReconciliationInFlightRef.current ||
+      dispositionMutationInFlightRef.current ||
+      dispositionReconciliationInFlightRef.current
+    ) {
+      setFollowUpError("Wait for the current consultation update to finish before saving the follow-up.");
+      return;
+    }
+    if (followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) return;
+
+    const values = { ...followUpDraftRef.current };
+    if (!values.recommendedDate) {
+      setFollowUpSaveState("unsaved");
+      setFollowUpError("Enter a follow-up date before saving.");
+      setNotice("");
+      return;
+    }
+    const context = currentFollowUpContext();
+    if (!context) return;
+    cancelAutosaveTimer();
+    cancelRetryTimer();
+    autosaveDeferredRef.current = true;
+    setFollowUpError("");
+    setNotice("");
+    setError("");
+    followUpMutation.mutate({ ...context, values });
   }
   function isExaminationFieldUnavailable(field: ExaminationField) {
     const draftValue = draftValuesRef.current[FIELD_TO_DRAFT_VALUE[field]];
@@ -3472,7 +4103,7 @@ function ConsultationsWorkspace() {
   }
 
   function saveCurrentDraft() {
-    if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
+    if (clinicalMutationInFlightRef.current || diagnosisMutationInFlightRef.current || diagnosisReconciliationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) return;
     cancelAutosaveTimer();
     resetRetryState();
     autosaveDeferredRef.current = false;
@@ -3505,10 +4136,22 @@ function ConsultationsWorkspace() {
       showSignGuard("Wait for the disposition update to finish before signing.");
       return;
     }
+    if (followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) {
+      setActiveSection("treatment");
+      setConfirmingSign(false);
+      showSignGuard("Wait for the follow-up update to finish before signing.");
+      return;
+    }
     if (dispositionFormDirtyRef.current) {
       setActiveSection("treatment");
       setConfirmingSign(false);
       showSignGuard("Save or cancel the disposition changes before signing.");
+      return;
+    }
+    if (followUpFormDirtyRef.current) {
+      setActiveSection("treatment");
+      setConfirmingSign(false);
+      showSignGuard("Save or cancel the follow-up changes before signing.");
       return;
     }
     if (consultationRevisionUncertain) {
@@ -3517,7 +4160,7 @@ function ConsultationsWorkspace() {
       showSignGuard("Reload before signing because the latest consultation revision is uncertain.");
       return;
     }
-    const dispositionPrerequisite = dispositionSignPrerequisiteMessage(authoritativeDispositionRef.current, authoritativeDispositionNoteRef.current);
+    const dispositionPrerequisite = dispositionSignPrerequisiteMessage(authoritativeDispositionRef.current, authoritativeDispositionNoteRef.current, authoritativeFollowUpRef.current.recommendedDate);
     if (dispositionPrerequisite) {
       setActiveSection("treatment");
       setConfirmingSign(false);
@@ -3554,7 +4197,7 @@ function ConsultationsWorkspace() {
         : "Fix the presenting complaint before signing: " + complaintError);
       return;
     }
-    if (clinicalMutationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current) return;
+    if (clinicalMutationInFlightRef.current || dispositionMutationInFlightRef.current || dispositionReconciliationInFlightRef.current || followUpMutationInFlightRef.current || followUpReconciliationInFlightRef.current) return;
     signGuardErrorRef.current = null;
     cancelAutosaveTimer();
     resetRetryState();
@@ -3725,7 +4368,7 @@ function ConsultationsWorkspace() {
                       onFamilyHistoryChange={(value) => updateClinicalField("family_history", value, setFamilyHistory)}
                       onSocialHistoryChange={(value) => updateClinicalField("social_history", value, setSocialHistory)}
                       onSave={saveCurrentDraft}
-                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending}
+                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending || followUpMutationPending}
                       saveState={draftSaveState}
                       savedAt={savedAt}
                     />
@@ -3758,7 +4401,7 @@ function ConsultationsWorkspace() {
                       onGenitourinaryExaminationChange={(value) => updateClinicalField("genitourinary_examination", value, setGenitourinaryExamination)}
                       onMusculoskeletalExaminationChange={(value) => updateClinicalField("musculoskeletal_examination", value, setMusculoskeletalExamination)}
                       onSave={saveCurrentDraft}
-                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending}
+                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending || followUpMutationPending}
                       saveState={draftSaveState}
                       savedAt={savedAt}
                       reviewedNormalActionOpen={reviewedNormalActionOpen}
@@ -3787,11 +4430,24 @@ function ConsultationsWorkspace() {
                       treatmentPlan={treatmentPlan}
                       onTreatmentPlanChange={(value) => updateClinicalField("treatment_plan", value, setTreatmentPlan)}
                       onSave={saveCurrentDraft}
-                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending}
+                      savePending={saveDraft.isPending || signNote.isPending || dispositionMutationPending || followUpMutationPending}
                       saveState={draftSaveState}
                       savedAt={savedAt}
                       disposition={disposition}
                       dispositionNote={dispositionNote}
+                      followUp={encounter.follow_up}
+                      followUpRecommendedDate={followUpRecommendedDate}
+                      followUpInstructions={followUpInstructions}
+                      followUpSaveState={followUpSaveState}
+                      followUpSavePending={followUpMutationPending}
+                      followUpError={followUpError}
+                      followUpConflict={followUpConflict}
+                      followUpFormDirty={followUpFormDirty}
+                      followUpRevisionUncertain={consultationRevisionUncertain}
+                      onFollowUpRecommendedDateChange={(value) => updateFollowUpDraft({ recommendedDate: value })}
+                      onFollowUpInstructionsChange={(value) => updateFollowUpDraft({ instructions: value })}
+                      onSaveFollowUp={saveCurrentFollowUp}
+                      onDiscardFollowUp={discardFollowUpChanges}
                       dispositionSaveState={dispositionSaveState}
                       dispositionSavePending={dispositionMutationPending}
                       dispositionError={dispositionError}
@@ -3819,7 +4475,7 @@ function ConsultationsWorkspace() {
                       status={encounter.status}
                       diagnoses={encounter.diagnoses ?? []}
                       canManage={can("clinical.note.create")}
-                      mutationPending={diagnosisMutationPending || saveDraft.isPending || signNote.isPending || dispositionMutationPending}
+                      mutationPending={diagnosisMutationPending || saveDraft.isPending || signNote.isPending || dispositionMutationPending || followUpMutationPending}
                       mutationError={diagnosisMutationError}
                       formState={diagnosisFormState}
                       onFormStateChange={setDiagnosisFormState}
@@ -3903,12 +4559,12 @@ function ConsultationsWorkspace() {
                         <Button variant="secondary" onClick={() => setConfirmingSign(false)}>
                           Cancel
                         </Button>
-                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending || dispositionMutationPending} onClick={signCurrentDraft}>
+                        <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending || dispositionMutationPending || followUpMutationPending} onClick={signCurrentDraft}>
                           {signNote.isPending ? "Signing…" : "Confirm signature"}
                         </Button>
                       </div>
                     ) : (
-                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending || dispositionMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
+                      <Button disabled={saveDraft.isPending || signNote.isPending || allergyMutationPending || diagnosisMutationPending || dispositionMutationPending || followUpMutationPending} onClick={() => setConfirmingSign(true)}>Sign consultation</Button>
                     )}
                   </div>
                 )}

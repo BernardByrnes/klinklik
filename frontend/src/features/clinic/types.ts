@@ -97,6 +97,17 @@ export type EncounterDisposition =
   | "DECEASED"
   | "OTHER";
 
+export type FollowUpRecommendation = {
+  id: string;
+  patient: string;
+  encounter: string;
+  recommended_date: string | null;
+  instructions: string;
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
 export type Encounter = {
   id: string;
   encounter_no: string;
@@ -107,6 +118,7 @@ export type Encounter = {
   consultation_etag?: string;
   disposition: EncounterDisposition | null;
   disposition_note: string;
+  follow_up: FollowUpRecommendation | null;
   diagnoses: Diagnosis[];
   complaints: PresentingComplaint[];
   triage_complaint: string | null;
