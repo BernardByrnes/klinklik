@@ -68,6 +68,8 @@ class FollowUpRecommendationSerializer(serializers.ModelSerializer):
             "patient",
             "encounter",
             "recommended_date",
+            "interval_value",
+            "interval_unit",
             "instructions",
             "status",
             "created_by",
@@ -79,6 +81,8 @@ class FollowUpRecommendationSerializer(serializers.ModelSerializer):
 
 class FollowUpWriteSerializer(serializers.Serializer):
     recommended_date = serializers.DateField(required=False, allow_null=True)
+    interval_value = serializers.IntegerField(required=False, allow_null=True)
+    interval_unit = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=10)
     instructions = serializers.CharField(
         required=False,
         allow_blank=True,

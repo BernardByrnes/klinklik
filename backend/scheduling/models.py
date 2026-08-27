@@ -71,11 +71,24 @@ class Appointment(FacilityScopedModel):
 
 
 class FollowUpRecommendation(FacilityScopedModel):
+    INTERVAL_UNIT_CHOICES = [
+        ("DAYS", "Days"),
+        ("WEEKS", "Weeks"),
+        ("MONTHS", "Months"),
+    ]
+
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="follow_ups")
     encounter = models.ForeignKey(
         "clinical.Encounter", on_delete=models.PROTECT, null=True, blank=True, related_name="follow_ups"
     )
     recommended_date = models.DateField(null=True, blank=True)
+    interval_value = models.PositiveIntegerField(null=True, blank=True)
+    interval_unit = models.CharField(
+        max_length=10,
+        choices=INTERVAL_UNIT_CHOICES,
+        null=True,
+        blank=True,
+    )
     instructions = models.TextField()
     status = models.CharField(max_length=20, default="OPEN")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)

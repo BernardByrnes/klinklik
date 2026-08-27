@@ -1652,4 +1652,68 @@ Known limitations:
 
 No browser PHI persistence was introduced.
 
+### Phase 1Q-C — Follow-Up Interval Backend Support
+
+Status: COMPLETE / PASS for the approved backend-only follow-up interval support; ready for review.
+
+Starting HEAD: 14b4faece244cfaac9fd1b632569a6545d01a037 on main, aligned with origin/main.
+
+Objective:
+- Extended the existing scheduling.FollowUpRecommendation model to support either an exact recommended date or a positive follow-up interval.
+- Kept the implementation server-side only. No alternate follow-up model, appointment workflow, printing, reminders, referral/DX-007, SMS/email, prescriptions, laboratory, pharmacy, billing, or frontend production work was added.
+
+Data contract and validation:
+- recommended_date remains the date-mode field.
+- Added nullable/blank interval_value and interval_unit fields.
+- Supported interval units are DAYS, WEEKS, and MONTHS; HOURS and other values are rejected.
+- A saved recommendation must have exactly one valid schedule: date mode, or a positive interval value with a supported unit. Missing schedules, partial intervals, zero/negative values, and date-plus-interval payloads return stable code FOLLOW_UP_SCHEDULE_INVALID.
+- Existing date-only Phase 1Q-B payloads remain supported unchanged.
+- Switching date to interval clears the date; switching interval to date clears both interval fields. The existing single recommendation per Encounter behavior is preserved through Encounter locking, and the recommendation remains linked to the current Encounter and Patient.
+
+Concurrency and signing:
+- The interval fields are included in the existing shared consultation ETag and are serialized on Encounter GET, follow-up GET/PATCH responses, and stale 412 authoritative state.
+- The existing If-Match requirement and 412 conflict behavior remain authoritative; stale interval mutations preserve the current record.
+- REVIEW_SCHEDULED signing now accepts either a valid date or a valid interval, while a missing/invalid schedule remains blocked with FOLLOW_UP_REQUIRED.
+- Signed, closed, and cancelled encounters remain immutable.
+
+Audit and tenant safety:
+- Follow-up audit payloads contain only structural metadata: schedule mode, presence flags, changed field names, and record identifiers. Raw date, interval value/unit, and instruction text are not stored in generic audit before/after JSON.
+- Existing organisation/facility authorization filters and locked Encounter mutation path were preserved.
+
+Files changed:
+- backend/clinical/concurrency.py
+- backend/clinical/dispositions.py
+- backend/clinical/followups.py
+- backend/clinical/serializers.py
+- backend/scheduling/models.py
+- backend/scheduling/migrations/0002_followuprecommendation_interval_unit_and_more.py
+- backend/tests/test_phase_1q_c.py
+- docs/REPO_REVIEW_HANDOFF.md
+
+Validation:
+- Focused Phase 1Q-C backend tests: PASS — 17 passed.
+- Existing Phase 1Q-A, Phase 1P-A, Phase 1N-A, and Phase 1M-A follow-up/disposition/signing/diagnosis/allergy regressions: PASS — 64 passed.
+- Full backend suite: PASS — 243 passed, 7 skipped. Skips are the existing PostgreSQL-only authentication/RLS and row-lock tests.
+- Django check: PASS — no issues identified.
+- makemigrations --check --dry-run: PASS — no changes detected.
+- Migration applied locally: PASS — scheduling.0002_followuprecommendation_interval_unit_and_more.
+- migrate --plan after application: PASS — no planned migration operations.
+- git diff --check: PASS.
+
+Migration status:
+- REQUIRED and included at backend/scheduling/migrations/0002_followuprecommendation_interval_unit_and_more.py.
+- No frontend production change was made.
+
+Known limitations:
+- The Phase 1Q-B frontend remains date-only; interval entry UI is intentionally deferred to a later authorized slice.
+- Appointment creation (APT-001), printing, reminders, referral/DX-007, and downstream follow-up integrations remain outside this phase.
+- PostgreSQL-only RLS and row-lock execution remains environment-dependent; the local full-suite skips are unchanged.
+- Validation used local synthetic development data only.
+
+No browser PHI persistence was introduced.
+
+Canonical backlog changed: NO.
+Canonical architecture touched: NO.
+Phase 1R or any later phase started: NO.
+
 Next approved phase: NOT YET AUTHORISED

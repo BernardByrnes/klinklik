@@ -40,6 +40,8 @@ def follow_up_snapshot(encounter):
         "patient": str(follow_up.patient_id),
         "encounter": str(follow_up.encounter_id),
         "recommended_date": follow_up.recommended_date.isoformat() if follow_up.recommended_date else None,
+        "interval_value": follow_up.interval_value,
+        "interval_unit": follow_up.interval_unit,
         "instructions": follow_up.instructions,
         "status": follow_up.status,
         "created_by": str(follow_up.created_by_id),

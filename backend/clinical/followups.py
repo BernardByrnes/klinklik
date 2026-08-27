@@ -10,6 +10,12 @@ from clinical.models import ClinicalNote, Encounter
 from scheduling.models import FollowUpRecommendation
 
 
+FOLLOW_UP_INTERVAL_UNITS = frozenset(
+    choice for choice, _label in FollowUpRecommendation.INTERVAL_UNIT_CHOICES
+)
+_MISSING = object()
+
+
 class FollowUpDomainError(ValueError):
     def __init__(self, code, detail):
         self.code = code
@@ -65,13 +71,87 @@ def _ensure_mutable(*, encounter, note):
         )
 
 
+def follow_up_schedule_mode(*, recommended_date, interval_value, interval_unit):
+    normalized_unit = interval_unit or ""
+    if recommended_date is not None:
+        return "DATE" if interval_value is None and not normalized_unit else None
+    if interval_value is None or not normalized_unit:
+        return None
+    try:
+        valid_value = int(interval_value) > 0
+    except (TypeError, ValueError):
+        valid_value = False
+    return "INTERVAL" if valid_value and normalized_unit in FOLLOW_UP_INTERVAL_UNITS else None
+
+
+def _validate_schedule(*, recommended_date, interval_value, interval_unit):
+    mode = follow_up_schedule_mode(
+        recommended_date=recommended_date,
+        interval_value=interval_value,
+        interval_unit=interval_unit,
+    )
+    if mode is None:
+        raise FollowUpDomainError(
+            "FOLLOW_UP_SCHEDULE_INVALID",
+            "Provide exactly one valid follow-up date or interval (positive value with DAYS, WEEKS, or MONTHS).",
+        )
+    return mode
+
+
 def _audit_state(follow_up):
     return {
         "encounter_id": str(follow_up.encounter_id),
         "follow_up_id": str(follow_up.id),
+        "schedule_mode": follow_up_schedule_mode(
+            recommended_date=follow_up.recommended_date,
+            interval_value=follow_up.interval_value,
+            interval_unit=follow_up.interval_unit,
+        ),
         "recommended_date_present": follow_up.recommended_date is not None,
+        "interval_value_present": follow_up.interval_value is not None,
+        "interval_unit_present": bool(follow_up.interval_unit),
         "instructions_present": bool(follow_up.instructions),
     }
+
+
+def _effective_schedule(*, follow_up, data):
+    current_date = follow_up.recommended_date if follow_up is not None else None
+    current_value = follow_up.interval_value if follow_up is not None else None
+    current_unit = follow_up.interval_unit if follow_up is not None else None
+
+    requested_date = data.get("recommended_date", _MISSING)
+    requested_value = data.get("interval_value", _MISSING)
+    requested_unit = data.get("interval_unit", _MISSING)
+
+    if requested_date is not _MISSING and requested_date is not None:
+        if (
+            requested_value is not _MISSING
+            and requested_value is not None
+        ) or (
+            requested_unit is not _MISSING
+            and bool(requested_unit)
+        ):
+            raise FollowUpDomainError(
+                "FOLLOW_UP_SCHEDULE_INVALID",
+                "A follow-up date cannot be combined with an interval.",
+            )
+        return requested_date, None, None
+
+    if requested_date is None and requested_date is not _MISSING:
+        return (
+            None,
+            requested_value if requested_value is not _MISSING else None,
+            requested_unit if requested_unit is not _MISSING else None,
+        )
+
+    if requested_value is not _MISSING or requested_unit is not _MISSING:
+        return (
+            None,
+            requested_value if requested_value is not _MISSING else None,
+            requested_unit if requested_unit is not _MISSING else None,
+        )
+
+    return current_date, current_value, current_unit
 
 
 @transaction.atomic
@@ -113,12 +193,9 @@ def save_follow_up(
             "The existing follow-up is not linked to this encounter's patient.",
         )
 
-    recommended_date = (
-        data["recommended_date"]
-        if "recommended_date" in data
-        else follow_up.recommended_date
-        if follow_up is not None
-        else None
+    recommended_date, interval_value, interval_unit = _effective_schedule(
+        follow_up=follow_up,
+        data=data,
     )
     instructions = (
         data["instructions"]
@@ -127,11 +204,11 @@ def save_follow_up(
         if follow_up is not None
         else ""
     )
-    if recommended_date is None:
-        raise FollowUpDomainError(
-            "FOLLOW_UP_DATE_REQUIRED",
-            "A recommended follow-up date is required.",
-        )
+    _validate_schedule(
+        recommended_date=recommended_date,
+        interval_value=interval_value,
+        interval_unit=interval_unit,
+    )
 
     if follow_up is None:
         follow_up = FollowUpRecommendation.objects.create(
@@ -140,19 +217,27 @@ def save_follow_up(
             patient=encounter.patient,
             encounter=encounter,
             recommended_date=recommended_date,
+            interval_value=interval_value,
+            interval_unit=interval_unit,
             instructions=instructions,
             status="OPEN",
             created_by=actor,
         )
         action = "CREATE"
         before = None
-        changed_fields = ["recommended_date", "instructions"]
+        changed_fields = ["recommended_date", "interval_value", "interval_unit", "instructions"]
     else:
         before = _audit_state(follow_up)
         changed_fields = []
         if follow_up.recommended_date != recommended_date:
             follow_up.recommended_date = recommended_date
             changed_fields.append("recommended_date")
+        if follow_up.interval_value != interval_value:
+            follow_up.interval_value = interval_value
+            changed_fields.append("interval_value")
+        if follow_up.interval_unit != interval_unit:
+            follow_up.interval_unit = interval_unit
+            changed_fields.append("interval_unit")
         if follow_up.instructions != instructions:
             follow_up.instructions = instructions
             changed_fields.append("instructions")

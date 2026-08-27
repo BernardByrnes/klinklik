@@ -4,10 +4,11 @@ from audit.services import record_event
 from clinical.concurrency import (
     ClinicalNoteRevisionConflict,
     consultation_note_etag,
+    follow_up_recommendation_for_encounter,
     require_current_consultation_etag,
 )
+from clinical.followups import follow_up_schedule_mode
 from clinical.models import ClinicalNote, Encounter, Referral
-from scheduling.models import FollowUpRecommendation
 
 
 class DispositionDomainError(ValueError):
@@ -114,15 +115,18 @@ def require_signable_disposition(*, encounter):
             "REFERRAL_REQUIRED",
             "A referral record is required before signing a referred-out encounter.",
         )
-    if disposition == "REVIEW_SCHEDULED" and not FollowUpRecommendation.objects.filter(
-        organisation=encounter.organisation_id,
-        facility=encounter.facility_id,
-        encounter=encounter,
-        recommended_date__isnull=False,
-    ).exists():
+    follow_up = follow_up_recommendation_for_encounter(encounter)
+    if disposition == "REVIEW_SCHEDULED" and (
+        follow_up is None
+        or follow_up_schedule_mode(
+            recommended_date=follow_up.recommended_date,
+            interval_value=follow_up.interval_value,
+            interval_unit=follow_up.interval_unit,
+        ) is None
+    ):
         raise DispositionDomainError(
             "FOLLOW_UP_REQUIRED",
-            "A follow-up date is required before signing a review-scheduled encounter.",
+            "A valid follow-up date or interval is required before signing a review-scheduled encounter.",
         )
 
 
