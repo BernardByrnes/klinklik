@@ -186,7 +186,7 @@ jobs:
           python backend/manage.py check_rls --require-postgres
       - name: Run PostgreSQL-only S-00 tests
         env:
-          DB_NAME: test_clinicopus
+          DB_NAME: clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
         run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py
