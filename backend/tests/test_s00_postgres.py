@@ -81,7 +81,8 @@ def test_pg_idempotency_first_use_has_one_winner(tenant):
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda _item: attempt(), range(2)))
     assert sorted(results) == [False, True]
-    assert IdempotencyRecord.objects.filter(
-        organisation=tenant.organisation,
-        operation="CMD-001",
-    ).count() == 1
+    with tenant_atomic(tenant.organisation.id):
+        assert IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            operation="CMD-001",
+        ).count() == 1
