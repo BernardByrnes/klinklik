@@ -84,7 +84,21 @@ jobs:
       - name: Prepare the application-role test database
         run: |
           PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE DATABASE test_clinicopus OWNER clinicopus_app;
+          CREATE DATABASE test_clinicopus OWNER clinicopus_owner;
+          GRANT CONNECT ON DATABASE test_clinicopus TO clinicopus_app;
+          SQL
+      - name: Migrate the PostgreSQL test database as the owner
+        env:
+          DB_NAME: test_clinicopus
+        run: python backend/manage.py migrate --noinput
+      - name: Grant test database objects to the application role
+        env:
+          DB_NAME: test_clinicopus
+        run: |
+          PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT USAGE ON SCHEMA public TO clinicopus_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO clinicopus_app;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO clinicopus_app;
           SQL
       - name: Run application-role PostgreSQL proofs
         env:
