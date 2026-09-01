@@ -9,7 +9,7 @@ from django.db import IntegrityError, transaction
 from audit.models import AuditEvent
 from core.clock import now
 from core.errors import CanonicalError
-from core.idempotency import canonical_json, json_safe, validate_idempotency_key
+from core.idempotency import canonical_json, validate_idempotency_key
 from core.services import (
     assert_transaction_active,
     consume_post_rollback_boundary,
@@ -19,11 +19,73 @@ from core.services import request_id, safe_user_agent
 
 
 _SAFE_CODE = re.compile(r"^[A-Z][A-Z0-9_.:-]{0,79}$")
-_SENSITIVE_KEY = re.compile(
-    r"(?:^|_)(?:name|phone|address|email|dob|birth|complaint|diagnos|medicat|"
-    r"prescription|result|content|note|symptom|history|amount|price|payment|"
-    r"patient|clinical|free_text)(?:_|$)",
-    re.IGNORECASE,
+_SENSITIVE_TOKENS = frozenset(
+    {
+        "address",
+        "amount",
+        "balance",
+        "birth",
+        "clinical",
+        "complaint",
+        "content",
+        "currency",
+        "diagnosis",
+        "diagnoses",
+        "dob",
+        "discount",
+        "email",
+        "financial",
+        "free",
+        "history",
+        "instruction",
+        "medication",
+        "name",
+        "narrative",
+        "note",
+        "patient",
+        "payment",
+        "phone",
+        "prescription",
+        "price",
+        "quantity",
+        "reason",
+        "result",
+        "subtotal",
+        "symptom",
+        "text",
+        "total",
+    }
+)
+_IDENTIFIER_SUFFIXES = frozenset(
+    {
+        "encounter",
+        "facility",
+        "id",
+        "identifier",
+        "identifiers",
+        "ids",
+        "no",
+        "number",
+        "organisation",
+        "patient",
+        "ref",
+        "reference",
+        "uuid",
+    }
+)
+_STRUCTURAL_SUFFIXES = (
+    "_code",
+    "_count",
+    "_fields",
+    "_hash",
+    "_mode",
+    "_number",
+    "_present",
+    "_recorded",
+    "_revision",
+    "_status",
+    "_type",
+    "_version",
 )
 
 
@@ -69,7 +131,35 @@ def _safe_opaque_ref(value):
     return value
 
 
-def _safe_metadata(value, *, label="metadata", depth=0, allow_identifier_keys=False):
+def _key_tokens(key):
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).replace("-", "_").lower()
+    return tuple(token for token in re.split(r"[^a-z0-9]+", normalized) if token)
+
+
+def _is_identifier_key(key):
+    tokens = _key_tokens(key)
+    return bool(tokens) and tokens[-1] in _IDENTIFIER_SUFFIXES
+
+
+def _is_structural_key(key):
+    normalized = "_" + "_".join(_key_tokens(key))
+    return normalized.endswith(_STRUCTURAL_SUFFIXES)
+
+
+def _is_sensitive_key(key):
+    if _is_structural_key(key):
+        return False
+    return bool(_SENSITIVE_TOKENS.intersection(_key_tokens(key)))
+
+
+def _safe_metadata(
+    value,
+    *,
+    label="metadata",
+    depth=0,
+    allow_identifier_keys=False,
+    redact_sensitive=False,
+):
     if depth > 4:
         raise ValueError(f"{label} is too deeply nested.")
     if value is None or isinstance(value, (bool, int, float)):
@@ -82,14 +172,28 @@ def _safe_metadata(value, *, label="metadata", depth=0, allow_identifier_keys=Fa
         result = {}
         for key, item in value.items():
             key = str(key)
-            identifier_key = allow_identifier_keys and key.lower().endswith("_id")
-            if _SENSITIVE_KEY.search(key) and not identifier_key:
+            identifier_key = allow_identifier_keys and _is_identifier_key(key)
+            if identifier_key:
+                try:
+                    result[key] = _safe_opaque_ref(item)
+                except ValueError:
+                    if redact_sensitive:
+                        continue
+                    raise
+                continue
+            if _is_sensitive_key(key):
+                if isinstance(item, str) and _SAFE_CODE.fullmatch(item):
+                    result[key] = item
+                    continue
+                if redact_sensitive:
+                    continue
                 raise ValueError(f"{label} contains a prohibited sensitive field.")
             result[key] = _safe_metadata(
                 item,
                 label=label,
                 depth=depth + 1,
                 allow_identifier_keys=allow_identifier_keys,
+                redact_sensitive=redact_sensitive,
             )
         return result
     if isinstance(value, (list, tuple)):
@@ -99,6 +203,7 @@ def _safe_metadata(value, *, label="metadata", depth=0, allow_identifier_keys=Fa
                 label=label,
                 depth=depth + 1,
                 allow_identifier_keys=allow_identifier_keys,
+                redact_sensitive=redact_sensitive,
             )
             for item in value
         ]
@@ -320,20 +425,41 @@ def record_event(
         rid = request_id(request)
         agent = safe_user_agent(request)
         ip_address = request.META.get("REMOTE_ADDR")
+    safe_event_code = _safe_code(event_code or action, "event_code")
+    safe_reason_code = _safe_code(reason_code, "reason_code") if reason_code else ""
+    safe_before = _safe_metadata(
+        before,
+        label="before",
+        allow_identifier_keys=True,
+        redact_sensitive=True,
+    )
+    safe_after = _safe_metadata(
+        after,
+        label="after",
+        allow_identifier_keys=True,
+        redact_sensitive=True,
+    )
+    safe_source_ids = _safe_metadata(
+        source_ids or {},
+        label="source_ids",
+        allow_identifier_keys=True,
+        redact_sensitive=True,
+    )
+    safe_reason = str(reason) if isinstance(reason, str) and _SAFE_CODE.fullmatch(reason) else ""
     return AuditEvent.objects.create(
         organisation=organisation,
         actor=actor,
         action=action,
-        event_code=event_code or action,
+        event_code=safe_event_code,
         entity_type=entity_type,
         entity_id=str(entity_id),
         facility=facility,
         request_id=rid,
         ip_address=ip_address,
         user_agent=agent,
-        before=before,
-        after=after,
-        source_ids=json_safe(source_ids or {}),
-        reason_code=reason_code,
-        reason=reason,
+        before=safe_before,
+        after=safe_after,
+        source_ids=safe_source_ids,
+        reason_code=safe_reason_code,
+        reason=safe_reason,
     )

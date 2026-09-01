@@ -1,4 +1,19 @@
+import re
+
 from django.db import connection
+
+
+_TENANT_POLICY_EXPRESSION = re.compile(
+    r"^\(*organisation_id\)*=\(*current_setting\('app\.current_org_id'(?:\:\:text)?(?:,true)?\)\)*\:\:uuid\)*$",
+    re.IGNORECASE,
+)
+
+
+def is_tenant_policy_expression(expression):
+    if not expression:
+        return False
+    normalized = re.sub(r"\s+", "", str(expression)).lower()
+    return bool(_TENANT_POLICY_EXPRESSION.fullmatch(normalized))
 
 
 def rls_status():
@@ -10,16 +25,17 @@ def rls_status():
             SELECT relation.relname,
                    relation.relrowsecurity,
                    relation.relforcerowsecurity,
-                   COALESCE(policy.qual::text, ''),
-                   COALESCE(policy.with_check::text, ''),
+                   COALESCE(pg_get_expr(policy.polqual, relation.oid), ''),
+                   COALESCE(pg_get_expr(policy.polwithcheck, relation.oid), ''),
+                   COALESCE(policy.polcmd, ''),
+                   COALESCE(policy.polpermissive, TRUE),
                    pg_get_userbyid(relation.relowner)
             FROM pg_class relation
             JOIN pg_namespace namespace
               ON namespace.oid = relation.relnamespace
-            LEFT JOIN pg_policies policy
-              ON policy.schemaname = 'public'
-             AND policy.tablename = relation.relname
-             AND policy.policyname = 'clinicopus_tenant_isolation'
+            LEFT JOIN pg_policy policy
+              ON policy.polrelid = relation.oid
+             AND policy.polname = 'clinicopus_tenant_isolation'
             WHERE namespace.nspname = 'public'
               AND relation.relkind = 'r'
               AND EXISTS (
@@ -35,21 +51,21 @@ def rls_status():
         rows = cursor.fetchall()
         cursor.execute(
             """
-            SELECT rolname, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb
+            SELECT rolname, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolcanlogin
             FROM pg_roles
             WHERE rolname = current_user
             """
         )
         role = cursor.fetchone()
-    role_safe = bool(role) and not role[1] and not role[2]
-    owner_safe = bool(role) and bool(rows) and all(row[5] != role[0] for row in rows)
+    role_safe = bool(role) and bool(role[5]) and not role[1] and not role[2]
+    owner_safe = bool(role) and bool(rows) and all(row[7] != role[0] for row in rows)
     tables_enforced = bool(rows) and all(
         row[1]
         and row[2]
-        and row[3]
-        and row[4]
-        and "current_setting" in row[3]
-        and "current_setting" in row[4]
+        and is_tenant_policy_expression(row[3])
+        and is_tenant_policy_expression(row[4])
+        and row[5] == "*"
+        and row[6] is True
         for row in rows
     )
     return {
@@ -62,6 +78,7 @@ def rls_status():
                 "bypass_rls": role[2],
                 "create_role": role[3],
                 "create_db": role[4],
+                "login": role[5],
             }
             if role
             else None
@@ -71,10 +88,17 @@ def rls_status():
                 "name": row[0],
                 "rowsecurity": row[1],
                 "force": row[2],
-                "tenant_policy": bool(row[3] and row[4]),
+                "tenant_policy": (
+                    is_tenant_policy_expression(row[3])
+                    and is_tenant_policy_expression(row[4])
+                    and row[5] == "*"
+                    and row[6] is True
+                ),
                 "policy_using": row[3],
                 "policy_check": row[4],
-                "owner": row[5],
+                "policy_command": row[5],
+                "policy_permissive": row[6],
+                "owner": row[7],
             }
             for row in rows
         ],

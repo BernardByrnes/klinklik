@@ -12,6 +12,8 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
+export const GENERATED_API_CONTRACT_SHA256 = "d06e9b562cfc45b489632cd7b1fa09eed61f845b41680c802d779146652a1a57";
+
 export const GENERATED_API_OPERATIONS = [
   {
     "method": "POST",

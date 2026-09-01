@@ -3,7 +3,43 @@ from django.db import migrations, models
 
 def backfill_event_codes(apps, schema_editor):
     audit_model = apps.get_model("audit", "AuditEvent")
-    audit_model.objects.filter(event_code="").update(event_code=models.F("action"))
+    connection = schema_editor.connection
+    if connection.vendor != "postgresql":
+        audit_model.objects.filter(event_code="").update(event_code=models.F("action"))
+        return
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT tgenabled
+            FROM pg_trigger
+            WHERE tgrelid = 'audit_auditevent'::regclass
+              AND tgname = 'clinicopus_audit_immutable'
+            """
+        )
+        trigger = cursor.fetchone()
+        restore_trigger = bool(trigger and trigger[0] != "D")
+        if restore_trigger:
+            cursor.execute(
+                "ALTER TABLE audit_auditevent DISABLE TRIGGER clinicopus_audit_immutable"
+            )
+        try:
+            cursor.execute("SELECT id FROM tenancy_organisation ORDER BY id")
+            organisation_ids = [row[0] for row in cursor.fetchall()]
+            for organisation_id in organisation_ids:
+                cursor.execute(
+                    "SELECT set_config('app.current_org_id', %s, true)",
+                    [str(organisation_id)],
+                )
+                audit_model.objects.filter(
+                    organisation_id=organisation_id,
+                    event_code="",
+                ).update(event_code=models.F("action"))
+        finally:
+            if restore_trigger:
+                cursor.execute(
+                    "ALTER TABLE audit_auditevent ENABLE TRIGGER clinicopus_audit_immutable"
+                )
 
 
 def noop_reverse(apps, schema_editor):

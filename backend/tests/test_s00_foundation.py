@@ -1,5 +1,8 @@
 from contextlib import contextmanager
+from copy import deepcopy
+import json
 from pathlib import Path
+from types import SimpleNamespace
 import shutil
 import sys
 
@@ -10,7 +13,7 @@ from django.db import DatabaseError
 from application.contracts import CommandContext, CommandResult, CommandSpec
 from application.runner import run_command
 from audit.models import AuditEvent
-from audit.services import DenialAuditConflict, record_fact, write_denial_audit
+from audit.services import DenialAuditConflict, record_event, record_fact, write_denial_audit
 from core import services
 from core.clock import KAMPALA, is_utc, local_service_date, now, require_aware
 from core.errors import IdempotencyConflict, RetryableCommandFailure
@@ -20,6 +23,7 @@ from core.idempotency import (
     key_hash,
 )
 from core.models import IdempotencyRecord
+from core.rls import is_tenant_policy_expression
 from core.services import tenant_atomic
 from tenancy.models import FacilityWorkflowPolicy
 
@@ -186,20 +190,52 @@ def test_non_success_command_result_rolls_back(tenant):
     ).exists()
 
 
-def test_retryable_sqlstate_is_bounded_to_three_attempts(monkeypatch, tenant):
+@pytest.mark.parametrize(
+    ("attribute", "sqlstate"),
+    [("sqlstate", "40001"), ("diag", "40P01")],
+)
+def test_psycopg3_retryable_sqlstates_retry_the_whole_command(monkeypatch, tenant, attribute, sqlstate):
     attempts = []
 
     @contextmanager
     def fake_tenant_atomic(_organisation_id):
         yield
 
-    class PostgreSQLSerializationCause(Exception):
-        pgcode = "40001"
+    def callback():
+        attempts.append(True)
+        if len(attempts) == 1:
+            error = DatabaseError("retryable PostgreSQL failure")
+            if attribute == "diag":
+                error.diag = SimpleNamespace(sqlstate=sqlstate)
+            else:
+                error.sqlstate = sqlstate
+            raise error
+        return "committed"
+
+    monkeypatch.setattr(services, "tenant_atomic", fake_tenant_atomic)
+    monkeypatch.setattr(services.connection, "vendor", "postgresql")
+    assert services.run_in_tenant(tenant.organisation.id, callback) == "committed"
+    assert len(attempts) == 2
+
+
+@pytest.mark.parametrize(
+    ("attribute", "sqlstate"),
+    [("sqlstate", "40001"), ("diag", "40P01"), ("pgcode", "40001")],
+)
+def test_retryable_sqlstate_exhaustion_is_bounded_and_canonical(monkeypatch, tenant, attribute, sqlstate):
+    attempts = []
+
+    @contextmanager
+    def fake_tenant_atomic(_organisation_id):
+        yield
 
     def callback():
         attempts.append(True)
-        error = DatabaseError("serialization failure")
-        error.__cause__ = PostgreSQLSerializationCause()
+        error = DatabaseError("retryable PostgreSQL failure")
+        if attribute == "diag":
+            error.diag = SimpleNamespace(sqlstate=sqlstate)
+        else:
+            setattr(error, attribute, sqlstate)
         raise error
 
     monkeypatch.setattr(services, "tenant_atomic", fake_tenant_atomic)
@@ -207,6 +243,219 @@ def test_retryable_sqlstate_is_bounded_to_three_attempts(monkeypatch, tenant):
     with pytest.raises(RetryableCommandFailure):
         services.run_in_tenant(tenant.organisation.id, callback)
     assert len(attempts) == 3
+
+
+def test_nonretryable_database_failure_is_not_retried(monkeypatch, tenant):
+    attempts = []
+
+    @contextmanager
+    def fake_tenant_atomic(_organisation_id):
+        yield
+
+    def callback():
+        attempts.append(True)
+        error = DatabaseError("unique violation")
+        error.sqlstate = "23505"
+        raise error
+
+    monkeypatch.setattr(services, "tenant_atomic", fake_tenant_atomic)
+    monkeypatch.setattr(services.connection, "vendor", "postgresql")
+    with pytest.raises(DatabaseError):
+        services.run_in_tenant(tenant.organisation.id, callback)
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["patientName", "PatientName", "diagnosis", "medicationName", "dateOfBirth", "freeText"],
+)
+def test_audit_phi_canaries_are_rejected_across_key_styles(tenant, key):
+    with tenant_atomic(tenant.organisation.id):
+        with pytest.raises(ValueError):
+            record_fact(
+                organisation=tenant.organisation,
+                actor=tenant.user,
+                event_code="S00_PHI_CANARY",
+                entity_type="TechnicalProbe",
+                entity_id="synthetic-phi",
+                after={key: "Synthetic human-readable content"},
+            )
+
+
+def test_audit_identifier_values_require_opaque_references(tenant):
+    with tenant_atomic(tenant.organisation.id):
+        with pytest.raises(ValueError):
+            record_fact(
+                organisation=tenant.organisation,
+                actor=tenant.user,
+                event_code="S00_ID_CANARY",
+                entity_type="TechnicalProbe",
+                entity_id="synthetic-human-id",
+                source_ids={"patient_id": "Alice Smith"},
+            )
+        event = record_fact(
+            organisation=tenant.organisation,
+            actor=tenant.user,
+            event_code="S00_ID_CANARY",
+            entity_type="TechnicalProbe",
+            entity_id="synthetic-opaque-id",
+            source_ids={"patientId": "opaque-patient-1"},
+            after={"state": "READY", "noteType": "CONSULTATION"},
+        )
+    assert event.source_ids == {"patientId": "opaque-patient-1"}
+    assert event.after == {"state": "READY", "noteType": "CONSULTATION"}
+
+
+def test_compatibility_audit_event_uses_redacting_safe_metadata_path(tenant):
+    with tenant_atomic(tenant.organisation.id):
+        event = record_event(
+            organisation=tenant.organisation,
+            actor=tenant.user,
+            facility=tenant.facility,
+            action="UPDATE",
+            event_code="S00_COMPAT_EVENT",
+            entity_type="TechnicalProbe",
+            entity_id="synthetic-compat",
+            before={
+                "patientName": "Alice Smith",
+                "encounterId": "opaque-encounter-1",
+                "state": "BEFORE",
+            },
+            after={
+                "diagnosis": "Sensitive diagnosis",
+                "medicationName": "Sensitive medication",
+                "dateOfBirth": "2000-01-01",
+                "freeText": "Clinical narrative",
+                "patientId": "opaque-patient-1",
+                "reason": "SAFE_EVENT",
+                "state": "READY",
+            },
+            source_ids={
+                "patient_id": "Alice Smith",
+                "safe_ref": "opaque-reference-1",
+                "testResult": "Sensitive result",
+            },
+            reason="Alice Smith supplied a clinical narrative",
+            reason_code="SAFE_REASON",
+        )
+    payload = json.dumps(
+        {
+            "before": event.before,
+            "after": event.after,
+            "source_ids": event.source_ids,
+            "reason": event.reason,
+        },
+        sort_keys=True,
+    )
+    assert "Alice Smith" not in payload
+    assert "Sensitive diagnosis" not in payload
+    assert "Sensitive medication" not in payload
+    assert "Clinical narrative" not in payload
+    assert event.before == {"encounterId": "opaque-encounter-1", "state": "BEFORE"}
+    assert event.after == {
+        "patientId": "opaque-patient-1",
+        "reason": "SAFE_EVENT",
+        "state": "READY",
+    }
+    assert event.source_ids == {"safe_ref": "opaque-reference-1"}
+    assert event.reason == ""
+    assert event.reason_code == "SAFE_REASON"
+
+
+def test_rls_policy_expression_requires_exact_organisation_scope():
+    accepted = [
+        "organisation_id = current_setting('app.current_org_id')::uuid",
+        "(organisation_id = (current_setting('app.current_org_id'::text))::uuid)",
+        "organisation_id = current_setting('app.current_org_id', true)::uuid",
+    ]
+    rejected = [
+        "organisation_id = current_setting('app.other_org_id')::uuid",
+        "organisation_id = current_setting('app.current_org_id')::uuid OR true",
+        "facility_id = current_setting('app.current_org_id')::uuid",
+    ]
+    assert all(is_tenant_policy_expression(expression) for expression in accepted)
+    assert not any(is_tenant_policy_expression(expression) for expression in rejected)
+
+
+def test_generated_api_contract_fingerprint_covers_material_schema_surface():
+    from tools.generate_api_client import contract_fingerprint, render
+
+    schema = {
+        "paths": {
+            "/patients/{id}": {
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "format": "uuid"},
+                    }
+                ],
+                "patch": {
+                    "operationId": "patients.update",
+                    "parameters": [
+                        {
+                            "name": "If-Match",
+                            "in": "header",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PatientPatch",
+                                }
+                            }
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Patient"},
+                                }
+                            }
+                        }
+                    },
+                },
+            }
+        },
+        "components": {
+            "schemas": {
+                "PatientPatch": {
+                    "type": "object",
+                    "required": ["first_name", "status"],
+                    "properties": {
+                        "first_name": {"type": "string"},
+                        "status": {"enum": ["ACTIVE", "ARCHIVED"]},
+                    },
+                },
+                "Patient": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {"id": {"type": "string"}},
+                },
+            }
+        },
+    }
+    original = contract_fingerprint(schema)
+    changed_request = deepcopy(schema)
+    changed_request["components"]["schemas"]["PatientPatch"]["required"].append("age")
+    changed_response = deepcopy(schema)
+    changed_response["components"]["schemas"]["Patient"]["properties"]["id"]["enum"] = ["P-1", "P-2"]
+    changed_header = deepcopy(schema)
+    changed_header["paths"]["/patients/{id}"]["patch"]["parameters"][0]["required"] = False
+    assert contract_fingerprint(changed_request) != original
+    assert contract_fingerprint(changed_response) != original
+    assert contract_fingerprint(changed_header) != original
+    reordered = deepcopy(schema)
+    reordered["components"]["schemas"]["PatientPatch"]["required"] = ["status", "first_name"]
+    reordered["components"]["schemas"]["PatientPatch"]["properties"]["status"]["enum"] = ["ARCHIVED", "ACTIVE"]
+    assert contract_fingerprint(reordered) == original
+    assert f'GENERATED_API_CONTRACT_SHA256 = "{original}"' in render(schema)
 
 
 def test_clock_is_aware_utc_and_kampala_local():

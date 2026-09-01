@@ -8,6 +8,7 @@ from core.errors import RetryableCommandFailure
 
 
 MAX_TRANSACTION_ATTEMPTS = 3
+_RETRYABLE_POSTGRES_SQLSTATES = frozenset({"40001", "40P01"})
 _POST_ROLLBACK_BOUNDARY = ContextVar("post_rollback_boundary", default=False)
 
 
@@ -42,13 +43,26 @@ def consume_post_rollback_boundary():
     return boundary
 
 
-def is_retryable_database_error(error):
+def _exception_chain(error):
+    seen = set()
     cause = error
-    while cause is not None:
-        if getattr(cause, "pgcode", None) in {"40001", "40P01"}:
-            return True
-        cause = getattr(cause, "__cause__", None)
-    return False
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        yield cause
+        cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
+
+
+def _has_retryable_sqlstate(error):
+    if getattr(error, "sqlstate", None) in _RETRYABLE_POSTGRES_SQLSTATES:
+        return True
+    diagnostic = getattr(error, "diag", None)
+    if getattr(diagnostic, "sqlstate", None) in _RETRYABLE_POSTGRES_SQLSTATES:
+        return True
+    return getattr(error, "pgcode", None) in _RETRYABLE_POSTGRES_SQLSTATES
+
+
+def is_retryable_database_error(error):
+    return any(_has_retryable_sqlstate(cause) for cause in _exception_chain(error))
 
 
 def run_in_tenant(organisation_id, callback, *, max_attempts=MAX_TRANSACTION_ATTEMPTS):

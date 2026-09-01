@@ -1,3 +1,4 @@
+# S-00 keeps bounded compatibility ranges; exact Python/npm lock pinning is outside this frozen slice.
 Django>=5.2,<6
 djangorestframework>=3.17,<4
 inflection>=0.5,<1

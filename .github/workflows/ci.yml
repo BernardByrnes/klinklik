@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16.4
         env:
           POSTGRES_DB: clinicopus
           POSTGRES_USER: clinicopus_owner
@@ -90,7 +90,74 @@ jobs:
       - name: Migrate the PostgreSQL test database as the owner
         env:
           DB_NAME: test_clinicopus
-        run: python backend/manage.py migrate --noinput
+        run: |
+          python backend/manage.py migrate core 0002 --noinput
+          PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO tenancy_organisation (
+            id, name, slug, status, timezone, default_currency, privacy_notice_version, dpo_email
+          ) VALUES (
+            '00000000-0000-7000-8000-000000000001',
+            'S00 Backfill Clinic',
+            's00-backfill-clinic',
+            'ACTIVE',
+            'Africa/Kampala',
+            'UGX',
+            'v1',
+            ''
+          );
+          SELECT set_config(
+            'app.current_org_id',
+            '00000000-0000-7000-8000-000000000001',
+            false
+          );
+          INSERT INTO core_idempotencyrecord (
+            id, created_at, updated_at, key, request_hash, status_code,
+            response_body, completed_at, organisation_id
+          ) VALUES (
+            '00000000-0000-7000-8000-000000000002',
+            NOW(),
+            NOW(),
+            'legacy-backfill-key',
+            repeat('a', 64),
+            201,
+            '{}'::jsonb,
+            NOW(),
+            '00000000-0000-7000-8000-000000000001'
+          );
+          INSERT INTO audit_auditevent (
+            id, created_at, updated_at, action, entity_type, entity_id,
+            request_id, ip_address, user_agent, reason, before, after,
+            occurred_at, actor_id, facility_id, organisation_id
+          ) VALUES (
+            '00000000-0000-7000-8000-000000000003',
+            NOW(),
+            NOW(),
+            'CREATE',
+            'TechnicalProbe',
+            'legacy-backfill-event',
+            '',
+            NULL,
+            '',
+            '',
+            NULL,
+            NULL,
+            NOW(),
+            NULL,
+            NULL,
+            '00000000-0000-7000-8000-000000000001'
+          );
+          SQL
+          python backend/manage.py migrate --noinput
+      - name: Exercise reversible S-00 PostgreSQL migration contract
+        env:
+          DB_NAME: test_clinicopus
+        run: |
+          python backend/manage.py migrate tenancy 0001 --noinput
+          python backend/manage.py migrate audit 0001 --noinput
+          python backend/manage.py migrate core 0002 --noinput
+          python backend/manage.py migrate core 0003 --noinput
+          python backend/manage.py migrate audit 0002 --noinput
+          python backend/manage.py migrate tenancy 0002 --noinput
       - name: Grant test database objects to the application role
         env:
           DB_NAME: test_clinicopus

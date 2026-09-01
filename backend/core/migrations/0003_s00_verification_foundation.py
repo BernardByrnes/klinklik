@@ -5,12 +5,31 @@ from django.db import migrations, models
 
 def backfill_idempotency_identity(apps, schema_editor):
     record_model = apps.get_model("core", "IdempotencyRecord")
-    for record in record_model.objects.all().iterator():
-        record.operation = "legacy"
-        record.key_hash = hashlib.sha256(record.key.encode("utf-8")).hexdigest()
-        record.fingerprint = record.request_hash
-        record.completed_at = record.completed_at or record.updated_at or record.created_at
-        record.save(update_fields=["operation", "key_hash", "fingerprint", "completed_at"])
+    connection = schema_editor.connection
+    if connection.vendor != "postgresql":
+        records = record_model.objects.all().iterator()
+        for record in records:
+            record.operation = "legacy"
+            record.key_hash = hashlib.sha256(record.key.encode("utf-8")).hexdigest()
+            record.fingerprint = record.request_hash
+            record.completed_at = record.completed_at or record.updated_at or record.created_at
+            record.save(update_fields=["operation", "key_hash", "fingerprint", "completed_at"])
+        return
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT id FROM tenancy_organisation ORDER BY id")
+        organisation_ids = [row[0] for row in cursor.fetchall()]
+        for organisation_id in organisation_ids:
+            cursor.execute(
+                "SELECT set_config('app.current_org_id', %s, true)",
+                [str(organisation_id)],
+            )
+            for record in record_model.objects.filter(organisation_id=organisation_id).iterator():
+                record.operation = "legacy"
+                record.key_hash = hashlib.sha256(record.key.encode("utf-8")).hexdigest()
+                record.fingerprint = record.request_hash
+                record.completed_at = record.completed_at or record.updated_at or record.created_at
+                record.save(update_fields=["operation", "key_hash", "fingerprint", "completed_at"])
 
 
 def noop_reverse(apps, schema_editor):
