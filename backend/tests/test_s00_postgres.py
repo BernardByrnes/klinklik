@@ -35,7 +35,8 @@ def test_pg_missing_tenant_context_fails_closed():
         with pytest.raises(Exception) as error:
             cursor.execute("SELECT 1 FROM core_idempotencyrecord LIMIT 1")
     cause = getattr(error.value, "__cause__", error.value)
-    assert getattr(cause, "pgcode", None) in {"42704", "22P02"}
+    sqlstate = getattr(cause, "sqlstate", None) or getattr(cause, "pgcode", None)
+    assert sqlstate in {"42704", "22P02"}
 
 
 def test_pg_policy_seam_is_tenant_scoped(tenant):

@@ -98,6 +98,7 @@ jobs:
           PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
           GRANT USAGE ON SCHEMA public TO clinicopus_app;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO clinicopus_app;
+          GRANT TRUNCATE ON ALL TABLES IN SCHEMA public TO clinicopus_app;
           GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO clinicopus_app;
           SQL
       - name: Run application-role PostgreSQL proofs
