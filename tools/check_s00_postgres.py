@@ -20,6 +20,7 @@ EXPECTED_MIGRATIONS = {
     ("audit", "0002_s00_audit_facts"),
     ("tenancy", "0002_s00_facility_workflow_policy"),
 }
+PROOF_ORGANISATION_SLUG = "s00-backfill-clinic"
 EXPECTED_CONSTRAINTS = {
     ("core_idempotencyrecord", "uniq_idempotency_org_op_key_hash"),
     ("core_idempotencyrecord", "idempotency_status_code_valid"),
@@ -74,6 +75,35 @@ def _check_backfill(cursor, failures):
         failures.append(f"idempotency backfill is incomplete for {incomplete_idempotency} rows")
     if incomplete_audit:
         failures.append(f"audit event-code backfill is incomplete for {incomplete_audit} rows")
+
+
+def _proof_organisation_id(cursor, failures):
+    cursor.execute(
+        "SELECT id FROM tenancy_organisation WHERE slug = %s",
+        [PROOF_ORGANISATION_SLUG],
+    )
+    row = cursor.fetchone()
+    if row is None:
+        failures.append("deterministic S-00 proof organisation is missing")
+        return None
+    return row[0]
+
+
+def _check_scoped_backfill(connection, organisation_id, failures):
+    # Keep the scoped backfill assertion separate from the unset-context proof.
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("SET LOCAL app.current_org_id = {}").format(
+                    sql.Literal(str(organisation_id))
+                )
+            )
+            _check_backfill(cursor, failures)
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT current_setting('app.current_org_id', true)")
+        if cursor.fetchone()[0] is not None:
+            failures.append("scoped organization context leaked after backfill transaction")
 
 
 def main():
@@ -180,7 +210,9 @@ def main():
                 )
             else:
                 _check_required_constraints(cursor, failures)
-                _check_backfill(cursor, failures)
+                proof_organisation_id = _proof_organisation_id(cursor, failures)
+                if proof_organisation_id is not None:
+                    _check_scoped_backfill(connection, proof_organisation_id, failures)
 
             cursor.execute(
                 """

@@ -35,6 +35,7 @@ jobs:
       - run: python manage.py migrate --noinput
       - run: python manage.py check
       - run: python -m pytest -q
+        working-directory: .
 
   postgres-proof:
     runs-on: ubuntu-latest
@@ -175,6 +176,7 @@ jobs:
           SQL
       - name: Run application-role PostgreSQL proofs
         env:
+          DB_NAME: test_clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
         run: |
@@ -182,6 +184,7 @@ jobs:
           python backend/manage.py check_rls --require-postgres
       - name: Run PostgreSQL-only S-00 tests
         env:
+          DB_NAME: test_clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
         run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py
