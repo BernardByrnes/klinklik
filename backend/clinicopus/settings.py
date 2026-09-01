@@ -79,7 +79,7 @@ if DB_ENGINE in {"postgres", "postgresql"}:
             "PASSWORD": os.getenv("DB_PASSWORD", "clinicopus_app_dev_only"),
             "HOST": os.getenv("DB_HOST", "127.0.0.1"),
             "PORT": os.getenv("DB_PORT", "5432"),
-            "ATOMIC_REQUESTS": True,
+            "ATOMIC_REQUESTS": False,
             "CONN_MAX_AGE": 60,
         }
     }

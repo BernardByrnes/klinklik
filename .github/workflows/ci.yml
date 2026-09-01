@@ -5,6 +5,20 @@ on:
   pull_request:
 
 jobs:
+  s00-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements.txt
+      - run: python tools/validate_s00.py
+      - run: python tools/generate_api_client.py --check
+      - run: python backend/manage.py check
+      - run: python backend/manage.py makemigrations --check --dry-run
+      - run: python -m pytest -q backend/tests/test_s00_foundation.py
+
   backend:
     runs-on: ubuntu-latest
     defaults:
@@ -19,6 +33,71 @@ jobs:
       - run: python manage.py migrate --noinput
       - run: python manage.py check
       - run: python -m pytest -q
+
+  postgres-proof:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: clinicopus
+          POSTGRES_USER: clinicopus_owner
+          POSTGRES_PASSWORD: clinicopus_owner_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clinicopus_owner -d clinicopus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DB_ENGINE: postgresql
+      DB_NAME: clinicopus
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: clinicopus_owner
+      DB_PASSWORD: clinicopus_owner_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements.txt
+      - name: Create the non-bypass application role
+        run: |
+          PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE clinicopus_app LOGIN PASSWORD 'clinicopus_app_test' NOSUPERUSER NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE clinicopus TO clinicopus_app;
+          GRANT USAGE ON SCHEMA public TO clinicopus_app;
+          ALTER DEFAULT PRIVILEGES FOR ROLE clinicopus_owner IN SCHEMA public
+            GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO clinicopus_app;
+          ALTER DEFAULT PRIVILEGES FOR ROLE clinicopus_owner IN SCHEMA public
+            GRANT USAGE, SELECT ON SEQUENCES TO clinicopus_app;
+          SQL
+      - run: python backend/manage.py migrate --noinput
+      - name: Grant existing migration objects to the application role
+        run: |
+          PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO clinicopus_app;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO clinicopus_app;
+          SQL
+      - name: Prepare the application-role test database
+        run: |
+          PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE DATABASE test_clinicopus OWNER clinicopus_app;
+          SQL
+      - name: Run application-role PostgreSQL proofs
+        env:
+          DB_USER: clinicopus_app
+          DB_PASSWORD: clinicopus_app_test
+        run: |
+          python tools/check_s00_postgres.py
+          python backend/manage.py check_rls --require-postgres
+      - name: Run PostgreSQL-only S-00 tests
+        env:
+          DB_USER: clinicopus_app
+          DB_PASSWORD: clinicopus_app_test
+        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

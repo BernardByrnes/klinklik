@@ -1,56 +1,89 @@
 import hashlib
 import json
 
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.idempotency import find_replay, request_hash, save_response
-from core.permissions import HasCapability, IsTenantMember, TenantAPIViewMixin
+from core.errors import CanonicalError, safe_error_payload
+from core.idempotency import (
+    UncommittedResponse,
+    execute_idempotent,
+    request_fingerprint,
+    request_operation,
+    validate_idempotency_key,
+)
+from core.permissions import HasCapability, IsTenantMember
+from core.services import run_in_tenant, tenant_atomic
 from tenancy.models import Facility
 
 
-class TenantAPIView(TenantAPIViewMixin, APIView):
-    """Tenant-aware APIView with facility resolution and safe mutation retries."""
+class TenantAPIView(APIView):
+    """Tenant-aware APIView with one tenant transaction for each handler."""
 
     permission_classes = [IsAuthenticated, IsTenantMember, HasCapability]
+    denial_audit_required = False
 
     def initial(self, request, *args, **kwargs):
         self.format_kwarg = self.get_format_suffix(**kwargs)
         request.accepted_renderer, request.accepted_media_type = self.perform_content_negotiation(request)
         self.perform_authentication(request)
-        raw_request = getattr(request, "_request", None)
-        if raw_request is not None and getattr(request, "_tenant_context", None) is not None:
-            raw_request._tenant_context = request._tenant_context
-        facility_id = request.headers.get("X-Facility-Id")
-        facilities = Facility.objects.filter(organisation=request.organisation, is_active=True)
-        if facility_id:
-            request.facility = facilities.filter(id=facility_id).first()
-            if request.facility is None:
-                from rest_framework.exceptions import NotFound
+        with tenant_atomic(request.organisation.id):
+            facility_id = request.headers.get("X-Facility-Id")
+            facilities = Facility.objects.filter(
+                organisation=request.organisation,
+                is_active=True,
+            )
+            if facility_id:
+                request.facility = facilities.filter(id=facility_id).first()
+                if request.facility is None:
+                    from rest_framework.exceptions import NotFound
 
-                raise NotFound("Facility is not available in this organisation.")
-        else:
-            request.facility = facilities.first()
-        request.user._request_organisation = request.organisation
+                    raise NotFound("Facility is not available in this organisation.")
+            else:
+                request.facility = facilities.first()
+            request.user._request_organisation = request.organisation
+        self._idempotency_key = request.headers.get("Idempotency-Key")
+        if self._idempotency_key:
+            try:
+                validate_idempotency_key(self._idempotency_key)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+        self._idempotency_operation = request_operation(
+            request,
+            fallback=f"{request.method}:{request.path}",
+        )
+        self._request_fingerprint = request_fingerprint(
+            request,
+            operation=self._idempotency_operation,
+        )
+        self._idempotency_fingerprint = (
+            self._request_fingerprint if self._idempotency_key else None
+        )
+
+    def _invoke_handler(self, request, *args, **kwargs):
         self.check_permissions(request)
         self.check_throttles(request)
-        self._idempotency_key = request.headers.get("Idempotency-Key")
-        self._idempotency_hash = request_hash(request) if self._idempotency_key else None
-        self._idempotency_replay = None
-        if self._idempotency_key and request.method in {"POST", "PUT", "PATCH"}:
-            try:
-                self._idempotency_replay = find_replay(
-                    organisation=request.organisation,
-                    key=self._idempotency_key,
-                    body_hash=self._idempotency_hash,
-                )
-            except ValueError as exc:
-                from rest_framework.exceptions import APIException
-
-                error = APIException(str(exc))
-                error.status_code = 409
-                raise error
+        handler = getattr(self, request.method.lower(), self.http_method_not_allowed)
+        if not self._idempotency_key or request.method not in {"POST", "PUT", "PATCH"}:
+            return handler(request, *args, **kwargs)
+        outcome = execute_idempotent(
+            organisation=request.organisation,
+            operation=self._idempotency_operation,
+            key=self._idempotency_key,
+            fingerprint=self._idempotency_fingerprint,
+            callback=lambda: handler(request, *args, **kwargs),
+        )
+        if outcome.replay:
+            response = Response(
+                outcome.body,
+                status=outcome.status_code,
+                headers=outcome.headers or {},
+            )
+            response["Idempotent-Replay"] = "true"
+            return response
+        return outcome.value
 
     def dispatch(self, request, *args, **kwargs):
         drf_request = self.initialize_request(request, *args, **kwargs)
@@ -58,46 +91,66 @@ class TenantAPIView(TenantAPIViewMixin, APIView):
         self.args = args
         self.kwargs = kwargs
         self.headers = self.default_response_headers
-        exception = None
         try:
             self.initial(drf_request, *args, **kwargs)
-            if self._idempotency_replay is not None:
-                response = Response(
-                    self._idempotency_replay.response_body,
-                    status=self._idempotency_replay.status_code,
-                    headers={"Idempotent-Replay": "true"},
-                )
-            else:
-                handler = getattr(self, request.method.lower(), self.http_method_not_allowed)
-                response = handler(drf_request, *args, **kwargs)
-        except Exception as exc:
-            exception = exc
-            response = self.handle_exception(exc)
-        if (
-            exception is None
-            and getattr(self, "_idempotency_key", None)
-            and getattr(self, "_idempotency_replay", None) is None
-            and request.method in {"POST", "PUT", "PATCH"}
-            and 200 <= response.status_code < 300
-        ):
-            save_response(
-                organisation=drf_request.organisation,
-                key=self._idempotency_key,
-                body_hash=self._idempotency_hash,
-                status_code=response.status_code,
-                response_body=response.data,
+            response = run_in_tenant(
+                drf_request.organisation.id,
+                lambda: self._invoke_handler(drf_request, *args, **kwargs),
             )
-        if request.method == "GET" and response.status_code == 200 and getattr(response, "data", None) is not None:
+        except UncommittedResponse as exc:
+            response = exc.response
+        except CanonicalError as exc:
+            response = Response(safe_error_payload(exc), status=exc.status_code)
+        except Exception as exc:
+            if isinstance(exc, PermissionDenied) and self.denial_audit_required:
+                try:
+                    self._write_denial_evidence(drf_request)
+                except CanonicalError as denial_error:
+                    response = Response(
+                        safe_error_payload(denial_error),
+                        status=denial_error.status_code,
+                    )
+                except Exception:
+                    response = Response(
+                        {
+                            "code": "DENIAL_AUDIT_UNAVAILABLE",
+                            "detail": "The request could not be completed safely; retry.",
+                        },
+                        status=503,
+                    )
+                else:
+                    response = self.handle_exception(exc)
+            else:
+                response = self.handle_exception(exc)
+        if (
+            request.method == "GET"
+            and response.status_code == 200
+            and getattr(response, "data", None) is not None
+        ):
             payload = json.dumps(response.data, default=str, sort_keys=True).encode("utf-8")
             response["ETag"] = '"' + hashlib.sha256(payload).hexdigest() + '"'
         response = self.finalize_response(drf_request, response, *args, **kwargs)
-        context = getattr(drf_request, "_tenant_context", None) or getattr(request, "_tenant_context", None)
-        if context is not None:
-            if exception is None:
-                context.__exit__(None, None, None)
-            else:
-                context.__exit__(type(exception), exception, exception.__traceback__)
-            drf_request._tenant_context = None
-            if hasattr(request, "_tenant_context"):
-                request._tenant_context = None
         return response
+
+    def _write_denial_evidence(self, request):
+        if not getattr(request, "organisation", None):
+            return
+        from audit.services import write_denial_audit
+
+        write_denial_audit(
+            organisation=request.organisation,
+            actor_id=getattr(request.user, "id", None),
+            facility_id=getattr(getattr(request, "facility", None), "id", None),
+            capability=getattr(self, "capability", None) or "permission",
+            action=request.method,
+            blocker_type="PERMISSION",
+            opaque_ref=hashlib.sha256(request.path.encode("utf-8")).hexdigest()[:32],
+            request_fingerprint=self._request_fingerprint,
+            operation=self._idempotency_operation,
+            authority_epoch=getattr(request.user, "authority_epoch", 0),
+            idempotency_key=self._idempotency_key,
+            target_identifiers={
+                key: str(value)
+                for key, value in getattr(self, "kwargs", {}).items()
+            },
+        )

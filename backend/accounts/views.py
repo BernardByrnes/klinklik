@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from accounts.bootstrap import BootstrapError, authenticate_identity, open_session, rotate_refresh_session
 from accounts.serializers import LoginSerializer, UserSummarySerializer
 from accounts.services import session_role_context
-from core.permissions import TenantAPIViewMixin
+from core.tenant_api import TenantAPIView
 from tenancy.models import Facility
 from tenancy.serializers import FacilitySerializer, OrganisationSerializer
 
@@ -86,8 +86,7 @@ class RefreshView(APIView):
         return response
 
 
-class LogoutView(TenantAPIViewMixin, APIView):
-    permission_classes = [IsAuthenticated]
+class LogoutView(TenantAPIView):
 
     def post(self, request):
         if request.auth:
@@ -98,8 +97,7 @@ class LogoutView(TenantAPIViewMixin, APIView):
         return response
 
 
-class MeView(TenantAPIViewMixin, APIView):
-    permission_classes = [IsAuthenticated]
+class MeView(TenantAPIView):
 
     def get(self, request):
         facilities = Facility.objects.filter(organisation=request.organisation, is_active=True)
