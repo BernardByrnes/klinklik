@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+from uuid import UUID
 
 import psycopg
 from psycopg import sql
@@ -19,14 +20,14 @@ EXPECTED_MIGRATIONS = {
     ("core", "0003_s00_verification_foundation"),
     ("audit", "0002_s00_audit_facts"),
     ("tenancy", "0002_s00_facility_workflow_policy"),
+    ("clinical", "0008_s00_tenant_rls_repair"),
 }
 PROOF_ORGANISATION_SLUG = "s00-backfill-clinic"
+PROOF_IDEMPOTENCY_RECORD_ID = "00000000-0000-7000-8000-000000000002"
 EXPECTED_CONSTRAINTS = {
     ("core_idempotencyrecord", "uniq_idempotency_org_op_key_hash"),
     ("core_idempotencyrecord", "idempotency_status_code_valid"),
     ("core_idempotencyrecord", "idempotency_completed_has_status"),
-    ("audit_auditevent", "uniq_audit_copy_event"),
-    ("audit_auditevent", "uniq_audit_denial_identity"),
     ("tenancy_facilityworkflowpolicy", "uniq_workflow_policy_facility"),
     ("tenancy_facilityworkflowpolicy", "workflow_policy_options_are_arrays"),
     ("tenancy_facilityworkflowpolicy", "workflow_policy_queue_expiry_positive"),
@@ -37,6 +38,16 @@ EXPECTED_CONSTRAINTS = {
     ("tenancy_facilityworkflowpolicy", "workflow_policy_uncollected_window_positive"),
     ("tenancy_facilityworkflowpolicy", "workflow_policy_discount_threshold_nonnegative"),
     ("tenancy_facilityworkflowpolicy", "workflow_policy_variance_threshold_nonnegative"),
+}
+EXPECTED_PARTIAL_UNIQUE_INDEXES = {
+    ("audit_auditevent", "uniq_audit_copy_event"): (
+        ("organisation_id", "event_code", "entity_type", "entity_id", "copy_number"),
+        "copy_number IS NOT NULL",
+    ),
+    ("audit_auditevent", "uniq_audit_denial_identity"): (
+        ("organisation_id", "denial_identity"),
+        "denial_identity IS NOT NULL",
+    ),
 }
 
 
@@ -55,6 +66,64 @@ def _check_required_constraints(cursor, failures):
         )
         if not cursor.fetchone()[0]:
             failures.append(f"{table}: required constraint {constraint} is missing")
+
+
+def _normalize_sql_expression(expression):
+    normalized = " ".join((expression or "").replace('"', "").lower().split())
+    while normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1].strip()
+    return normalized
+
+
+def _check_partial_unique_indexes(cursor, failures):
+    for (table, index), (expected_columns, expected_predicate) in sorted(
+        EXPECTED_PARTIAL_UNIQUE_INDEXES.items()
+    ):
+        cursor.execute(
+            """
+            SELECT
+                index_class.relname,
+                index_info.indisunique,
+                ARRAY(
+                    SELECT attribute.attname
+                    FROM unnest(index_info.indkey) WITH ORDINALITY AS index_key(attnum, ordinality)
+                    JOIN pg_attribute AS attribute
+                      ON attribute.attrelid = index_info.indrelid
+                     AND attribute.attnum = index_key.attnum
+                    WHERE index_key.ordinality <= index_info.indnkeyatts
+                    ORDER BY index_key.ordinality
+                ) AS key_columns,
+                pg_get_expr(index_info.indpred, index_info.indrelid) AS predicate,
+                pg_get_indexdef(index_info.indexrelid) AS index_definition
+            FROM pg_index AS index_info
+            JOIN pg_class AS index_class
+              ON index_class.oid = index_info.indexrelid
+            JOIN pg_class AS table_class
+              ON table_class.oid = index_info.indrelid
+            JOIN pg_namespace AS namespace
+              ON namespace.oid = table_class.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND table_class.relname = %s
+              AND index_class.relname = %s
+            """,
+            [table, index],
+        )
+        row = cursor.fetchone()
+        if row is None:
+            failures.append(f"{table}: required partial unique index {index} is missing")
+            continue
+        _, is_unique, key_columns, predicate, index_definition = row
+        if not is_unique:
+            failures.append(f"{table}: {index} is not UNIQUE")
+        if tuple(key_columns or ()) != expected_columns:
+            failures.append(
+                f"{table}: {index} key columns are {tuple(key_columns or ())}, "
+                f"expected {expected_columns}"
+            )
+        if _normalize_sql_expression(predicate) != _normalize_sql_expression(expected_predicate):
+            failures.append(f"{table}: {index} predicate is not the declared partial predicate")
+        if not index_definition:
+            failures.append(f"{table}: {index} definition is missing")
 
 
 def _check_backfill(cursor, failures):
@@ -89,6 +158,40 @@ def _proof_organisation_id(cursor, failures):
     return row[0]
 
 
+def _classify_org_setting(value):
+    if value is None:
+        return "NULL"
+    if value == "":
+        return "EMPTY"
+    try:
+        UUID(str(value))
+    except (AttributeError, TypeError, ValueError):
+        return "NONEMPTY_OTHER"
+    return "NONEMPTY_VALID_UUID"
+
+
+def _check_unset_context_access(cursor, failures, label):
+    cursor.execute("SELECT current_setting('app.current_org_id', true)")
+    state = _classify_org_setting(cursor.fetchone()[0])
+    if state in {"NONEMPTY_VALID_UUID", "NONEMPTY_OTHER"}:
+        failures.append(f"{label}: organization context is active ({state})")
+
+    try:
+        cursor.execute(
+            "SELECT id FROM core_idempotencyrecord WHERE id = %s",
+            [PROOF_IDEMPOTENCY_RECORD_ID],
+        )
+    except psycopg.Error as error:
+        if error.sqlstate not in {"42704", "22P02"}:
+            failures.append(f"{label}: missing-context check returned SQLSTATE {error.sqlstate}")
+    else:
+        row = cursor.fetchone()
+        if row is None:
+            failures.append(f"{label}: protected proof row was not rejected")
+        else:
+            failures.append(f"{label}: protected proof row was readable")
+
+
 def _check_scoped_backfill(connection, organisation_id, failures):
     # Keep the scoped backfill assertion separate from the unset-context proof.
     with connection.transaction():
@@ -102,8 +205,9 @@ def _check_scoped_backfill(connection, organisation_id, failures):
 
     with connection.cursor() as cursor:
         cursor.execute("SELECT current_setting('app.current_org_id', true)")
-        if cursor.fetchone()[0] is not None:
-            failures.append("scoped organization context leaked after backfill transaction")
+        state = _classify_org_setting(cursor.fetchone()[0])
+        if state in {"NONEMPTY_VALID_UUID", "NONEMPTY_OTHER"}:
+            failures.append(f"scoped organization context leaked after backfill transaction ({state})")
 
 
 def main():
@@ -162,7 +266,9 @@ def main():
                            COALESCE(pg_get_expr(p.polwithcheck, p.polrelid), ''),
                            COALESCE(p.polcmd, ''),
                            COALESCE(p.polpermissive, TRUE),
-                           pg_get_userbyid(c.relowner)
+                           pg_get_userbyid(c.relowner),
+                           (SELECT count(*) FROM pg_policy AS all_policies
+                            WHERE all_policies.polrelid = c.oid)
                     FROM pg_class c
                     JOIN pg_namespace n ON n.oid = c.relnamespace
                     LEFT JOIN pg_policy p
@@ -181,17 +287,11 @@ def main():
                     and is_tenant_policy_expression(status[3])
                     and status[4] == "*"
                     and status[5] is True
+                    and status[7] == 1
                 )
                 owner_matches = bool(status) and role is not None and status[6] == role[0]
                 if not policy_ok or owner_matches:
                     failures.append(f"{table}: missing ENABLE/FORCE or exact tenant policy semantics")
-                try:
-                    cursor.execute(sql.SQL("SELECT 1 FROM {} LIMIT 1").format(sql.Identifier(table)))
-                except psycopg.Error as error:
-                    if error.sqlstate not in {"42704", "22P02"}:
-                        failures.append(f"{table}: missing-context check returned SQLSTATE {error.sqlstate}")
-                else:
-                    failures.append(f"{table}: query succeeded without app.current_org_id")
 
             cursor.execute(
                 """
@@ -200,6 +300,7 @@ def main():
                 WHERE (app = 'core' AND name = '0003_s00_verification_foundation')
                    OR (app = 'audit' AND name = '0002_s00_audit_facts')
                    OR (app = 'tenancy' AND name = '0002_s00_facility_workflow_policy')
+                   OR (app = 'clinical' AND name = '0008_s00_tenant_rls_repair')
                 ORDER BY app, name
                 """
             )
@@ -210,9 +311,16 @@ def main():
                 )
             else:
                 _check_required_constraints(cursor, failures)
+                _check_partial_unique_indexes(cursor, failures)
+                _check_unset_context_access(cursor, failures, "unset-context proof")
                 proof_organisation_id = _proof_organisation_id(cursor, failures)
                 if proof_organisation_id is not None:
                     _check_scoped_backfill(connection, proof_organisation_id, failures)
+                    _check_unset_context_access(
+                        cursor,
+                        failures,
+                        "post-SET-LOCAL unset-context proof",
+                    )
 
             cursor.execute(
                 """

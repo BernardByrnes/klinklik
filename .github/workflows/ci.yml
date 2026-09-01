@@ -159,10 +159,12 @@ jobs:
         run: |
           python backend/manage.py migrate tenancy 0001 --noinput
           python backend/manage.py migrate audit 0001 --noinput
+          python backend/manage.py migrate clinical 0007 --noinput
           # core.0003 has an intentional non-reversible data transformation.
           # Keep it applied while testing the schema-safe S-00 reversals.
           python backend/manage.py migrate audit 0002 --noinput
           python backend/manage.py migrate tenancy 0002 --noinput
+          python backend/manage.py migrate clinical 0008 --noinput
           python backend/manage.py migrate --check
       - name: Grant test database objects to the application role
         env:

@@ -57,12 +57,23 @@ def _has_operation(tree, operation, *, name=None):
     return False
 
 
+def _has_dependency(tree, app, migration):
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Tuple) or len(node.elts) != 2:
+            continue
+        if all(isinstance(element, ast.Constant) for element in node.elts):
+            if node.elts[0].value == app and node.elts[1].value == migration:
+                return True
+    return False
+
+
 def main():
     failures = []
 
     core = _tree("backend/core/migrations/0003_s00_verification_foundation.py")
     audit = _tree("backend/audit/migrations/0002_s00_audit_facts.py")
     tenancy = _tree("backend/tenancy/migrations/0002_s00_facility_workflow_policy.py")
+    clinical_repair = _tree("backend/clinical/migrations/0008_s00_tenant_rls_repair.py")
 
     core_expectations = (
         ("core.0003 must define an explicit no-op data reverse", _has_function(core, "noop_reverse")),
@@ -98,6 +109,32 @@ def main():
         ),
     )
     for message, condition in reversible_expectations:
+        if not condition:
+            failures.append(message)
+
+    repair_expectations = (
+        (
+            "clinical.0008 must define the late-table tenant RLS repair",
+            _has_function(clinical_repair, "apply_tenant_rls_repair"),
+        ),
+        (
+            "clinical.0008 must declare a reversible RLS repair",
+            _has_run_python(
+                clinical_repair,
+                "apply_tenant_rls_repair",
+                "reverse_tenant_rls_repair",
+            ),
+        ),
+        (
+            "clinical.0008 must run after core.0003",
+            _has_dependency(
+                clinical_repair,
+                "core",
+                "0003_s00_verification_foundation",
+            ),
+        ),
+    )
+    for message, condition in repair_expectations:
         if not condition:
             failures.append(message)
 
