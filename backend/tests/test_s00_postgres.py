@@ -16,7 +16,7 @@ from core.services import run_in_tenant, tenant_atomic
 from clinical.models import Encounter
 from patients.models import Patient
 from scheduling.models import QueueEntry
-from tenancy.models import Department, FacilityWorkflowPolicy, Organisation
+from tenancy.models import Department, Facility, FacilityWorkflowPolicy, Organisation
 
 
 pytestmark = [
