@@ -189,7 +189,7 @@ jobs:
           DB_NAME: clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
-        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py
+        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

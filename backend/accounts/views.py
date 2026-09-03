@@ -53,7 +53,8 @@ class LoginView(APIView):
                 "user": UserSummarySerializer(opened.user).data,
                 "organisation": OrganisationSerializer(opened.organisation).data,
                 "facilities": FacilitySerializer(opened.facilities, many=True).data,
-                **session_role_context(opened.user, opened.organisation),
+                "roles": opened.roles,
+                "capabilities": opened.capabilities,
             }
         )
         set_refresh_cookie(response, opened.refresh_token)
@@ -79,7 +80,8 @@ class RefreshView(APIView):
                 "user": UserSummarySerializer(opened.user).data,
                 "organisation": OrganisationSerializer(opened.organisation).data,
                 "facilities": FacilitySerializer(opened.facilities, many=True).data,
-                **session_role_context(opened.user, opened.organisation),
+                "roles": opened.roles,
+                "capabilities": opened.capabilities,
             }
         )
         set_refresh_cookie(response, opened.refresh_token)

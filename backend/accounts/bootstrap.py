@@ -13,7 +13,14 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 
 from accounts.models import AuthSession, OrganisationMembership
-from accounts.services import active_membership, decode_token, hash_token, issue_session, rotate_session
+from accounts.services import (
+    active_membership,
+    decode_token,
+    hash_token,
+    issue_session,
+    rotate_session,
+    session_role_context,
+)
 from core.services import tenant_atomic
 from tenancy.models import Facility, Organisation
 
@@ -33,6 +40,8 @@ class OpenSession:
     access_token: str
     refresh_token: str
     facilities: list
+    roles: list
+    capabilities: list
 
 
 def authenticate_identity(request, username, password):
@@ -62,7 +71,17 @@ def open_session(user, organisation_id):
             user._request_organisation = organisation
             session, access, refresh = issue_session(user, organisation)
             facilities = list(Facility.objects.filter(organisation=organisation, is_active=True))
-        return OpenSession(user, organisation, session, access, refresh, facilities)
+            role_context = session_role_context(user, organisation)
+        return OpenSession(
+            user,
+            organisation,
+            session,
+            access,
+            refresh,
+            facilities,
+            role_context["roles"],
+            role_context["capabilities"],
+        )
 
     # SQLite remains convenient for the existing local unit-test workflow.
     membership = (
@@ -73,10 +92,24 @@ def open_session(user, organisation_id):
     organisation = membership.organisation if membership else None
     if membership is None or organisation is None:
         raise BootstrapError("No active organisation membership was found.", 403)
-    user._request_organisation = organisation
-    session, access, refresh = issue_session(user, organisation)
-    facilities = list(Facility.objects.filter(organisation=organisation, is_active=True))
-    return OpenSession(user, organisation, session, access, refresh, facilities)
+    with tenant_atomic(organisation.id):
+        membership = active_membership(user, organisation)
+        if membership is None:
+            raise BootstrapError("No active organisation membership was found.", 403)
+        user._request_organisation = organisation
+        session, access, refresh = issue_session(user, organisation)
+        facilities = list(Facility.objects.filter(organisation=organisation, is_active=True))
+        role_context = session_role_context(user, organisation)
+    return OpenSession(
+        user,
+        organisation,
+        session,
+        access,
+        refresh,
+        facilities,
+        role_context["roles"],
+        role_context["capabilities"],
+    )
 
 
 def rotate_refresh_session(refresh_token):
@@ -105,4 +138,14 @@ def rotate_refresh_session(refresh_token):
         session.user._request_organisation = organisation
         rotated, access, new_refresh = rotate_session(session)
         facilities = list(Facility.objects.filter(organisation=organisation, is_active=True))
-    return OpenSession(session.user, organisation, rotated, access, new_refresh, facilities)
+        role_context = session_role_context(session.user, organisation)
+    return OpenSession(
+        session.user,
+        organisation,
+        rotated,
+        access,
+        new_refresh,
+        facilities,
+        role_context["roles"],
+        role_context["capabilities"],
+    )

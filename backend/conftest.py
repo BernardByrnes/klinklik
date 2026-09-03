@@ -65,8 +65,6 @@ def authed_client(tenant):
         format="json",
     )
     assert response.status_code == 200, response.data
-    client.credentials(
-        HTTP_AUTHORIZATION="Bearer " + response.data["access_token"],
-        HTTP_X_FACILITY_ID=str(tenant.facility.id),
-    )
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + response.data["access_token"])
     return client

@@ -8,7 +8,7 @@ from patients.models import Patient
 from tenancy.models import Facility, Organisation
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = pytest.mark.django_db(transaction=True)
 
 FORBIDDEN_BOOTSTRAP_TABLES = (
     "patients_",
@@ -31,6 +31,23 @@ def require_postgres():
 
 def query_text(captured):
     return "\n".join(query["sql"].lower() for query in captured.captured_queries)
+
+
+def assert_tenant_context_cleared():
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT current_setting('app.current_org_id', true)")
+        assert cursor.fetchone()[0] in (None, "")
+
+
+def role_queries_are_atomic(observed):
+    def wrapper(execute, sql, params, many, context):
+        normalized = sql.lower()
+        for table in ("accounts_userfacilityrole", "accounts_rolepermission"):
+            if table in normalized:
+                observed.append((table, connection.in_atomic_block))
+        return execute(sql, params, many, context)
+
+    return wrapper
 
 
 def test_invalid_credentials_do_not_enter_tenant_bootstrap(tenant):
@@ -56,22 +73,31 @@ def test_invalid_credentials_do_not_enter_tenant_bootstrap(tenant):
 def test_postgres_login_bootstrap_reads_only_membership_session_and_facility(tenant):
     require_postgres()
     client = APIClient()
+    role_queries = []
     with CaptureQueriesContext(connection) as captured:
-        response = client.post(
-            "/api/v1/auth/login/",
-            {
-                "username": tenant.user.username,
-                "password": "test-password-123",
-                "organisation_id": str(tenant.organisation.id),
-            },
-            format="json",
-        )
+        with connection.execute_wrapper(role_queries_are_atomic(role_queries)):
+            response = client.post(
+                "/api/v1/auth/login/",
+                {
+                    "username": tenant.user.username,
+                    "password": "test-password-123",
+                    "organisation_id": str(tenant.organisation.id),
+                },
+                format="json",
+            )
     assert response.status_code == 200, response.data
+    assert response.data["roles"]
+    assert "patient.view" in response.data["capabilities"]
+    assert role_queries
+    assert all(in_atomic_block for _, in_atomic_block in role_queries)
     sql = query_text(captured)
     assert "accounts_organisationmembership" in sql
     assert "accounts_authsession" in sql
     assert "tenancy_facility" in sql
+    assert "accounts_userfacilityrole" in sql
+    assert "accounts_rolepermission" in sql
     assert not any(table in sql for table in FORBIDDEN_BOOTSTRAP_TABLES)
+    assert_tenant_context_cleared()
 
 
 def test_postgres_refresh_bootstrap_reads_no_operational_tables(tenant):
@@ -87,14 +113,56 @@ def test_postgres_refresh_bootstrap_reads_no_operational_tables(tenant):
         format="json",
     )
     assert login.status_code == 200, login.data
+    role_queries = []
     with CaptureQueriesContext(connection) as captured:
-        response = client.post("/api/v1/auth/refresh/", {}, format="json")
+        with connection.execute_wrapper(role_queries_are_atomic(role_queries)):
+            response = client.post("/api/v1/auth/refresh/", {}, format="json")
     assert response.status_code == 200, response.data
     assert response.data["access_token"] != login.data["access_token"]
+    assert response.data["roles"]
+    assert "patient.view" in response.data["capabilities"]
+    assert role_queries
+    assert all(in_atomic_block for _, in_atomic_block in role_queries)
     sql = query_text(captured)
     assert "accounts_authsession" in sql
     assert "tenancy_facility" in sql
+    assert "accounts_userfacilityrole" in sql
+    assert "accounts_rolepermission" in sql
     assert not any(table in sql for table in FORBIDDEN_BOOTSTRAP_TABLES)
+    assert_tenant_context_cleared()
+
+
+def test_postgres_login_without_organisation_is_denied_and_cleans_context(tenant):
+    require_postgres()
+    response = APIClient().post(
+        "/api/v1/auth/login/",
+        {
+            "username": tenant.user.username,
+            "password": "test-password-123",
+        },
+        format="json",
+    )
+    assert response.status_code == 400, response.data
+    assert_tenant_context_cleared()
+
+
+def test_postgres_login_for_wrong_organisation_is_denied_and_cleans_context(tenant):
+    require_postgres()
+    wrong_organisation = Organisation.objects.create(
+        name="Wrong Clinic",
+        slug="wrong-clinic-auth",
+    )
+    response = APIClient().post(
+        "/api/v1/auth/login/",
+        {
+            "username": tenant.user.username,
+            "password": "test-password-123",
+            "organisation_id": str(wrong_organisation.id),
+        },
+        format="json",
+    )
+    assert response.status_code == 403, response.data
+    assert_tenant_context_cleared()
 
 
 def test_missing_tenant_context_fails_closed_for_operational_data(tenant):
