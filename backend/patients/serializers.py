@@ -34,17 +34,40 @@ class PatientSerializer(serializers.ModelSerializer):
             "phone",
             "email",
             "address",
+            "village",
+            "parish",
+            "sub_county",
+            "district",
+            "next_of_kin_name",
+            "next_of_kin_phone",
+            "estimated_age_years",
+            "estimated_age_months",
+            "dob_estimated",
+            "identity_status",
             "status",
+            "last_seen_at",
+            "version",
             "identifiers",
             "contacts",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "patient_no", "display_name", "status", "identifiers", "contacts"]
+        read_only_fields = [
+            "id",
+            "patient_no",
+            "display_name",
+            "status",
+            "identity_status",
+            "last_seen_at",
+            "version",
+            "identifiers",
+            "contacts",
+        ]
 
 
 class PatientCreateSerializer(serializers.ModelSerializer):
     identifier = serializers.DictField(required=False, write_only=True)
+    next_of_kin = serializers.DictField(required=False, write_only=True)
 
     class Meta:
         model = Patient
@@ -57,7 +80,17 @@ class PatientCreateSerializer(serializers.ModelSerializer):
             "phone",
             "email",
             "address",
+            "village",
+            "parish",
+            "sub_county",
+            "district",
+            "next_of_kin_name",
+            "next_of_kin_phone",
+            "estimated_age_years",
+            "estimated_age_months",
+            "dob_estimated",
             "identifier",
+            "next_of_kin",
         ]
 
 

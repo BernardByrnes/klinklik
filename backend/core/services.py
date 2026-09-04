@@ -2,9 +2,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from uuid import UUID
 
-from django.db import DatabaseError, connection, transaction
+from django.db import DatabaseError, IntegrityError, connection, transaction
 
 from core.errors import RetryableCommandFailure
+from core.models import NumberSequence
 
 
 MAX_TRANSACTION_ATTEMPTS = 3
@@ -35,6 +36,56 @@ def tenant_atomic(organisation_id):
 def assert_transaction_active():
     if not connection.in_atomic_block:
         raise RuntimeError("Tenant-scoped work must run inside tenant_atomic().")
+
+
+def allocate_sequence(
+    *,
+    organisation,
+    sequence_type,
+    period_key,
+    facility=None,
+    initial_value=1,
+):
+    """Allocate one value while holding the canonical sequence row lock."""
+
+    assert_transaction_active()
+    if initial_value < 1:
+        raise ValueError("initial_value must be positive.")
+    organisation_id = getattr(organisation, "id", organisation)
+    facility_id = getattr(facility, "id", facility) if facility is not None else None
+    scope_key = str(facility_id) if facility_id is not None else "ORG"
+    queryset = NumberSequence.objects.select_for_update()
+    sequence = queryset.filter(
+        organisation_id=organisation_id,
+        scope_key=scope_key,
+        sequence_type=sequence_type,
+        period_key=str(period_key),
+    ).first()
+    if sequence is None:
+        try:
+            with transaction.atomic():
+                sequence = NumberSequence.objects.create(
+                    organisation_id=organisation_id,
+                    facility_id=facility_id,
+                    scope_key=scope_key,
+                    sequence_type=sequence_type,
+                    period_key=str(period_key),
+                    next_value=initial_value,
+                )
+        except IntegrityError:
+            sequence = queryset.get(
+                organisation_id=organisation_id,
+                scope_key=scope_key,
+                sequence_type=sequence_type,
+                period_key=str(period_key),
+            )
+    if sequence.next_value < initial_value:
+        sequence.next_value = initial_value
+    allocated = sequence.next_value
+    sequence.next_value = allocated + 1
+    sequence.version += 1
+    sequence.save(update_fields=["next_value", "version", "updated_at"])
+    return allocated
 
 
 def consume_post_rollback_boundary():

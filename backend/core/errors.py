@@ -4,12 +4,13 @@
 class CanonicalError(Exception):
     """An expected failure with a stable public code and HTTP status."""
 
-    def __init__(self, code, detail, *, status_code=400, retryable=False):
+    def __init__(self, code, detail, *, status_code=400, retryable=False, metadata=None):
         super().__init__(detail)
         self.code = code
         self.detail = detail
         self.status_code = status_code
         self.retryable = retryable
+        self.metadata = dict(metadata or {})
 
 
 class IdempotencyConflict(CanonicalError):
@@ -42,6 +43,8 @@ def safe_error_payload(error):
 
     if isinstance(error, CanonicalError):
         payload = {"code": error.code, "detail": error.detail}
+        if error.metadata:
+            payload.update(error.metadata)
         if error.retryable:
             payload["retryable"] = True
         return payload

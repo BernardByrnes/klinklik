@@ -12,6 +12,7 @@ class QueueEntrySerializer(serializers.ModelSerializer):
         model = QueueEntry
         fields = [
             "id",
+            "visit",
             "queue_label",
             "patient",
             "patient_name",
@@ -19,15 +20,24 @@ class QueueEntrySerializer(serializers.ModelSerializer):
             "department_name",
             "queue_date",
             "sequence",
+            "queue_type",
+            "work_identity",
+            "hold_reason",
+            "priority",
+            "priority_changed_at",
+            "priority_reason",
             "visit_type",
             "status",
             "current_stage",
             "arrival_at",
+            "queue_time",
             "called_at",
             "claimed_by",
             "claimed_at",
             "completed_at",
             "notes",
+            "source_event_id",
+            "version",
         ]
 
 

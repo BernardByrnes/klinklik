@@ -6,7 +6,7 @@ from billing.models import Invoice, InvoiceItem, Payment, ServiceCatalogItem, Se
 class ServicePriceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ServicePrice
-        fields = ["id", "amount", "currency", "effective_from", "effective_to", "is_active"]
+        fields = ["id", "price_list", "amount", "currency", "effective_from", "effective_to", "is_active", "active"]
 
 
 class ServiceCatalogSerializer(serializers.ModelSerializer):
@@ -20,7 +20,11 @@ class ServiceCatalogSerializer(serializers.ModelSerializer):
 class InvoiceItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceItem
-        fields = ["id", "service", "description", "quantity", "unit_price", "amount"]
+        fields = [
+            "id", "service", "description", "quantity", "unit_price", "amount",
+            "line_set_version", "source_type", "source_id", "source_version",
+            "source_line_identity", "state",
+        ]
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -37,8 +41,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Invoice
         fields = [
-            "id", "invoice_no", "patient", "patient_name", "encounter", "status", "currency",
+            "id", "invoice_no", "patient", "patient_name", "visit", "encounter", "status", "currency",
             "subtotal", "discount", "total", "amount_paid", "balance", "issued_at", "items", "payments",
+            "voided_at", "voided_by", "current_line_set_version", "version",
         ]
 
 

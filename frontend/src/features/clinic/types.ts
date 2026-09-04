@@ -7,6 +7,18 @@ export type Patient = {
   sex: string;
   date_of_birth: string | null;
   phone: string;
+  village?: string;
+  parish?: string;
+  sub_county?: string;
+  district?: string;
+  next_of_kin_name?: string;
+  next_of_kin_phone?: string;
+  estimated_age_years?: number | null;
+  estimated_age_months?: number | null;
+  dob_estimated?: boolean;
+  identity_status?: string;
+  last_seen_at?: string | null;
+  version?: number;
 };
 
 export type Department = {
@@ -18,6 +30,7 @@ export type Department = {
 
 export type QueueEntry = {
   id: string;
+  visit?: string | null;
   queue_label: string;
   patient: string;
   patient_name: string;
@@ -25,11 +38,49 @@ export type QueueEntry = {
   department_name: string;
   queue_date: string;
   sequence: number;
+  queue_type?: string;
+  work_identity?: string;
+  hold_reason?: string;
+  priority?: string;
   visit_type: string;
   status: string;
   current_stage: string;
   arrival_at: string;
   claimed_by: string | null;
+};
+
+export type Visit = {
+  id: string;
+  patient: string;
+  patient_name: string;
+  facility: string;
+  local_service_date: string;
+  visit_type: string;
+  state: string;
+  payer_binding_id: string | null;
+  referral_source_type: string;
+  referral_source_name: string;
+  results_review: boolean;
+  version: number;
+};
+
+export type VisitCheckInResponse = {
+  id: string;
+  visit_id: string;
+  queue_id: string | null;
+  invoice_id: string | null;
+  patient_id: string;
+  next_action: string;
+  visit: Visit;
+  queue: QueueEntry | null;
+  invoice: Invoice | null;
+};
+
+export type PatientRegisterResponse = Patient & {
+  patient_id?: string;
+  next_action?: string;
+  patient?: Patient;
+  duplicate_candidates?: Patient[];
 };
 
 export type ClinicalNoteContent = {

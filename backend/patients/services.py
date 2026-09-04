@@ -1,12 +1,12 @@
 import secrets
 import string
-from datetime import date
 
 from django.db import transaction
 from django.db.models import Q
 
 from audit.services import record_event
-from patients.models import Patient, PatientIdentifier, PatientLink
+from core.services import allocate_sequence
+from patients.models import Patient, PatientContact, PatientIdentifier, PatientLink
 
 
 def _patient_number(organisation):
@@ -18,13 +18,39 @@ def _patient_number(organisation):
     raise RuntimeError("Could not allocate a patient number.")
 
 
-@transaction.atomic
-def create_patient(*, organisation, actor, data, request=None):
-    identifier = data.pop("identifier", None)
+def _allocated_patient_number(organisation):
+    return f"P-{allocate_sequence(organisation=organisation, sequence_type='PATIENT', period_key='GLOBAL'):06d}"
+
+
+def find_duplicate_candidates(*, organisation, data, for_update=False):
+    """Return only the frozen exact duplicate match used by REC-002."""
+
+    date_of_birth = data.get("date_of_birth")
+    if not date_of_birth:
+        return Patient.objects.none()
+    queryset = Patient.objects.filter(
+        organisation=organisation,
+        last_name__iexact=str(data.get("last_name", "")).strip(),
+        sex=data.get("sex"),
+        date_of_birth=date_of_birth,
+        identity_status__in=["ACTIVE", "PROVISIONAL"],
+    ).order_by("last_name", "first_name", "id")
+    return queryset.select_for_update() if for_update else queryset
+
+
+def create_registered_patient(*, organisation, actor, data):
+    """Create the S-01 patient record inside the caller's tenant transaction."""
+
+    from core.services import assert_transaction_active
+
+    assert_transaction_active()
+    values = dict(data)
+    identifier = values.pop("identifier", None)
+    next_of_kin = values.pop("next_of_kin", None) or {}
     patient = Patient.objects.create(
         organisation=organisation,
-        patient_no=_patient_number(organisation),
-        **data,
+        patient_no=_allocated_patient_number(organisation),
+        **values,
     )
     if identifier and identifier.get("value"):
         normalized = "".join(str(identifier["value"]).upper().split())
@@ -37,6 +63,23 @@ def create_patient(*, organisation, actor, data, request=None):
             verified=bool(identifier.get("verified", False)),
             is_primary=True,
         )
+    kin_name = next_of_kin.get("name") or patient.next_of_kin_name or ""
+    kin_phone = next_of_kin.get("phone") or patient.next_of_kin_phone or ""
+    if kin_name or kin_phone:
+        PatientContact.objects.create(
+            organisation=organisation,
+            patient=patient,
+            relationship="NEXT_OF_KIN",
+            name=kin_name,
+            phone=kin_phone,
+            is_primary=True,
+        )
+    return patient
+
+
+@transaction.atomic
+def create_patient(*, organisation, actor, data, request=None):
+    patient = create_registered_patient(organisation=organisation, actor=actor, data=dict(data))
     record_event(
         request=request,
         organisation=organisation,
@@ -50,7 +93,11 @@ def create_patient(*, organisation, actor, data, request=None):
 
 
 def search_patients(*, organisation, term=""):
-    queryset = Patient.objects.filter(organisation=organisation, status="ACTIVE").prefetch_related(
+    queryset = Patient.objects.filter(
+        organisation=organisation,
+        status="ACTIVE",
+        identity_status__in=["ACTIVE", "PROVISIONAL"],
+    ).prefetch_related(
         "identifiers", "contacts"
     )
     term = (term or "").strip()

@@ -5,9 +5,9 @@ import { Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiRequest } from "../../../lib/api";
+import { apiRequest, ApiRequestError, newIdempotencyKey } from "../../../lib/api";
 import { useSession } from "../../../lib/session";
-import { Department, Patient, QueueEntry } from "../../../features/clinic";
+import { Department, Patient, PatientRegisterResponse, VisitCheckInResponse } from "../../../features/clinic";
 import { IconCheckCircle, IconPatients, IconSearch, IconUserPlus } from "../../../components/icons";
 import {
   Button,
@@ -32,6 +32,15 @@ const SEX_OPTIONS = [
   { value: "UNKNOWN", label: "Unknown" },
 ];
 
+const DESTINATION_CODE_BY_VISIT_TYPE: Record<string, string> = {
+  OUTPATIENT_NEW: "OPD",
+  OUTPATIENT_REVIEW: "OPD",
+  FOLLOW_UP_RESULTS: "OPD",
+  ANC: "ANC",
+  LAB_ONLY: "LAB",
+  PHARMACY_ONLY: "PHARMACY",
+};
+
 function sexLabel(sex: string): string {
   return SEX_OPTIONS.find((option) => option.value === sex)?.label ?? sex;
 }
@@ -43,8 +52,12 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "The request could not be completed.";
 }
 
-function post<T>(path: string, body: unknown) {
-  return apiRequest<T>(path, { method: "POST", body: JSON.stringify(body) });
+function post<T>(path: string, body: unknown, idempotencyKey?: string) {
+  return apiRequest<T>(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+  });
 }
 
 function ageFromDob(dob: string | null): string | null {
@@ -56,6 +69,44 @@ function ageFromDob(dob: string | null): string | null {
   const monthDiff = now.getMonth() - birth.getMonth();
   if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) age -= 1;
   return age >= 0 ? `${age} yrs` : null;
+}
+
+function RadioGroup({
+  legend,
+  name,
+  value,
+  options,
+  onChange,
+}: {
+  legend: string;
+  name: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <fieldset className="sm:col-span-2">
+      <legend className="mb-2 block text-[12px] font-semibold text-secondary">{legend}</legend>
+      <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={legend}>
+        {options.map((option) => (
+          <label
+            key={option.value}
+            className="flex cursor-pointer items-center gap-2 rounded-[10px] border border-line px-3 py-2 text-[12px] font-medium text-ink has-[:checked]:border-primary has-[:checked]:bg-primary-soft"
+          >
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={value === option.value}
+              onChange={(event) => onChange(event.target.value)}
+              className="h-4 w-4 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            />
+            {option.label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
 }
 
 function PatientsWorkspace() {
@@ -74,6 +125,20 @@ function PatientsWorkspace() {
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
   const [sex, setSex] = useState("NOT_STATED");
+  const [dateOfBirth, setDateOfBirth] = useState("");
+  const [estimatedAgeYears, setEstimatedAgeYears] = useState("");
+  const [village, setVillage] = useState("");
+  const [parish, setParish] = useState("");
+  const [subCounty, setSubCounty] = useState("");
+  const [district, setDistrict] = useState("");
+  const [nextOfKinName, setNextOfKinName] = useState("");
+  const [nextOfKinPhone, setNextOfKinPhone] = useState("");
+  const [visitType, setVisitType] = useState("OUTPATIENT_NEW");
+  const [payerType, setPayerType] = useState("CASH");
+  const [duplicateCandidates, setDuplicateCandidates] = useState<Patient[]>([]);
+  const [duplicateReason, setDuplicateReason] = useState("");
+  const registerIdempotencyKey = useRef<string | null>(null);
+  const checkInIdempotencyKey = useRef<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 350);
@@ -89,19 +154,68 @@ function PatientsWorkspace() {
     queryKey: ["departments"],
     queryFn: async () => (await apiRequest<{ departments: Department[] }>("/api/v1/tenancy/departments/")).departments,
   });
+  const defaultDepartment = useMemo(() => {
+    const preferredCode = DESTINATION_CODE_BY_VISIT_TYPE[visitType];
+    return (
+      departments.data?.find((department) => department.code.toUpperCase() === preferredCode) ??
+      departments.data?.[0]
+    );
+  }, [departments.data, visitType]);
 
   const createPatient = useMutation({
-    mutationFn: () => post<Patient>("/api/v1/patients/", { first_name: firstName, last_name: lastName, phone, sex }),
-    onSuccess: (patient) => {
+    mutationFn: (resolution?: Record<string, unknown>) =>
+      post<PatientRegisterResponse>(
+        "/api/v1/reception/patients/register/",
+        {
+          first_name: firstName,
+          last_name: lastName,
+          phone,
+          sex,
+          date_of_birth: dateOfBirth || null,
+          estimated_age_years: estimatedAgeYears ? Number(estimatedAgeYears) : null,
+          dob_estimated: !dateOfBirth && Boolean(estimatedAgeYears),
+          village,
+          parish,
+          sub_county: subCounty,
+          district,
+          next_of_kin_name: nextOfKinName,
+          next_of_kin_phone: nextOfKinPhone,
+          ...(resolution ? { duplicate_resolution: resolution } : {}),
+        },
+        registerIdempotencyKey.current ?? (registerIdempotencyKey.current = newIdempotencyKey("patient-register")),
+      ),
+    onSuccess: (result) => {
+      if (result.duplicate_candidates?.length) {
+        registerIdempotencyKey.current = null;
+        setDuplicateCandidates(result.duplicate_candidates);
+        setNotice("Possible duplicate patient found. Review the match before creating a new record.");
+        setError("");
+        return;
+      }
+      const patient = result.patient ?? result;
+      registerIdempotencyKey.current = null;
       setSelected(patient);
       setNotice(`${patient.display_name} registered as ${patient.patient_no}.`);
       setError("");
+      setDuplicateCandidates([]);
+      setDuplicateReason("");
       setFirstName("");
       setLastName("");
       setPhone("");
+      setDateOfBirth("");
+      setEstimatedAgeYears("");
+      setVillage("");
+      setParish("");
+      setSubCounty("");
+      setDistrict("");
+      setNextOfKinName("");
+      setNextOfKinPhone("");
       queryClient.invalidateQueries({ queryKey: ["patients"] });
     },
     onError: (reason) => {
+      if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
+        registerIdempotencyKey.current = null;
+      }
       setNotice("");
       setError(errorMessage(reason));
     },
@@ -109,16 +223,23 @@ function PatientsWorkspace() {
 
   const checkIn = useMutation({
     mutationFn: () =>
-      post<QueueEntry>("/api/v1/clinic/check-ins/", {
+      post<VisitCheckInResponse>("/api/v1/reception/visits/check-in/", {
         patient_id: selected?.id,
-        department_id: departmentId || departments.data?.[0]?.id,
-      }),
-    onSuccess: (entry) => {
-      setNotice(`${entry.patient_name} checked in as ${entry.queue_label}.`);
+        department_id: departmentId || defaultDepartment?.id,
+        visit_type: visitType,
+        payer_type: payerType,
+      }, checkInIdempotencyKey.current ?? (checkInIdempotencyKey.current = newIdempotencyKey("visit-check-in"))),
+    onSuccess: (result) => {
+      checkInIdempotencyKey.current = null;
+      const label = result.queue?.queue_label;
+      setNotice(`${selected?.display_name ?? "Patient"} checked in${label ? ` as ${label}` : ""}.`);
       setError("");
       queryClient.invalidateQueries({ queryKey: ["queue"] });
     },
     onError: (reason) => {
+      if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
+        checkInIdempotencyKey.current = null;
+      }
       setNotice("");
       setError(errorMessage(reason));
     },
@@ -261,7 +382,7 @@ function PatientsWorkspace() {
                   event.preventDefault();
                   setNotice("");
                   setError("");
-                  createPatient.mutate();
+                  createPatient.mutate(undefined);
                 }}
               >
                 <Field label="First name" htmlFor="first-name">
@@ -282,6 +403,95 @@ function PatientsWorkspace() {
                     ))}
                   </Select>
                 </Field>
+                <Field label="Date of birth" htmlFor="date-of-birth">
+                  <TextInput
+                    id="date-of-birth"
+                    type="date"
+                    value={dateOfBirth}
+                    onChange={(event) => setDateOfBirth(event.target.value)}
+                    disabled={Boolean(estimatedAgeYears)}
+                  />
+                </Field>
+                <Field label="Estimated age (years)" htmlFor="estimated-age-years">
+                  <TextInput
+                    id="estimated-age-years"
+                    type="number"
+                    min="0"
+                    max="150"
+                    value={estimatedAgeYears}
+                    onChange={(event) => setEstimatedAgeYears(event.target.value)}
+                    disabled={Boolean(dateOfBirth)}
+                    placeholder="If DOB is unknown"
+                  />
+                </Field>
+                <Field label="Village" htmlFor="village">
+                  <TextInput id="village" value={village} onChange={(event) => setVillage(event.target.value)} />
+                </Field>
+                <Field label="Parish" htmlFor="parish">
+                  <TextInput id="parish" value={parish} onChange={(event) => setParish(event.target.value)} />
+                </Field>
+                <Field label="Sub-county" htmlFor="sub-county">
+                  <TextInput id="sub-county" value={subCounty} onChange={(event) => setSubCounty(event.target.value)} />
+                </Field>
+                <Field label="District" htmlFor="district">
+                  <TextInput id="district" value={district} onChange={(event) => setDistrict(event.target.value)} />
+                </Field>
+                <Field label="Next of kin name" htmlFor="next-of-kin-name">
+                  <TextInput id="next-of-kin-name" value={nextOfKinName} onChange={(event) => setNextOfKinName(event.target.value)} />
+                </Field>
+                <Field label="Next of kin phone" htmlFor="next-of-kin-phone">
+                  <TextInput id="next-of-kin-phone" value={nextOfKinPhone} onChange={(event) => setNextOfKinPhone(event.target.value)} />
+                </Field>
+                {duplicateCandidates.length > 0 ? (
+                  <div className="sm:col-span-2 rounded-[14px] border border-line-soft bg-surface-muted px-4 py-3" role="status">
+                    <p className="text-[12px] font-semibold text-ink">Possible duplicate</p>
+                    <ul className="mt-2 space-y-1 text-[11.5px] text-muted">
+                      {duplicateCandidates.map((candidate) => (
+                        <li key={candidate.id} className="flex items-center justify-between gap-3">
+                          <span>
+                            {candidate.display_name} · {candidate.patient_no}
+                            {candidate.last_seen_at ? ` · last seen ${new Date(candidate.last_seen_at).toLocaleDateString()}` : ""}
+                          </span>
+                          <Button
+                            type="button"
+                            variant="small-secondary"
+                            onClick={() => {
+                              setSelected(candidate);
+                              setDuplicateCandidates([]);
+                              setDuplicateReason("");
+                              setNotice(`${candidate.display_name} selected. Continue with check-in.`);
+                            }}
+                          >
+                            Use this patient
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                    <Field label="Reason this is not the same patient" htmlFor="duplicate-reason">
+                      <TextInput
+                        id="duplicate-reason"
+                        value={duplicateReason}
+                        onChange={(event) => setDuplicateReason(event.target.value)}
+                        required
+                      />
+                    </Field>
+                    <Button
+                      type="button"
+                      className="mt-3"
+                      variant="secondary"
+                      disabled={createPatient.isPending || duplicateReason.trim().length < 3}
+                      onClick={() =>
+                        createPatient.mutate({
+                          decision: "NOT_THE_SAME",
+                          reason: duplicateReason.trim(),
+                          rejected_candidate_ids: duplicateCandidates.map((candidate) => candidate.id),
+                        })
+                      }
+                    >
+                      Not the same — create new
+                    </Button>
+                  </div>
+                ) : null}
                 <div className="sm:col-span-2">
                   <Button type="submit" disabled={createPatient.isPending}>
                     {createPatient.isPending ? "Registering…" : "Register patient"}
@@ -317,26 +527,65 @@ function PatientsWorkspace() {
                 </div>
               </div>
 
-              {can("queue.view") ? (
+              {can("visit.create") ? (
                 <div className="border-t border-line-soft pt-5 grid gap-4">
-                  <Field label="Check-in department" htmlFor="department">
-                    <Select
-                      id="department"
-                      value={departmentId || departments.data?.[0]?.id || ""}
-                      onChange={(event) => setDepartmentId(event.target.value)}
-                    >
-                      {departments.data?.map((department) => (
-                        <option key={department.id} value={department.id}>
-                          {department.name}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                  <Button disabled={checkIn.isPending} onClick={() => checkIn.mutate()}>
+                  <RadioGroup
+                    legend="Visit type"
+                    name="visit-type"
+                    value={visitType}
+                    onChange={setVisitType}
+                    options={[
+                      { value: "OUTPATIENT_NEW", label: "Outpatient — new" },
+                      { value: "OUTPATIENT_REVIEW", label: "Outpatient — review" },
+                      { value: "ANC", label: "ANC" },
+                      { value: "LAB_ONLY", label: "Lab only" },
+                      { value: "PHARMACY_ONLY", label: "Pharmacy only" },
+                      { value: "FOLLOW_UP_RESULTS", label: "Follow-up results" },
+                    ]}
+                  />
+                  <RadioGroup
+                    legend="Payer"
+                    name="payer-type"
+                    value={payerType}
+                    onChange={setPayerType}
+                    options={[
+                      { value: "CASH", label: "Cash" },
+                      { value: "SELF_PAY_MOMO", label: "Self-pay mobile money" },
+                    ]}
+                  />
+                  {departments.isLoading ? (
+                    <LoadingSkeleton className="h-11 w-full" />
+                  ) : departments.isError ? (
+                    <ErrorBanner message="Destinations could not be loaded. Retry the page to continue." />
+                  ) : departments.data?.length ? (
+                    <Field label="Check-in department" htmlFor="department">
+                      <Select
+                        id="department"
+                        value={departmentId || defaultDepartment?.id || ""}
+                        onChange={(event) => setDepartmentId(event.target.value)}
+                      >
+                        {departments.data.map((department) => (
+                          <option key={department.id} value={department.id}>
+                            {department.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  ) : (
+                    <p className="rounded-[12px] bg-surface-muted px-3 py-2 text-[12px] font-medium text-muted" role="status">
+                      No active destination is configured for this facility.
+                    </p>
+                  )}
+                  <Button
+                    disabled={checkIn.isPending || departments.isLoading || !departments.data?.length}
+                    onClick={() => checkIn.mutate()}
+                  >
                     {checkIn.isPending ? "Checking in…" : "Check in patient"}
                   </Button>
                   <p className="text-[11.5px] font-medium text-muted">
-                    Check-in adds the patient to today&apos;s queue.{" "}
+                    {visitType === "LAB_ONLY"
+                      ? "Check-in starts the lab request/intake step."
+                      : "Check-in adds the patient to today&apos;s queue."}{" "}
                     <Link href="/queue" className="font-semibold text-primary-text hover:text-primary-strong">
                       View queue
                     </Link>

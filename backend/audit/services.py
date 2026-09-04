@@ -174,6 +174,9 @@ def _safe_metadata(
             key = str(key)
             identifier_key = allow_identifier_keys and _is_identifier_key(key)
             if identifier_key:
+                if isinstance(item, (list, tuple)):
+                    result[key] = [_safe_opaque_ref(reference) for reference in item]
+                    continue
                 try:
                     result[key] = _safe_opaque_ref(item)
                 except ValueError:

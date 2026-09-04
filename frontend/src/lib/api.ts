@@ -151,3 +151,10 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retry 
   }
   return data as T;
 }
+
+export function newIdempotencyKey(prefix: string) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.trunc(Math.random() * 1_000_000)}`;
+}

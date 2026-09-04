@@ -14,6 +14,7 @@ urlpatterns = [
     path("api/v1/auth/", include("accounts.urls")),
     path("api/v1/tenancy/", include("tenancy.urls")),
     path("api/v1/patients/", include("patients.urls")),
+    path("api/v1/reception/", include("application.reception.urls")),
     path("api/v1/clinic/", include("clinical.urls")),
     path("api/v1/billing/", include("billing.urls")),
     path("api/schema/", get_schema_view(title="KlinKlik API", description="KlinKlik Clinic Management API", version="1.0")),

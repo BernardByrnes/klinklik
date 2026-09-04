@@ -12,7 +12,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "d06e9b562cfc45b489632cd7b1fa09eed61f845b41680c802d779146652a1a57";
+export const GENERATED_API_CONTRACT_SHA256 = "5621fd6f75b86b7e770fd1f757b6ea4215ec4f9e89b810599a39895b01cc0599";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -194,6 +194,41 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createPatientLink",
     "path": "/api/v1/patients/{id}/link/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createArrivalEnquiry",
+    "path": "/api/v1/reception/arrival-enquiries/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createPatientRegister",
+    "path": "/api/v1/reception/patients/register/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createVisitCheckIn",
+    "path": "/api/v1/reception/visits/check-in/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveVisitContext",
+    "path": "/api/v1/reception/visits/{id}/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createVisitCancelError",
+    "path": "/api/v1/reception/visits/{id}/cancel-error/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listVisitContexts",
+    "path": "/api/v1/reception/visits/{id}/context/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createReferralSource",
+    "path": "/api/v1/reception/visits/{id}/referral-source/"
   },
   {
     "method": "GET",

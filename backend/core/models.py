@@ -85,3 +85,32 @@ class IdempotencyRecord(OrganisationScopedModel):
 
     def delete(self, *args, **kwargs):
         raise ValueError("Idempotency records are append-only.")
+
+
+class NumberSequence(OrganisationScopedModel):
+    """Locked, tenant-scoped allocator for human-facing references."""
+
+    facility = models.ForeignKey(
+        "tenancy.Facility",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="number_sequences",
+    )
+    scope_key = models.CharField(max_length=120)
+    sequence_type = models.CharField(max_length=80)
+    period_key = models.CharField(max_length=40)
+    next_value = models.PositiveBigIntegerField(default=1)
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "scope_key", "sequence_type", "period_key"],
+                name="uniq_number_sequence_scope_type_period",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(next_value__gt=0),
+                name="number_sequence_next_value_positive",
+            ),
+        ]

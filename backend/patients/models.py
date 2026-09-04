@@ -17,6 +17,11 @@ class Patient(OrganisationScopedModel):
         ("DECEASED", "Deceased"),
         ("ARCHIVED", "Archived"),
     ]
+    IDENTITY_STATUS_CHOICES = [
+        ("ACTIVE", "Active"),
+        ("PROVISIONAL", "Provisional"),
+        ("MERGED", "Merged"),
+    ]
 
     patient_no = models.CharField(max_length=40)
     first_name = models.CharField(max_length=100)
@@ -27,6 +32,29 @@ class Patient(OrganisationScopedModel):
     phone = models.CharField(max_length=40, blank=True)
     email = models.EmailField(blank=True)
     address = models.TextField(blank=True)
+    village = models.CharField(max_length=120, blank=True)
+    parish = models.CharField(max_length=120, blank=True)
+    sub_county = models.CharField(max_length=120, blank=True)
+    district = models.CharField(max_length=120, blank=True)
+    next_of_kin_name = models.CharField(max_length=150, blank=True)
+    next_of_kin_phone = models.CharField(max_length=40, blank=True)
+    estimated_age_years = models.PositiveSmallIntegerField(null=True, blank=True)
+    estimated_age_months = models.PositiveSmallIntegerField(null=True, blank=True)
+    dob_estimated = models.BooleanField(default=False)
+    identity_status = models.CharField(
+        max_length=20,
+        choices=IDENTITY_STATUS_CHOICES,
+        default="ACTIVE",
+    )
+    merged_into = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="merged_patients",
+    )
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveBigIntegerField(default=1)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
     deceased_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)

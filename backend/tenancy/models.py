@@ -86,6 +86,11 @@ class Subscription(OrganisationScopedModel):
 class FacilityWorkflowPolicy(FacilityScopedModel):
     """Typed, inert configuration seam reserved for later authorized slices."""
 
+    CONSULTATION_PAYMENT_TIMINGS = [
+        ("PAY_AFTER", "Pay after consultation"),
+        ("PAY_BEFORE_TRIAGE", "Pay before triage"),
+    ]
+
     PUBLIC_BOARD_MODES = [
         ("PATIENT_NUMBER", "Patient number"),
         ("FIRST_NAME_INITIAL", "First-name initial"),
@@ -93,6 +98,11 @@ class FacilityWorkflowPolicy(FacilityScopedModel):
 
     queue_call_expiry_minutes = models.PositiveIntegerField(default=10)
     queue_no_show_final_attempts = models.PositiveIntegerField(default=3)
+    consultation_payment_timing = models.CharField(
+        max_length=30,
+        choices=CONSULTATION_PAYMENT_TIMINGS,
+        default="PAY_AFTER",
+    )
     public_board_identity_mode = models.CharField(
         max_length=32,
         choices=PUBLIC_BOARD_MODES,

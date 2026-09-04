@@ -24,6 +24,8 @@ class TenantAPIView(APIView):
 
     permission_classes = [IsAuthenticated, IsTenantMember, HasCapability]
     denial_audit_required = False
+    requires_idempotency = False
+    idempotency_operation = None
 
     def initial(self, request, *args, **kwargs):
         self.format_kwarg = self.get_format_suffix(**kwargs)
@@ -50,9 +52,8 @@ class TenantAPIView(APIView):
                 validate_idempotency_key(self._idempotency_key)
             except ValueError as exc:
                 raise ValidationError(str(exc)) from exc
-        self._idempotency_operation = request_operation(
-            request,
-            fallback=f"{request.method}:{request.path}",
+        self._idempotency_operation = self.idempotency_operation or request_operation(
+            request, fallback=f"{request.method}:{request.path}"
         )
         self._request_fingerprint = request_fingerprint(
             request,
@@ -65,6 +66,12 @@ class TenantAPIView(APIView):
     def _invoke_handler(self, request, *args, **kwargs):
         self.check_permissions(request)
         self.check_throttles(request)
+        if self.requires_idempotency and request.method in {"POST", "PUT", "PATCH"} and not self._idempotency_key:
+            raise CanonicalError(
+                "IDEMPOTENCY_KEY_REQUIRED",
+                "This command requires an Idempotency-Key.",
+                status_code=400,
+            )
         handler = getattr(self, request.method.lower(), self.http_method_not_allowed)
         if not self._idempotency_key or request.method not in {"POST", "PUT", "PATCH"}:
             return handler(request, *args, **kwargs)

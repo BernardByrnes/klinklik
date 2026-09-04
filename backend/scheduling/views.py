@@ -49,7 +49,7 @@ class QueueListView(TenantAPIView):
                 )
             queryset = queryset.filter(status__in=statuses)
         else:
-            queryset = queryset.exclude(status__in=["COMPLETED", "CANCELLED"])
+            queryset = queryset.exclude(status__in=["COMPLETED", "CANCELLED", "WAITING_PAYMENT"])
         return Response(QueueEntrySerializer(queryset.select_related("patient", "department"), many=True).data)
 
 
