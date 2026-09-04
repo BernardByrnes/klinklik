@@ -98,3 +98,8 @@ class PatientLinkSerializer(serializers.Serializer):
     target_patient_id = serializers.UUIDField()
     link_type = serializers.ChoiceField(choices=PatientLink.LINK_TYPES)
     reason = serializers.CharField(required=False, allow_blank=True)
+
+
+class PatientLinkResponseSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    status = serializers.CharField()

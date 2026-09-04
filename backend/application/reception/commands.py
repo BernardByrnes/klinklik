@@ -8,14 +8,16 @@ tenant transaction provided by the application runner/API boundary.
 from dataclasses import dataclass
 import hashlib
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 
 from application.contracts import CommandSpec
 from audit.services import record_fact
+from billing.queries import patient_outstanding_balance
 from billing.models import Invoice, Payment, PaymentAllocation, PriceList
 from billing.services import (
     create_payer_binding,
     issue_exact_source_lines,
+    select_price_list,
     select_consultation_price,
     void_unpaid_visit_invoice,
 )
@@ -254,7 +256,7 @@ def _resolve_price(*, organisation, facility, payer_type, price_list_id):
         payer_type=payer_type,
         price_list_id=price_list_id,
     )
-    if (price_list_id or PriceList.objects.filter(organisation=organisation).exists()) and price_list is None:
+    if price_list is None:
         raise CanonicalError(
             "NO_PRICE_LIST",
             "No active price list is available for this payer.",
@@ -268,6 +270,21 @@ def _resolve_price(*, organisation, facility, payer_type, price_list_id):
             metadata={"service_code": "CONSULTATION"},
         )
     return price_list, service, price
+
+
+def _resolve_payer_price_list(*, organisation, payer_type, price_list_id):
+    price_list = select_price_list(
+        organisation=organisation,
+        payer_type=payer_type,
+        price_list_id=price_list_id,
+    )
+    if price_list is None:
+        raise CanonicalError(
+            "NO_PRICE_LIST",
+            "No active price list is available for this payer.",
+            status_code=422,
+        )
+    return price_list
 
 
 def _destination(*, organisation, facility, visit_type, department_id):
@@ -307,6 +324,15 @@ def visit_check_in(
     request=None,
 ):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise CanonicalError(
+            "MIGRATION_TARGET_DISABLED",
+            "Visit check-in is temporarily unavailable while migration compatibility is restored.",
+            status_code=503,
+            retryable=True,
+        )
     visit_type = str(visit_type or "").upper()
     payer_type = str(payer_type or "").upper()
     if visit_type == "WALK_IN":
@@ -345,6 +371,12 @@ def visit_check_in(
             payer_type=payer_type,
             price_list_id=price_list_id,
         )
+    else:
+        price_list = _resolve_payer_price_list(
+            organisation=organisation,
+            payer_type=payer_type,
+            price_list_id=price_list_id,
+        )
 
     patient = Patient.objects.select_for_update().filter(
         id=patient_id,
@@ -365,6 +397,11 @@ def visit_check_in(
         )
 
     service_day = local_service_date()
+    prior_balance = patient_outstanding_balance(
+        organisation=organisation,
+        facility=facility,
+        patient=patient,
+    )
     enquiry = None
     if arrival_enquiry_id:
         enquiry = ArrivalEnquiry.objects.select_for_update().filter(
@@ -540,6 +577,18 @@ def visit_check_in(
             source_ids={"visit_id": visit.id, "invoice_id": invoice.id},
             after={"state": invoice.status, "line_count": 1},
         )
+    if prior_balance.amount > 0:
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            event_code="OUTSTANDING_BALANCE_OVERRIDDEN",
+            action="UPDATE",
+            entity_type="Visit",
+            entity_id=visit.id,
+            source_ids={"visit_id": visit.id, "patient_id": patient.id},
+            after={"outstanding_balance_present": True},
+        )
     if enquiry is not None:
         try:
             enquiry, _ = convert_arrival_enquiry(enquiry=enquiry, visit=visit, actor=actor)
@@ -567,6 +616,15 @@ def visit_check_in(
 
 def arrival_enquiry_record(*, organisation, facility, actor, reason_code, source_event_id, safe_notes="", request=None):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise CanonicalError(
+            "MIGRATION_TARGET_DISABLED",
+            "Arrival enquiry recording is temporarily unavailable while migration compatibility is restored.",
+            status_code=503,
+            retryable=True,
+        )
     facility = Facility.objects.select_for_update().filter(
         id=facility.id,
         organisation=organisation,
@@ -619,6 +677,15 @@ def visit_referral_source_record(
     *, organisation, facility, actor, visit_id, source_type, source_name="", expected_version=None, request=None
 ):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise CanonicalError(
+            "MIGRATION_TARGET_DISABLED",
+            "Visit updates are temporarily unavailable while migration compatibility is restored.",
+            status_code=503,
+            retryable=True,
+        )
     visit = Visit.objects.filter(id=visit_id, organisation=organisation, facility=facility).first()
     if visit is None:
         raise CanonicalError("VISIT_NOT_FOUND", "The Visit was not found in this facility.", status_code=404)
@@ -662,6 +729,15 @@ def visit_cancel_error(
     """Cancel a mistaken, unstarted check-in within the 15-minute grace window."""
 
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise CanonicalError(
+            "MIGRATION_TARGET_DISABLED",
+            "Visit cancellation is temporarily unavailable while migration compatibility is restored.",
+            status_code=503,
+            retryable=True,
+        )
     facility = Facility.objects.select_for_update().filter(
         id=facility.id,
         organisation=organisation,
@@ -697,7 +773,7 @@ def visit_cancel_error(
         .order_by("queue_time", "sequence", "id")
     )
     queue_ids = [entry.id for entry in queue_entries]
-    triage = TriageAssessment.objects.filter(
+    triage = TriageAssessment.objects.select_for_update().filter(
         organisation=organisation,
         facility=facility,
         queue_entry_id__in=queue_ids,
@@ -709,10 +785,11 @@ def visit_cancel_error(
             status_code=409,
             metadata={"blocking_record_type": "TriageAssessment"},
         )
-    encounter = Encounter.objects.filter(
+    encounter = Encounter.objects.select_for_update().filter(
         organisation=organisation,
         facility=facility,
-        queue_entry_id__in=queue_ids,
+    ).filter(
+        models.Q(visit=visit) | models.Q(queue_entry_id__in=queue_ids)
     ).order_by("id").first()
     if encounter is not None:
         raise CanonicalError(
@@ -721,7 +798,7 @@ def visit_cancel_error(
             status_code=409,
             metadata={"blocking_record_type": "Encounter"},
         )
-    vitals = VitalsObservation.objects.filter(
+    vitals = VitalsObservation.objects.select_for_update().filter(
         organisation=organisation,
         facility=facility,
         patient_id=visit.patient_id,
@@ -841,57 +918,38 @@ def visit_cancel_error(
 
 
 def visit_context(*, organisation, facility, actor, visit_id, include_clinical=False, request=None):
-    """Return the protected administrative Visit projection and optional clinical values."""
+    """Compatibility wrapper delegating reads to QRY-002/QRY-003."""
 
-    assert_transaction_active()
-    visit = Visit.objects.select_related("patient", "opened_by", "closed_by").filter(
-        id=visit_id,
+    from application.reception.audited_reads import audit_clinical_projection
+    from application.reception.visit_query import get_clinical_projection, get_visit_projection
+
+    projection = get_visit_projection(
         organisation=organisation,
         facility=facility,
-    ).first()
-    if visit is None:
-        raise CanonicalError("VISIT_NOT_FOUND", "The Visit was not found in this facility.", status_code=404)
-
-    queue_entries = tuple(
-        QueueEntry.objects.select_related("department", "claimed_by")
-        .filter(organisation=organisation, facility=facility, visit=visit)
-        .order_by("queue_time", "sequence", "id")
+        visit_id=visit_id,
     )
-    invoice = Invoice.objects.filter(
-        organisation=organisation,
-        facility=facility,
-        visit=visit,
-    ).order_by("created_at", "id").first()
-    queue_ids = [entry.id for entry in queue_entries]
-    encounters = tuple(
-        Encounter.objects.select_related("clinician")
-        .filter(
+    clinical_projection = (
+        get_clinical_projection(
             organisation=organisation,
             facility=facility,
-            queue_entry_id__in=queue_ids,
+            projection=projection,
         )
-        .order_by("started_at", "id")
+        if include_clinical
+        else None
     )
-    clinical_values_returned = bool(include_clinical and encounters)
-    if clinical_values_returned:
-        record_fact(
+    encounters = clinical_projection.encounters if clinical_projection is not None else tuple()
+    if encounters:
+        audit_clinical_projection(
             organisation=organisation,
             actor=actor,
             facility=facility,
-            event_code="PHI_READ",
-            action="READ",
-            entity_type="Visit",
-            entity_id=visit.id,
-            source_ids={
-                "visit_id": visit.id,
-                "encounter_ids": [encounter.id for encounter in encounters],
-            },
-            after={"values_returned": True, "encounter_count": len(encounters)},
+            visit=projection.visit,
+            encounters=encounters,
         )
     return VisitContextOutcome(
-        visit=visit,
-        queue_entries=queue_entries,
-        invoice=invoice,
-        encounters=encounters if include_clinical else tuple(),
-        clinical_values_returned=clinical_values_returned,
+        visit=projection.visit,
+        queue_entries=projection.queue_entries,
+        invoice=projection.invoice,
+        encounters=encounters,
+        clinical_values_returned=bool(encounters),
     )

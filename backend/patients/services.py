@@ -2,7 +2,7 @@ import secrets
 import string
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import IntegerField, Max, Q, Value
 
 from audit.services import record_event
 from core.services import allocate_sequence
@@ -28,14 +28,33 @@ def find_duplicate_candidates(*, organisation, data, for_update=False):
     date_of_birth = data.get("date_of_birth")
     if not date_of_birth:
         return Patient.objects.none()
-    queryset = Patient.objects.filter(
+    base_queryset = Patient.objects.filter(
         organisation=organisation,
         last_name__iexact=str(data.get("last_name", "")).strip(),
         sex=data.get("sex"),
         date_of_birth=date_of_birth,
         identity_status__in=["ACTIVE", "PROVISIONAL"],
+    )
+    if for_update:
+        # PostgreSQL does not allow FOR UPDATE on a grouped/aggregate query.
+        # Lock the candidate rows first, then build the read-only projection
+        # with the last-visit aggregate. The caller also holds the
+        # organisation lock, so the two-step read remains one serialized
+        # duplicate decision.
+        locked_ids = list(base_queryset.select_for_update().values_list("id", flat=True))
+        base_queryset = base_queryset.filter(id__in=locked_ids)
+    queryset = base_queryset.annotate(
+        last_visit_date=Max("visits__local_service_date"),
+        duplicate_match_score=Value(100, output_field=IntegerField()),
+    ).only(
+        "id",
+        "patient_no",
+        "first_name",
+        "middle_name",
+        "last_name",
+        "last_seen_at",
     ).order_by("last_name", "first_name", "id")
-    return queryset.select_for_update() if for_update else queryset
+    return queryset
 
 
 def create_registered_patient(*, organisation, actor, data):

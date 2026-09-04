@@ -201,7 +201,7 @@ def complete_claim(record, *, status_code, response_body, response_headers=None,
 
 def _response_parts(value):
     status_code = int(getattr(value, "status_code", 200))
-    body = getattr(value, "data", getattr(value, "body", value))
+    body = getattr(value, "idempotency_body", getattr(value, "data", getattr(value, "body", value)))
     response_headers = getattr(value, "headers", None)
     headers = {}
     for name in ("Location", "Content-Type", "ETag"):

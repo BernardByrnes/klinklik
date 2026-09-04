@@ -7,7 +7,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest, ApiRequestError, newIdempotencyKey } from "../../../lib/api";
 import { useSession } from "../../../lib/session";
-import { Department, Patient, PatientRegisterResponse, VisitCheckInResponse } from "../../../features/clinic";
+import {
+  ArrivalEnquiryResponse,
+  Department,
+  DepartmentEnvelope,
+  Patient,
+  PatientCheckInSummary,
+  PatientDuplicateCandidate,
+  PatientRegisterResponse,
+  VisitCancelErrorResponse,
+  VisitCheckInResponse,
+  VisitContextResponse,
+} from "../../../features/clinic";
 import { IconCheckCircle, IconPatients, IconSearch, IconUserPlus } from "../../../components/icons";
 import {
   Button,
@@ -21,6 +32,7 @@ import {
   PageHeader,
   Select,
   StatusBadge,
+  Textarea,
   TextInput,
 } from "../../../components/ui";
 
@@ -41,8 +53,8 @@ const DESTINATION_CODE_BY_VISIT_TYPE: Record<string, string> = {
   PHARMACY_ONLY: "PHARMACY",
 };
 
-function sexLabel(sex: string): string {
-  return SEX_OPTIONS.find((option) => option.value === sex)?.label ?? sex;
+function sexLabel(sex: string | null | undefined): string {
+  return SEX_OPTIONS.find((option) => option.value === sex)?.label ?? sex ?? "Not stated";
 }
 
 function errorMessage(error: unknown) {
@@ -60,7 +72,7 @@ function post<T>(path: string, body: unknown, idempotencyKey?: string) {
   });
 }
 
-function ageFromDob(dob: string | null): string | null {
+function ageFromDob(dob: string | null | undefined): string | null {
   if (!dob) return null;
   const birth = new Date(dob);
   if (Number.isNaN(birth.getTime())) return null;
@@ -70,6 +82,22 @@ function ageFromDob(dob: string | null): string | null {
   if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) age -= 1;
   return age >= 0 ? `${age} yrs` : null;
 }
+
+function formatMoney(value: string | number | null | undefined, currency: string): string {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount)) return `${currency} —`;
+  return `${currency} ${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+const ENQUIRY_REASON_OPTIONS = [
+  { value: "NO_CLINICIAN", label: "No clinician available" },
+  { value: "SERVICE_UNAVAILABLE", label: "Service unavailable" },
+  { value: "PRICE", label: "Price" },
+  { value: "REFERRED_OUT", label: "Referred out" },
+  { value: "OTHER", label: "Other" },
+];
+
+type FailedAction = "register" | "check-in" | "enquiry" | "cancel" | null;
 
 function RadioGroup({
   legend,
@@ -135,10 +163,25 @@ function PatientsWorkspace() {
   const [nextOfKinPhone, setNextOfKinPhone] = useState("");
   const [visitType, setVisitType] = useState("OUTPATIENT_NEW");
   const [payerType, setPayerType] = useState("CASH");
-  const [duplicateCandidates, setDuplicateCandidates] = useState<Patient[]>([]);
+  const [duplicateCandidates, setDuplicateCandidates] = useState<PatientDuplicateCandidate[]>([]);
   const [duplicateReason, setDuplicateReason] = useState("");
+  const [arrivalEnquiryId, setArrivalEnquiryId] = useState<string | null>(null);
+  const [arrivalEnquiryVersion, setArrivalEnquiryVersion] = useState<number | null>(null);
+  const [enquiryReason, setEnquiryReason] = useState("NO_CLINICIAN");
+  const [enquiryNotes, setEnquiryNotes] = useState("");
+  const [cancelReason, setCancelReason] = useState("");
+  const [lastCheckIn, setLastCheckIn] = useState<VisitCheckInResponse | null>(null);
+  const [cancelledVisit, setCancelledVisit] = useState<VisitCancelErrorResponse["visit"] | null>(null);
+  const [contextVisitId, setContextVisitId] = useState<string | null>(null);
+  const [failedAction, setFailedAction] = useState<FailedAction>(null);
+  const [candidateLoadingId, setCandidateLoadingId] = useState<string | null>(null);
+  const [clockMs, setClockMs] = useState<number | null>(null);
   const registerIdempotencyKey = useRef<string | null>(null);
   const checkInIdempotencyKey = useRef<string | null>(null);
+  const enquiryIdempotencyKey = useRef<string | null>(null);
+  const enquirySourceEventId = useRef<string | null>(null);
+  const cancelIdempotencyKey = useRef<string | null>(null);
+  const retryActions = useRef<Partial<Record<Exclude<FailedAction, null>, () => void>>>({});
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 350);
@@ -152,7 +195,7 @@ function PatientsWorkspace() {
   });
   const departments = useQuery({
     queryKey: ["departments"],
-    queryFn: async () => (await apiRequest<{ departments: Department[] }>("/api/v1/tenancy/departments/")).departments,
+    queryFn: async () => (await apiRequest<DepartmentEnvelope>("/api/v1/tenancy/departments/")).departments,
   });
   const defaultDepartment = useMemo(() => {
     const preferredCode = DESTINATION_CODE_BY_VISIT_TYPE[visitType];
@@ -161,6 +204,37 @@ function PatientsWorkspace() {
       departments.data?.[0]
     );
   }, [departments.data, visitType]);
+
+  const patientSummary = useQuery<PatientCheckInSummary>({
+    queryKey: ["patient-check-in-summary", selected?.id],
+    queryFn: () => apiRequest<PatientCheckInSummary>(`/api/v1/reception/patients/${selected?.id}/check-in-summary/`),
+    enabled: Boolean(selected) && can("visit.read"),
+  });
+  const visitContext = useQuery<VisitContextResponse>({
+    queryKey: ["visit-context", contextVisitId],
+    queryFn: () => apiRequest<VisitContextResponse>(`/api/v1/reception/visits/${contextVisitId}/context/`),
+    enabled: Boolean(contextVisitId) && can("visit.read"),
+  });
+
+  const activeVisit = lastCheckIn?.visit ?? patientSummary.data?.active_visit ?? null;
+  const openVisit = activeVisit && activeVisit.id !== cancelledVisit?.id ? activeVisit : null;
+  useEffect(() => {
+    if (!openVisit) {
+      setClockMs(null);
+      return;
+    }
+    const tick = () => setClockMs(Date.now());
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [openVisit?.id, openVisit?.opened_at]);
+  const openedAtMs = openVisit ? new Date(openVisit.opened_at).getTime() : Number.NaN;
+  const remainingGraceSeconds =
+    openVisit && clockMs !== null && Number.isFinite(openedAtMs)
+      ? Math.max(0, 15 * 60 - Math.floor((clockMs - openedAtMs) / 1000))
+      : null;
+  const graceExpired = remainingGraceSeconds !== null && remainingGraceSeconds <= 0;
+  const currency = session?.organisation.default_currency ?? "UGX";
 
   const createPatient = useMutation({
     mutationFn: (resolution?: Record<string, unknown>) =>
@@ -187,6 +261,7 @@ function PatientsWorkspace() {
     onSuccess: (result) => {
       if (result.duplicate_candidates?.length) {
         registerIdempotencyKey.current = null;
+        setFailedAction(null);
         setDuplicateCandidates(result.duplicate_candidates);
         setNotice("Possible duplicate patient found. Review the match before creating a new record.");
         setError("");
@@ -194,7 +269,11 @@ function PatientsWorkspace() {
       }
       const patient = result.patient ?? result;
       registerIdempotencyKey.current = null;
+      setFailedAction(null);
       setSelected(patient);
+      setLastCheckIn(null);
+      setCancelledVisit(null);
+      setContextVisitId(null);
       setNotice(`${patient.display_name} registered as ${patient.patient_no}.`);
       setError("");
       setDuplicateCandidates([]);
@@ -217,6 +296,7 @@ function PatientsWorkspace() {
         registerIdempotencyKey.current = null;
       }
       setNotice("");
+      setFailedAction("register");
       setError(errorMessage(reason));
     },
   });
@@ -228,22 +308,156 @@ function PatientsWorkspace() {
         department_id: departmentId || defaultDepartment?.id,
         visit_type: visitType,
         payer_type: payerType,
+        ...(arrivalEnquiryId
+          ? {
+              arrival_enquiry_id: arrivalEnquiryId,
+              ...(arrivalEnquiryVersion ? { arrival_enquiry_version: arrivalEnquiryVersion } : {}),
+            }
+          : {}),
       }, checkInIdempotencyKey.current ?? (checkInIdempotencyKey.current = newIdempotencyKey("visit-check-in"))),
     onSuccess: (result) => {
       checkInIdempotencyKey.current = null;
+      setFailedAction(null);
+      setLastCheckIn(result);
+      setCancelledVisit(null);
+      setContextVisitId(result.visit_id);
+      setArrivalEnquiryId(null);
+      setArrivalEnquiryVersion(null);
       const label = result.queue?.queue_label;
-      setNotice(`${selected?.display_name ?? "Patient"} checked in${label ? ` as ${label}` : ""}.`);
+      const invoice = result.invoice?.invoice_no ? ` · invoice ${result.invoice.invoice_no}` : "";
+      setNotice(`${selected?.display_name ?? "Patient"} checked in${label ? ` as ${label}` : ""}${invoice}.`);
       setError("");
       queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: ["patient-check-in-summary", selected?.id] });
+      queryClient.invalidateQueries({ queryKey: ["visit-context", result.visit_id] });
     },
     onError: (reason) => {
       if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
         checkInIdempotencyKey.current = null;
       }
       setNotice("");
+      setFailedAction("check-in");
+      if (reason instanceof ApiRequestError && reason.status === 409) {
+        const data = reason.data;
+        if (data && typeof data === "object" && "visit_id" in data && typeof data.visit_id === "string") {
+          setContextVisitId(data.visit_id);
+        }
+      }
       setError(errorMessage(reason));
     },
   });
+
+  const recordEnquiry = useMutation({
+    mutationFn: () =>
+      post<ArrivalEnquiryResponse>(
+        "/api/v1/reception/arrival-enquiries/",
+        {
+          reason_code: enquiryReason,
+          source_event_id:
+            enquirySourceEventId.current ??
+            (enquirySourceEventId.current = newIdempotencyKey("arrival-enquiry-event")),
+          safe_notes: enquiryNotes.trim(),
+        },
+        enquiryIdempotencyKey.current ??
+          (enquiryIdempotencyKey.current = newIdempotencyKey("arrival-enquiry")),
+      ),
+    onSuccess: (result) => {
+      enquiryIdempotencyKey.current = null;
+      enquirySourceEventId.current = null;
+      setArrivalEnquiryId(result.enquiry_id);
+      setArrivalEnquiryVersion(result.enquiry?.version ?? null);
+      setFailedAction(null);
+      setNotice("Arrival enquiry recorded. It will be linked atomically to the next check-in.");
+      setError("");
+      setEnquiryNotes("");
+    },
+    onError: (reason) => {
+      if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
+        enquiryIdempotencyKey.current = null;
+        enquirySourceEventId.current = null;
+      }
+      setNotice("");
+      setFailedAction("enquiry");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const cancelVisit = useMutation({
+    mutationFn: () => {
+      if (!openVisit) throw new Error("There is no open Visit to cancel.");
+      return post<VisitCancelErrorResponse>(
+        `/api/v1/reception/visits/${openVisit.id}/cancel-error/`,
+        { reason: cancelReason.trim(), expected_version: openVisit.version },
+        cancelIdempotencyKey.current ??
+          (cancelIdempotencyKey.current = newIdempotencyKey("visit-cancel-error")),
+      );
+    },
+    onSuccess: (result) => {
+      cancelIdempotencyKey.current = null;
+      setFailedAction(null);
+      setCancelledVisit(result.visit);
+      setLastCheckIn(null);
+      setContextVisitId(result.visit_id);
+      setCancelReason("");
+      setNotice("Erroneous check-in cancelled. The Visit and any invoice history were retained.");
+      setError("");
+      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: ["patient-check-in-summary", selected?.id] });
+      queryClient.invalidateQueries({ queryKey: ["visit-context", result.visit_id] });
+    },
+    onError: (reason) => {
+      if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
+        cancelIdempotencyKey.current = null;
+      }
+      setNotice("");
+      setFailedAction("cancel");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const submitRegistration = (resolution?: Record<string, unknown>) => {
+    setFailedAction(null);
+    retryActions.current.register = () => createPatient.mutate(resolution);
+    createPatient.mutate(resolution);
+  };
+  const submitCheckIn = () => {
+    setFailedAction(null);
+    retryActions.current["check-in"] = () => checkIn.mutate();
+    checkIn.mutate();
+  };
+  const submitEnquiry = () => {
+    setFailedAction(null);
+    retryActions.current.enquiry = () => recordEnquiry.mutate();
+    recordEnquiry.mutate();
+  };
+  const submitCancellation = () => {
+    setFailedAction(null);
+    retryActions.current.cancel = () => cancelVisit.mutate();
+    cancelVisit.mutate();
+  };
+  const retryFailedAction = () => {
+    setError("");
+    if (failedAction) retryActions.current[failedAction]?.();
+  };
+
+  const selectDuplicateCandidate = async (candidate: PatientDuplicateCandidate) => {
+    setCandidateLoadingId(candidate.id);
+    setError("");
+    try {
+      const patient = await apiRequest<Patient>(`/api/v1/patients/${candidate.id}/`);
+      setSelected(patient);
+      setLastCheckIn(null);
+      setCancelledVisit(null);
+      setContextVisitId(null);
+      setDuplicateCandidates([]);
+      setDuplicateReason("");
+      setNotice(`${patient.display_name} selected. Continue with check-in.`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setCandidateLoadingId(null);
+    }
+  };
 
   const results = useMemo(() => patients.data ?? [], [patients.data]);
 
@@ -285,15 +499,26 @@ function PatientsWorkspace() {
 
             {notice ? (
               <div className="px-5 pb-3">
-                <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
+                <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink" role="status" aria-live="polite">
                   <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
                   {notice}
                 </p>
               </div>
             ) : null}
             {error ? (
-              <div className="px-5 pb-3">
-                <ErrorBanner message={error} onDismiss={() => setError("")} />
+              <div className="px-5 pb-3 space-y-2">
+                <ErrorBanner
+                  message={error}
+                  onDismiss={() => {
+                    setError("");
+                    setFailedAction(null);
+                  }}
+                />
+                {failedAction ? (
+                  <Button variant="link" onClick={retryFailedAction}>
+                    Retry the last action
+                  </Button>
+                ) : null}
               </div>
             ) : null}
 
@@ -354,7 +579,11 @@ function PatientsWorkspace() {
                           className={active ? "bg-primary-soft text-primary-text border-primary-soft" : ""}
                           onClick={() => {
                             setSelected(patient);
+                            setLastCheckIn(null);
+                            setCancelledVisit(null);
+                            setContextVisitId(null);
                             setNotice("");
+                            setError("");
                           }}
                         >
                           {active ? "Selected" : "Select"}
@@ -382,7 +611,7 @@ function PatientsWorkspace() {
                   event.preventDefault();
                   setNotice("");
                   setError("");
-                  createPatient.mutate(undefined);
+                  submitRegistration();
                 }}
               >
                 <Field label="First name" htmlFor="first-name">
@@ -455,14 +684,10 @@ function PatientsWorkspace() {
                           <Button
                             type="button"
                             variant="small-secondary"
-                            onClick={() => {
-                              setSelected(candidate);
-                              setDuplicateCandidates([]);
-                              setDuplicateReason("");
-                              setNotice(`${candidate.display_name} selected. Continue with check-in.`);
-                            }}
+                            disabled={candidateLoadingId === candidate.id}
+                            onClick={() => void selectDuplicateCandidate(candidate)}
                           >
-                            Use this patient
+                            {candidateLoadingId === candidate.id ? "Loading…" : "Use this patient"}
                           </Button>
                         </li>
                       ))}
@@ -481,7 +706,7 @@ function PatientsWorkspace() {
                       variant="secondary"
                       disabled={createPatient.isPending || duplicateReason.trim().length < 3}
                       onClick={() =>
-                        createPatient.mutate({
+                        submitRegistration({
                           decision: "NOT_THE_SAME",
                           reason: duplicateReason.trim(),
                           rejected_candidate_ids: duplicateCandidates.map((candidate) => candidate.id),
@@ -497,6 +722,61 @@ function PatientsWorkspace() {
                     {createPatient.isPending ? "Registering…" : "Register patient"}
                   </Button>
                 </div>
+              </form>
+            </Card>
+          ) : null}
+
+          {can("visit.create") ? (
+            <Card>
+              <CardTitleBar title="Record an arrival enquiry" />
+              <form
+                className="px-5 py-5 grid gap-4"
+                onSubmit={(event: FormEvent) => {
+                  event.preventDefault();
+                  setNotice("");
+                  setError("");
+                  submitEnquiry();
+                }}
+              >
+                <p className="text-[12px] font-medium leading-relaxed text-muted">
+                  Record a walk-in who was not checked in. The enquiry carries only an operational reason and safe notes.
+                </p>
+                <Field label="Reason" htmlFor="enquiry-reason">
+                  <Select id="enquiry-reason" value={enquiryReason} onChange={(event) => setEnquiryReason(event.target.value)}>
+                    {ENQUIRY_REASON_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Safe notes (optional)" htmlFor="enquiry-notes" hint="Do not enter diagnoses or other clinical details.">
+                  <Textarea
+                    id="enquiry-notes"
+                    value={enquiryNotes}
+                    maxLength={1000}
+                    onChange={(event) => setEnquiryNotes(event.target.value)}
+                    placeholder="Operational context only"
+                  />
+                </Field>
+                {arrivalEnquiryId ? (
+                  <div className="rounded-[12px] bg-accent-teal-soft px-3 py-2 text-[12px] font-medium text-ink" role="status">
+                    Enquiry recorded and ready to link to the next check-in.
+                    <button
+                      type="button"
+                      className="ml-2 font-semibold text-primary-text underline underline-offset-2"
+                      onClick={() => {
+                        setArrivalEnquiryId(null);
+                        setArrivalEnquiryVersion(null);
+                      }}
+                    >
+                      Clear link
+                    </button>
+                  </div>
+                ) : null}
+                <Button type="submit" disabled={recordEnquiry.isPending}>
+                  {recordEnquiry.isPending ? "Recording…" : "Record enquiry"}
+                </Button>
               </form>
             </Card>
           ) : null}
@@ -527,6 +807,67 @@ function PatientsWorkspace() {
                 </div>
               </div>
 
+              {patientSummary.isLoading ? (
+                <div className="rounded-[12px] bg-surface-muted px-3 py-3" aria-busy="true" aria-label="Loading check-in summary">
+                  <LoadingSkeleton className="h-3 w-2/3" />
+                  <LoadingSkeleton className="mt-2 h-3 w-1/2" />
+                </div>
+              ) : patientSummary.isError ? (
+                <div className="space-y-2">
+                  <ErrorBanner message="The patient's visit and balance summary could not be loaded." />
+                  <Button variant="link" onClick={() => patientSummary.refetch()}>
+                    Retry patient summary
+                  </Button>
+                </div>
+              ) : null}
+
+              {patientSummary.data && Number(patientSummary.data.outstanding_balance) > 0 ? (
+                <div className="rounded-[14px] border border-accent-orange/30 bg-accent-orange-soft px-4 py-3" role="status">
+                  <p className="text-[12px] font-semibold text-accent-orange-text">Outstanding balance warning</p>
+                  <p className="mt-1 text-[12px] font-medium leading-relaxed text-ink">
+                    {formatMoney(patientSummary.data.outstanding_balance, currency)} remains from a prior visit. Care may proceed.
+                    {patientSummary.data.outstanding_invoice_no ? ` Invoice ${patientSummary.data.outstanding_invoice_no}.` : ""}
+                  </p>
+                  {patientSummary.data.outstanding_visit_id ? (
+                    <Button
+                      variant="link"
+                      className="mt-2"
+                      onClick={() => setContextVisitId(patientSummary.data?.outstanding_visit_id ?? null)}
+                    >
+                      View prior visit
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {openVisit ? (
+                <div className="rounded-[14px] border border-primary-soft bg-primary-soft px-4 py-3" role="status">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[12px] font-semibold text-primary-text">Open visit already exists today</p>
+                    <StatusBadge tone="purple">{openVisit.state}</StatusBadge>
+                  </div>
+                  <p className="mt-1 text-[12px] font-medium leading-relaxed text-ink">
+                    {openVisit.visit_type.replaceAll("_", " ")} · {openVisit.local_service_date}
+                    {patientSummary.data?.active_queue_label ? ` · queue ${patientSummary.data.active_queue_label}` : ""}
+                  </p>
+                  <Button variant="link" className="mt-2" onClick={() => setContextVisitId(openVisit.id)}>
+                    View existing visit
+                  </Button>
+                </div>
+              ) : null}
+
+              {cancelledVisit ? (
+                <div className="rounded-[14px] border border-line-soft bg-surface-muted px-4 py-3" role="status">
+                  <p className="text-[12px] font-semibold text-ink">Check-in cancelled in error</p>
+                  <p className="mt-1 text-[12px] font-medium text-muted">
+                    The cancelled Visit remains retained as {cancelledVisit.id}. You may check in again if needed.
+                  </p>
+                  <Button variant="link" className="mt-2" onClick={() => setContextVisitId(cancelledVisit.id)}>
+                    View cancelled visit context
+                  </Button>
+                </div>
+              ) : null}
+
               {can("visit.create") ? (
                 <div className="border-t border-line-soft pt-5 grid gap-4">
                   <RadioGroup
@@ -556,7 +897,12 @@ function PatientsWorkspace() {
                   {departments.isLoading ? (
                     <LoadingSkeleton className="h-11 w-full" />
                   ) : departments.isError ? (
-                    <ErrorBanner message="Destinations could not be loaded. Retry the page to continue." />
+                    <div className="space-y-2">
+                      <ErrorBanner message="Destinations could not be loaded. Retry to continue." />
+                      <Button variant="link" onClick={() => departments.refetch()}>
+                        Retry destinations
+                      </Button>
+                    </div>
                   ) : departments.data?.length ? (
                     <Field label="Check-in department" htmlFor="department">
                       <Select
@@ -577,23 +923,139 @@ function PatientsWorkspace() {
                     </p>
                   )}
                   <Button
-                    disabled={checkIn.isPending || departments.isLoading || !departments.data?.length}
-                    onClick={() => checkIn.mutate()}
+                    disabled={
+                      checkIn.isPending ||
+                      departments.isLoading ||
+                      !departments.data?.length ||
+                      Boolean(openVisit)
+                    }
+                    onClick={submitCheckIn}
                   >
                     {checkIn.isPending ? "Checking in…" : "Check in patient"}
                   </Button>
                   <p className="text-[11.5px] font-medium text-muted">
                     {visitType === "LAB_ONLY"
                       ? "Check-in starts the lab request/intake step."
-                      : "Check-in adds the patient to today&apos;s queue."}{" "}
+                      : "Check-in adds the patient to today's queue."}{" "}
                     <Link href="/queue" className="font-semibold text-primary-text hover:text-primary-strong">
                       View queue
                     </Link>
                   </p>
+                  {arrivalEnquiryId ? (
+                    <p className="rounded-[12px] bg-accent-teal-soft px-3 py-2 text-[11.5px] font-medium text-ink" role="status">
+                      This check-in will convert the recorded arrival enquiry atomically.
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <StatusBadge tone="neutral">View-only access</StatusBadge>
               )}
+
+              {openVisit && can("visit.cancel_error") ? (
+                <div className="border-t border-line-soft pt-5 grid gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[12.5px] font-semibold text-ink">Cancel an erroneous check-in</p>
+                    <StatusBadge tone={graceExpired ? "neutral" : "amber"}>
+                      {remainingGraceSeconds === null
+                        ? "Calculating grace time…"
+                        : graceExpired
+                          ? "Grace window expired"
+                          : `${Math.ceil(remainingGraceSeconds / 60)} min remaining`}
+                    </StatusBadge>
+                  </div>
+                  <div>
+                    <p className="mt-1 text-[11.5px] font-medium leading-relaxed text-muted">
+                      Available only before service starts and within the server-enforced 15-minute grace window. This retains the Visit and voids only its unpaid invoice.
+                    </p>
+                  </div>
+                  <Field label="Cancellation reason" htmlFor="cancel-reason">
+                    <Textarea
+                      id="cancel-reason"
+                      value={cancelReason}
+                      minLength={3}
+                      maxLength={120}
+                      required
+                      onChange={(event) => setCancelReason(event.target.value)}
+                      placeholder="For example: wrong patient selected"
+                    />
+                  </Field>
+                  <Button
+                    variant="danger"
+                    disabled={
+                      cancelVisit.isPending ||
+                      cancelReason.trim().length < 3 ||
+                      remainingGraceSeconds === null ||
+                      graceExpired
+                    }
+                    onClick={submitCancellation}
+                  >
+                    {cancelVisit.isPending ? "Cancelling…" : "Cancel erroneous check-in"}
+                  </Button>
+                </div>
+              ) : null}
+
+              {contextVisitId ? (
+                <div className="border-t border-line-soft pt-5" aria-live="polite">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[12.5px] font-semibold text-ink">Visit context</p>
+                    <Button variant="link" onClick={() => setContextVisitId(null)} aria-label="Close visit context">
+                      Close
+                    </Button>
+                  </div>
+                  {visitContext.isLoading ? (
+                    <div className="mt-3 space-y-2" aria-busy="true" aria-label="Loading visit context">
+                      <LoadingSkeleton className="h-3 w-3/4" />
+                      <LoadingSkeleton className="h-3 w-1/2" />
+                    </div>
+                  ) : visitContext.isError ? (
+                    <div className="mt-3 space-y-2">
+                      <ErrorBanner message="Visit context could not be loaded." />
+                      <Button variant="link" onClick={() => visitContext.refetch()}>
+                        Retry visit context
+                      </Button>
+                    </div>
+                  ) : visitContext.data ? (
+                    <div className="mt-3 space-y-3 text-[11.5px] font-medium text-muted">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge tone={visitContext.data.visit.state === "CANCELLED_ERROR" ? "neutral" : "purple"}>
+                          {visitContext.data.visit.state}
+                        </StatusBadge>
+                        <span>{visitContext.data.visit.visit_type.replaceAll("_", " ")}</span>
+                        <span>· {visitContext.data.visit.local_service_date}</span>
+                      </div>
+                      <p>
+                        Queue history: {visitContext.data.queue_history.length} record{visitContext.data.queue_history.length === 1 ? "" : "s"}.
+                        {visitContext.data.invoice ? ` Invoice ${visitContext.data.invoice.invoice_no}, balance ${formatMoney(visitContext.data.invoice.balance, currency)}.` : " No invoice."}
+                      </p>
+                      {can("encounter.read") ? (
+                        visitContext.data.clinical === null ? (
+                          <p className="rounded-[10px] bg-surface-muted px-3 py-2">No clinical records are attached to this Visit.</p>
+                        ) : (
+                          <p className="rounded-[10px] bg-surface-muted px-3 py-2">
+                            Clinical context: {visitContext.data.clinical?.length ?? 0} encounter record{visitContext.data.clinical?.length === 1 ? "" : "s"}.
+                          </p>
+                        )
+                      ) : (
+                        <div className="rounded-[10px] bg-surface-muted px-3 py-2">
+                          <p className="flex items-center gap-1.5">
+                            <span aria-hidden="true">🔒</span>
+                            <span>Clinical details are locked — requires clinical role.</span>
+                          </p>
+                          {visitContext.data.clinical_summary.length ? (
+                            <ul className="mt-2 space-y-1" aria-label="Locked clinical summaries">
+                              {visitContext.data.clinical_summary.map((summary) => (
+                                <li key={summary.encounter_id}>
+                                  {summary.status} · {summary.clinician_name} · {new Date(summary.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           ) : (
             <EmptyState

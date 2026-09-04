@@ -6,22 +6,35 @@ from application.reception.commands import (
     patient_register,
     visit_cancel_error,
     visit_check_in,
-    visit_context,
     visit_referral_source_record,
+)
+from application.reception.audited_reads import audit_clinical_projection
+from application.reception.visit_query import (
+    get_clinical_projection,
+    get_patient_checkin_projection,
+    get_visit_projection,
 )
 from application.reception.serializers import (
     ArrivalEnquirySerializer,
+    ArrivalEnquiryResponseSerializer,
     ArrivalEnquiryWriteSerializer,
     PatientRegisterSerializer,
+    PatientDuplicateCandidateSerializer,
+    PatientRegisterResponseSerializer,
+    PatientCheckInSummarySerializer,
     PatientSerializer,
     ReferralSourceSerializer,
     VisitCheckInSerializer,
     VisitCancelErrorSerializer,
+    VisitCancelErrorResponseSerializer,
+    VisitContextResponseSerializer,
+    VisitCheckInResponseSerializer,
     VisitSerializer,
 )
 from billing.serializers import InvoiceSerializer
 from clinical.serializers import EncounterSerializer
 from core.tenant_api import TenantAPIView
+from core.idempotency import UncommittedResponse
 from scheduling.serializers import QueueEntrySerializer
 
 
@@ -29,6 +42,8 @@ class PatientRegisterView(TenantAPIView):
     capability = "patient.create"
     idempotency_operation = "CMD-002"
     requires_idempotency = True
+    serializer_class = PatientRegisterSerializer
+    response_serializer_class = PatientRegisterResponseSerializer
 
     def post(self, request):
         serializer = PatientRegisterSerializer(data=request.data)
@@ -40,9 +55,9 @@ class PatientRegisterView(TenantAPIView):
             request=request,
         )
         if not outcome.created:
-            return Response(
+            response = Response(
                 {
-                    "duplicate_candidates": PatientSerializer(
+                    "duplicate_candidates": PatientDuplicateCandidateSerializer(
                         outcome.duplicate_candidates,
                         many=True,
                     ).data,
@@ -50,8 +65,11 @@ class PatientRegisterView(TenantAPIView):
                 },
                 status=status.HTTP_200_OK,
             )
+            # Duplicate discovery is a non-committing decision point. Do not
+            # persist a replay body containing candidate PHI in IdempotencyRecord.
+            raise UncommittedResponse(response)
         patient_data = PatientSerializer(outcome.patient).data
-        return Response(
+        response = Response(
             {
                 **patient_data,
                 "patient": patient_data,
@@ -60,12 +78,20 @@ class PatientRegisterView(TenantAPIView):
             },
             status=status.HTTP_201_CREATED,
         )
+        response.idempotency_body = {
+            "patient_id": str(outcome.patient.id),
+            "next_action": "CHECK_IN",
+        }
+        response.result_reference = {"entity_type": "Patient", "entity_id": str(outcome.patient.id)}
+        return response
 
 
 class VisitCheckInView(TenantAPIView):
     capability = "visit.create"
     idempotency_operation = "CMD-001"
     requires_idempotency = True
+    serializer_class = VisitCheckInSerializer
+    response_serializer_class = VisitCheckInResponseSerializer
 
     def post(self, request):
         serializer = VisitCheckInSerializer(data=request.data)
@@ -80,7 +106,7 @@ class VisitCheckInView(TenantAPIView):
         visit_data = VisitSerializer(outcome.visit).data
         queue_data = QueueEntrySerializer(outcome.queue).data if outcome.queue is not None else None
         invoice_data = InvoiceSerializer(outcome.invoice).data if outcome.invoice is not None else None
-        return Response(
+        response = Response(
             {
                 "id": str(outcome.queue.id if outcome.queue is not None else outcome.visit.id),
                 "visit_id": str(outcome.visit.id),
@@ -112,12 +138,48 @@ class VisitCheckInView(TenantAPIView):
             },
             status=status.HTTP_201_CREATED,
         )
+        response.idempotency_body = {
+            "visit_id": str(outcome.visit.id),
+            "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
+            "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
+            "patient_id": str(outcome.visit.patient_id),
+            "next_action": "LAB_REQUEST_CAPTURE" if outcome.visit.visit_type == "LAB_ONLY" else "CHECK_IN_COMPLETE",
+        }
+        response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
+        return response
+
+
+class PatientCheckInSummaryView(TenantAPIView):
+    capability = "visit.read"
+    response_serializer_class = PatientCheckInSummarySerializer
+    response_is_list = False
+
+    def get(self, request, pk):
+        projection = get_patient_checkin_projection(
+            organisation=request.organisation,
+            facility=request.facility,
+            patient_id=pk,
+        )
+        return Response(
+            PatientCheckInSummarySerializer(
+                {
+                    "patient": projection.patient,
+                    "outstanding_balance": projection.outstanding_balance,
+                    "outstanding_invoice_no": projection.outstanding_invoice_no,
+                    "outstanding_visit_id": projection.outstanding_visit_id,
+                    "active_visit": projection.active_visit,
+                    "active_queue_label": projection.active_queue_label,
+                }
+            ).data
+        )
 
 
 class ArrivalEnquiryView(TenantAPIView):
     capability = "visit.create"
     idempotency_operation = "CMD-011"
     requires_idempotency = True
+    serializer_class = ArrivalEnquiryWriteSerializer
+    response_serializer_class = ArrivalEnquiryResponseSerializer
 
     def post(self, request):
         serializer = ArrivalEnquiryWriteSerializer(data=request.data)
@@ -130,16 +192,21 @@ class ArrivalEnquiryView(TenantAPIView):
             **serializer.validated_data,
         )
         data = ArrivalEnquirySerializer(outcome.enquiry).data
-        return Response(
+        response = Response(
             {"id": str(outcome.enquiry.id), "enquiry_id": str(outcome.enquiry.id), "enquiry": data},
             status=status.HTTP_201_CREATED,
         )
+        response.idempotency_body = {"enquiry_id": str(outcome.enquiry.id)}
+        response.result_reference = {"entity_type": "ArrivalEnquiry", "entity_id": str(outcome.enquiry.id)}
+        return response
 
 
 class ReferralSourceView(TenantAPIView):
     capability = "visit.create"
     idempotency_operation = "CMD-010"
     requires_idempotency = True
+    serializer_class = ReferralSourceSerializer
+    response_serializer_class = VisitSerializer
 
     def post(self, request, pk):
         serializer = ReferralSourceSerializer(data=request.data)
@@ -152,7 +219,10 @@ class ReferralSourceView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        return Response(VisitSerializer(visit).data)
+        response = Response(VisitSerializer(visit).data)
+        response.idempotency_body = {"visit_id": str(visit.id), "version": visit.version}
+        response.result_reference = {"entity_type": "Visit", "entity_id": str(visit.id)}
+        return response
 
 
 def _queue_history_payload(entries):
@@ -198,63 +268,71 @@ def _invoice_summary_payload(invoice):
 
 class VisitContextView(TenantAPIView):
     capability = "visit.read"
+    response_serializer_class = VisitContextResponseSerializer
+    response_is_list = False
 
     def get(self, request, pk):
         include_clinical = request.user.has_capability("encounter.read", request.facility)
-        outcome = visit_context(
+        projection = get_visit_projection(
             organisation=request.organisation,
             facility=request.facility,
-            actor=request.user,
             visit_id=pk,
-            include_clinical=include_clinical,
-            request=request,
         )
-        clinical_summary = [
-            {
-                "encounter_id": str(encounter.id),
-                "status": encounter.status,
-                "clinician": str(encounter.clinician_id),
-                "clinician_name": encounter.clinician.get_full_name(),
-                "started_at": encounter.started_at,
-                "signed_at": encounter.signed_at,
-                "closed_at": encounter.closed_at,
-            }
-            for encounter in (
-                outcome.encounters
-                if include_clinical
-                else _encounters_for_summary(outcome.queue_entries, outcome.visit)
+        clinical_projection = get_clinical_projection(
+            organisation=request.organisation,
+            facility=request.facility,
+            projection=projection,
+            include_clinical=include_clinical,
+        )
+        clinical_summary = _clinical_summary_payload(clinical_projection.encounters)
+        if clinical_projection.has_clinical_values:
+            audit_clinical_projection(
+                organisation=request.organisation,
+                actor=request.user,
+                facility=request.facility,
+                visit=projection.visit,
+                encounters=clinical_projection.encounters,
             )
-        ]
         return Response(
             {
-                "visit": VisitSerializer(outcome.visit).data,
-                "queue_history": _queue_history_payload(outcome.queue_entries),
-                "invoice": _invoice_summary_payload(outcome.invoice),
+                "visit": VisitSerializer(projection.visit).data,
+                "queue_history": _queue_history_payload(projection.queue_entries),
+                "invoice": _invoice_summary_payload(projection.invoice),
                 "clinical_summary": clinical_summary,
                 "clinical": (
-                    EncounterSerializer(outcome.encounters, many=True, context={"request": request}).data
-                    if outcome.clinical_values_returned
+                    EncounterSerializer(
+                        clinical_projection.clinical_values,
+                        many=True,
+                        context={"request": request},
+                    ).data
+                    if clinical_projection is not None and clinical_projection.has_clinical_values
                     else None
                 ),
             }
         )
 
 
-def _encounters_for_summary(entries, visit):
-    from clinical.models import Encounter
-
-    queue_ids = [entry.id for entry in entries]
-    return Encounter.objects.select_related("clinician").filter(
-        organisation=visit.organisation,
-        facility=visit.facility,
-        queue_entry_id__in=queue_ids,
-    ).order_by("started_at", "id")
+def _clinical_summary_payload(summaries):
+    return [
+        {
+            "encounter_id": str(summary.id),
+            "status": summary.status,
+            "clinician": str(summary.clinician_id),
+            "clinician_name": summary.clinician.get_full_name(),
+            "started_at": summary.started_at,
+            "signed_at": summary.signed_at,
+            "closed_at": summary.closed_at,
+        }
+        for summary in summaries
+    ]
 
 
 class VisitCancelErrorView(TenantAPIView):
     capability = "visit.cancel_error"
     idempotency_operation = "CMD-006"
     requires_idempotency = True
+    serializer_class = VisitCancelErrorSerializer
+    response_serializer_class = VisitCancelErrorResponseSerializer
 
     def post(self, request, pk):
         serializer = VisitCancelErrorSerializer(data=request.data)
@@ -267,7 +345,7 @@ class VisitCancelErrorView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        return Response(
+        response = Response(
             {
                 "visit_id": str(outcome.visit.id),
                 "visit": VisitSerializer(outcome.visit).data,
@@ -275,3 +353,6 @@ class VisitCancelErrorView(TenantAPIView):
                 "invoice": InvoiceSerializer(outcome.invoice).data if outcome.invoice is not None else None,
             }
         )
+        response.idempotency_body = {"visit_id": str(outcome.visit.id), "state": outcome.visit.state}
+        response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
+        return response

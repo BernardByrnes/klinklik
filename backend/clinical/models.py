@@ -22,6 +22,13 @@ class Encounter(FacilityScopedModel):
     ]
 
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="encounters")
+    visit = models.ForeignKey(
+        "scheduling.Visit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="encounters",
+    )
     queue_entry = models.OneToOneField(
         "scheduling.QueueEntry", on_delete=models.PROTECT, null=True, blank=True, related_name="encounter"
     )

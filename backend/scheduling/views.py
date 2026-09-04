@@ -9,6 +9,8 @@ from scheduling.services import check_in_patient, claim_queue_entry
 
 class CheckInView(TenantAPIView):
     capability = "queue.view"
+    serializer_class = CheckInSerializer
+    response_serializer_class = QueueEntrySerializer
 
     def post(self, request):
         serializer = CheckInSerializer(data=request.data)
@@ -31,6 +33,8 @@ QUEUE_STATUSES = {choice[0] for choice in QueueEntry.STATUS_CHOICES}
 
 class QueueListView(TenantAPIView):
     capability = "queue.view"
+    response_serializer_class = QueueEntrySerializer
+    response_is_list = True
 
     def get(self, request):
         queryset = QueueEntry.objects.filter(organisation=request.organisation, facility=request.facility)
@@ -55,6 +59,7 @@ class QueueListView(TenantAPIView):
 
 class QueueClaimView(TenantAPIView):
     capability = "queue.claim"
+    response_serializer_class = QueueEntrySerializer
 
     def post(self, request, pk):
         try:

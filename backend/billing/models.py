@@ -44,6 +44,10 @@ class PriceList(OrganisationScopedModel):
                 fields=["organisation", "stable_code", "version"],
                 name="uniq_price_list_org_code_version",
             ),
+            models.CheckConstraint(
+                condition=models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=models.F("effective_from")),
+                name="price_list_effective_dates_valid",
+            ),
         ]
 
 
@@ -52,8 +56,6 @@ class ServicePrice(FacilityScopedModel):
     price_list = models.ForeignKey(
         PriceList,
         on_delete=models.PROTECT,
-        null=True,
-        blank=True,
         related_name="service_prices",
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
@@ -62,6 +64,15 @@ class ServicePrice(FacilityScopedModel):
     effective_to = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     active = models.BooleanField(default=True)
+    source_version = models.CharField(max_length=40, default="v1")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=models.F("effective_from")),
+                name="service_price_effective_dates_valid",
+            ),
+        ]
 
 
 class Invoice(FacilityScopedModel):
@@ -163,8 +174,6 @@ class VisitPayerBinding(OrganisationScopedModel):
     price_list = models.ForeignKey(
         PriceList,
         on_delete=models.PROTECT,
-        null=True,
-        blank=True,
         related_name="visit_bindings",
     )
     payer_type = models.CharField(max_length=30, choices=PAYER_TYPE_CHOICES)

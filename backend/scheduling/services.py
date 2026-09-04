@@ -44,6 +44,11 @@ def open_visit(
     results_review=False,
 ):
     assert_transaction_active()
+    if (
+        patient.organisation_id != organisation.id
+        or facility.organisation_id != organisation.id
+    ):
+        raise ValueError("The Visit references a different organisation or facility.")
     return Visit.objects.create(
         organisation=organisation,
         facility=facility,
@@ -110,6 +115,13 @@ def create_initial_queue_entry(
     notes="",
 ):
     assert_transaction_active()
+    if (
+        visit.organisation_id != organisation.id
+        or visit.facility_id != facility.id
+        or department.organisation_id != organisation.id
+        or department.facility_id != facility.id
+    ):
+        raise ValueError("The queue entry references a different tenant or facility.")
     queue_date = visit.local_service_date
     last = QueueEntry.objects.filter(facility=facility, queue_date=queue_date).order_by("-sequence").first()
     sequence = allocate_sequence(
@@ -195,6 +207,16 @@ def set_referral_source(*, organisation, facility, actor, visit, source_type, so
 
 @transaction.atomic
 def check_in_patient(*, organisation, facility, actor, patient_id, department_id=None, visit_type="WALK_IN", notes="", request=None):
+    from core.errors import CanonicalError
+    from core.migration_reconciliation import legacy_writes_enabled
+
+    if not legacy_writes_enabled(organisation):
+        raise CanonicalError(
+            "LEGACY_WRITER_DISABLED",
+            "The legacy queue writer is disabled after MIG-001 cutover; use Visit check-in.",
+            status_code=503,
+            retryable=True,
+        )
     patient = Patient.objects.filter(id=patient_id, organisation=organisation, status="ACTIVE").first()
     if patient is None:
         raise ValueError("Patient was not found in this organisation.")
@@ -207,7 +229,13 @@ def check_in_patient(*, organisation, facility, actor, patient_id, department_id
         raise ValueError("An active department is required for check-in.")
     today = timezone.localdate()
     last = QueueEntry.objects.filter(facility=facility, queue_date=today).aggregate(max_sequence=Max("sequence"))
-    sequence = (last["max_sequence"] or 0) + 1
+    sequence = allocate_sequence(
+        organisation=organisation,
+        facility=facility,
+        sequence_type="QUEUE",
+        period_key=today.isoformat(),
+        initial_value=(last["max_sequence"] or 0) + 1,
+    )
     entry = QueueEntry.objects.create(
         organisation=organisation,
         facility=facility,

@@ -15,7 +15,7 @@ from clinical.diagnoses import require_signable_diagnosis_state
 from clinical.dispositions import require_signable_disposition
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
 from patients.models import Patient
-from scheduling.models import QueueEntry
+from scheduling.models import QueueEntry, Visit
 
 
 def _reference(prefix):
@@ -25,6 +25,18 @@ def _reference(prefix):
 
 @transaction.atomic
 def start_encounter(*, organisation, facility, actor, queue_entry_id, request=None):
+    queue_identity = QueueEntry.objects.filter(
+        id=queue_entry_id, organisation=organisation, facility=facility
+    ).values("id", "visit_id").first()
+    if queue_identity is None:
+        raise ValueError("Queue entry was not found in this facility.")
+    visit = None
+    if queue_identity["visit_id"]:
+        visit = Visit.objects.select_for_update().filter(
+            id=queue_identity["visit_id"], organisation=organisation, facility=facility
+        ).first()
+        if visit is None or visit.state not in Visit.ACTIVE_STATES:
+            raise ValueError("This Visit is no longer available for clinical work.")
     queue = QueueEntry.objects.select_for_update().filter(
         id=queue_entry_id, organisation=organisation, facility=facility
     ).select_related("patient").first()
@@ -38,9 +50,25 @@ def start_encounter(*, organisation, facility, actor, queue_entry_id, request=No
             organisation=organisation,
             facility=facility,
             patient=queue.patient,
+            visit=visit,
             queue_entry=queue,
             encounter_no=_reference("ENC"),
             clinician=actor,
+        )
+    if visit is not None and visit.state == "OPEN":
+        visit.state = "IN_PROGRESS"
+        visit.in_progress_at = timezone.now()
+        visit.version += 1
+        visit.save(update_fields=["state", "in_progress_at", "version", "updated_at"])
+        record_event(
+            request=request,
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            action="UPDATE",
+            entity_type="Visit",
+            entity_id=visit.id,
+            after={"state": visit.state, "version": visit.version},
         )
     queue.status = "IN_CONSULTATION"
     queue.current_stage = "CONSULTATION"
@@ -61,6 +89,17 @@ def start_encounter(*, organisation, facility, actor, queue_entry_id, request=No
 
 @transaction.atomic
 def record_triage(*, organisation, facility, actor, queue_entry_id, data, request=None):
+    queue_identity = QueueEntry.objects.filter(
+        id=queue_entry_id, organisation=organisation, facility=facility
+    ).values("id", "visit_id").first()
+    if queue_identity is None:
+        raise ValueError("Queue entry was not found in this facility.")
+    if queue_identity["visit_id"]:
+        visit = Visit.objects.select_for_update().filter(
+            id=queue_identity["visit_id"], organisation=organisation, facility=facility
+        ).first()
+        if visit is None or visit.state not in Visit.ACTIVE_STATES:
+            raise ValueError("This Visit is no longer available for clinical work.")
     queue = QueueEntry.objects.select_for_update().filter(
         id=queue_entry_id, organisation=organisation, facility=facility
     ).select_related("patient").first()

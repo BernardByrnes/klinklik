@@ -1,37 +1,8 @@
-export type RoleGrant = {
-  name: string;
-  template_code: string;
-  facility: string | null;
-  department: string | null;
-  department_code: string | null;
-};
+import type { SessionResponse } from "../generated/api-client";
 
-export type ApiSession = {
-  access_token: string;
-  access_expires_at: string;
-  user: {
-    id: string;
-    username: string;
-    full_name: string;
-    first_name: string;
-    last_name: string;
-  };
-  organisation: {
-    id: string;
-    name: string;
-    default_currency: string;
-  };
-  facilities: Facility[];
-  roles: RoleGrant[];
-  capabilities: string[];
-};
-
-export type Facility = {
-  id: string;
-  name: string;
-  code: string;
-  mode: string;
-};
+export type ApiSession = SessionResponse;
+export type RoleGrant = SessionResponse["roles"][number];
+export type Facility = SessionResponse["facilities"][number];
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 export class ApiRequestError extends Error {

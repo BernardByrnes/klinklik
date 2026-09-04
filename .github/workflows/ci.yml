@@ -165,7 +165,11 @@ jobs:
           python backend/manage.py migrate audit 0002 --noinput
           python backend/manage.py migrate tenancy 0002 --noinput
           python backend/manage.py migrate clinical 0008 --noinput
-          python backend/manage.py migrate --check
+          python tools/check_s00_migration_state.py
+      - name: Restore S-01 migrations for application proofs
+        env:
+          DB_NAME: test_clinicopus
+        run: python backend/manage.py migrate --noinput
       - name: Grant test database objects to the application role
         env:
           DB_NAME: test_clinicopus
@@ -189,7 +193,7 @@ jobs:
           DB_NAME: clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
-        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py
+        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

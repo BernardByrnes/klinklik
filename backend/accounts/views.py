@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.bootstrap import BootstrapError, authenticate_identity, open_session, rotate_refresh_session
-from accounts.serializers import LoginSerializer, UserSummarySerializer
+from accounts.serializers import LoginSerializer, MeResponseSerializer, SessionResponseSerializer, UserSummarySerializer
 from accounts.services import session_role_context
 from core.tenant_api import TenantAPIView
 from tenancy.models import Facility
@@ -32,6 +32,8 @@ def bootstrap_error_response(error):
 class LoginView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+    request_serializer_class = LoginSerializer
+    response_serializer_class = SessionResponseSerializer
 
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
@@ -64,6 +66,7 @@ class LoginView(APIView):
 class RefreshView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
+    response_serializer_class = SessionResponseSerializer
 
     def post(self, request):
         try:
@@ -100,6 +103,8 @@ class LogoutView(TenantAPIView):
 
 
 class MeView(TenantAPIView):
+    response_serializer_class = MeResponseSerializer
+    response_is_list = False
 
     def get(self, request):
         facilities = Facility.objects.filter(organisation=request.organisation, is_active=True)

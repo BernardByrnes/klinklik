@@ -6,7 +6,7 @@ from billing.models import Invoice, InvoiceItem, Payment, ServiceCatalogItem, Se
 class ServicePriceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ServicePrice
-        fields = ["id", "price_list", "amount", "currency", "effective_from", "effective_to", "is_active", "active"]
+        fields = ["id", "price_list", "amount", "currency", "effective_from", "effective_to", "is_active", "active", "source_version"]
 
 
 class ServiceCatalogSerializer(serializers.ModelSerializer):
@@ -58,3 +58,18 @@ class PaymentCreateSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=14, decimal_places=2)
     method = serializers.ChoiceField(choices=Payment.METHOD_CHOICES)
     reference = serializers.CharField(required=False, allow_blank=True)
+
+
+class ReceiptSerializer(serializers.Serializer):
+    receipt_no = serializers.CharField()
+    invoice_no = serializers.CharField()
+    patient_name = serializers.CharField()
+    patient_no = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    currency = serializers.CharField()
+    method = serializers.CharField()
+    reference = serializers.CharField(allow_null=True)
+    received_at = serializers.DateTimeField()
+    invoice_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    invoice_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
+    printable_text = serializers.CharField()

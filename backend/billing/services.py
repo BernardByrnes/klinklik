@@ -3,8 +3,6 @@ import string
 from decimal import Decimal
 
 from django.db import models, transaction
-from django.utils import timezone
-
 from audit.services import record_event
 from billing.models import (
     Invoice,
@@ -18,6 +16,7 @@ from billing.models import (
 )
 from clinical.models import Encounter
 from core.clock import local_service_date, now
+from core.errors import CanonicalError
 from core.services import allocate_sequence, assert_transaction_active
 from patients.models import Patient
 from scheduling.models import Visit
@@ -28,31 +27,45 @@ def _reference(prefix):
     return prefix + "-" + "".join(secrets.choice(alphabet) for _ in range(10))
 
 
-def select_consultation_price(*, organisation, facility, payer_type, price_list_id=None, service_code="CONSULTATION"):
-    """Resolve the supplied price source without creating a financial record."""
+def select_price_list(*, organisation, payer_type, price_list_id=None):
+    """Lock and resolve the one applicable immutable PriceList."""
 
     assert_transaction_active()
     today = local_service_date()
-    service = ServiceCatalogItem.objects.select_for_update().filter(
-        organisation=organisation,
-        code=service_code,
-        is_active=True,
-    ).first()
-    if service is None:
-        return None, None, None
-
-    price_list_queryset = PriceList.objects.select_for_update().filter(
+    queryset = PriceList.objects.select_for_update().filter(
         organisation=organisation,
         active=True,
         payer_type=payer_type,
         effective_from__lte=today,
     ).filter(models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=today))
     if price_list_id:
-        price_list_queryset = price_list_queryset.filter(id=price_list_id)
-    has_price_lists = PriceList.objects.filter(organisation=organisation).exists()
-    price_list = price_list_queryset.order_by("-version", "-effective_from", "id").first()
-    if has_price_lists and price_list is None:
-        return None, service, None
+        queryset = queryset.filter(id=price_list_id)
+    return queryset.order_by("-version", "-effective_from", "id").first()
+
+
+def select_consultation_price(*, organisation, facility, payer_type, price_list_id=None, service_code="CONSULTATION"):
+    """Resolve the supplied price source without creating a financial record.
+
+    A missing PriceList is intentionally distinct from an unpriced service. There
+    is no legacy NULL-price-list branch: target commands must fail closed.
+    """
+
+    assert_transaction_active()
+    today = local_service_date()
+    price_list = select_price_list(
+        organisation=organisation,
+        payer_type=payer_type,
+        price_list_id=price_list_id,
+    )
+    if price_list is None:
+        return None, None, None
+    service = ServiceCatalogItem.objects.select_for_update().filter(
+        organisation=organisation,
+        code=service_code,
+        is_active=True,
+    ).first()
+    if service is None:
+        return price_list, None, None
 
     prices = ServicePrice.objects.select_for_update().filter(
         organisation=organisation,
@@ -62,10 +75,7 @@ def select_consultation_price(*, organisation, facility, payer_type, price_list_
         active=True,
         effective_from__lte=today,
     ).filter(models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=today))
-    if price_list is None:
-        prices = prices.filter(price_list__isnull=True)
-    else:
-        prices = prices.filter(price_list=price_list)
+    prices = prices.filter(price_list=price_list)
     price = prices.order_by("-effective_from", "-created_at", "id").first()
     return price_list, service, price
 
@@ -74,6 +84,18 @@ def create_payer_binding(*, organisation, facility, visit, actor, payer_type, pr
     """Append the initial immutable payer binding for a Visit."""
 
     assert_transaction_active()
+    if price_list is None:
+        raise ValueError("A PriceList is required for every Visit payer binding.")
+    if (
+        visit.organisation_id != getattr(organisation, "id", organisation)
+        or visit.facility_id != getattr(facility, "id", facility)
+        or price_list.organisation_id != getattr(organisation, "id", organisation)
+        or price_list.payer_type != payer_type
+        or not price_list.active
+        or price_list.effective_from > local_service_date()
+        or (price_list.effective_to is not None and price_list.effective_to < local_service_date())
+    ):
+        raise ValueError("The payer binding references a different tenant or facility.")
     current = VisitPayerBinding.objects.select_for_update().filter(visit=visit, active=True).first()
     if current is not None:
         if current.payer_type == payer_type and current.price_list_id == getattr(price_list, "id", price_list):
@@ -97,6 +119,20 @@ def issue_exact_source_lines(*, organisation, facility, actor, visit, service, p
     """Issue the one source-versioned consultation line for a Visit."""
 
     assert_transaction_active()
+    if service is None or price is None or price.price_list_id is None:
+        raise ValueError("A priced service from an applicable PriceList is required.")
+    if service.organisation_id != organisation.id or price.organisation_id != organisation.id:
+        raise ValueError("The service price is outside the request organisation.")
+    if price.facility_id != facility.id or price.service_id != service.id:
+        raise ValueError("The service price is outside the request facility.")
+    binding = VisitPayerBinding.objects.select_for_update().filter(
+        organisation=organisation,
+        facility=facility,
+        visit=visit,
+        active=True,
+    ).first()
+    if binding is None or binding.price_list_id != price.price_list_id:
+        raise ValueError("The consultation price does not match the Visit payer binding.")
     existing = Invoice.objects.select_for_update().filter(
         organisation=organisation,
         facility=facility,
@@ -146,7 +182,7 @@ def issue_exact_source_lines(*, organisation, facility, actor, visit, service, p
         line_set_version=invoice.current_line_set_version,
         source_type="CONSULTATION",
         source_id=visit.id,
-        source_version="v1",
+        source_version=price.source_version,
         source_line_identity=source_line_identity,
         created_by=actor,
     )
@@ -225,6 +261,17 @@ def create_invoice(*, organisation, facility, actor, patient_id, encounter_id=No
             raise ValueError("The consultation must be signed before billing.")
     if not items:
         raise ValueError("At least one service item is required.")
+    today = local_service_date()
+    price_list = select_price_list(
+        organisation=organisation,
+        payer_type="CASH",
+    )
+    if price_list is None:
+        raise CanonicalError(
+            "NO_PRICE_LIST",
+            "No active price list is available for this payer.",
+            status_code=422,
+        )
     invoice = Invoice.objects.create(
         organisation=organisation,
         facility=facility,
@@ -242,18 +289,32 @@ def create_invoice(*, organisation, facility, actor, patient_id, encounter_id=No
             id=item.get("service_id"), organisation=organisation, is_active=True
         ).first()
         if service is None:
-            raise ValueError("A selected service is not available.")
-        price = ServicePrice.objects.filter(
+            raise CanonicalError(
+                "SERVICE_NOT_PRICED",
+                "The selected service is not available in the active catalogue.",
+                status_code=422,
+                metadata={"service_id": str(item.get("service_id"))},
+            )
+        price = ServicePrice.objects.select_for_update().filter(
             organisation=organisation,
             facility=facility,
             service=service,
+            price_list=price_list,
             is_active=True,
-            effective_from__lte=timezone.localdate(),
+            active=True,
+            effective_from__lte=today,
         ).filter(
-            models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=timezone.localdate())
-        ).order_by("-effective_from").first()
+            models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=today)
+        ).filter(
+            models.Q(price_list__effective_to__isnull=True) | models.Q(price_list__effective_to__gte=today)
+        ).order_by("-price_list__version", "-effective_from").first()
         if price is None:
-            raise ValueError(f"No active price is configured for {service.name}.")
+            raise CanonicalError(
+                "SERVICE_NOT_PRICED",
+                "The selected service is not priced for this facility and payer.",
+                status_code=422,
+                metadata={"service_id": str(service.id), "service_code": service.code},
+            )
         quantity = Decimal(str(item.get("quantity", "1")))
         if quantity <= 0:
             raise ValueError("Service quantity must be positive.")
@@ -274,7 +335,7 @@ def create_invoice(*, organisation, facility, actor, patient_id, encounter_id=No
     invoice.total = total
     invoice.balance = total
     invoice.status = "ISSUED"
-    invoice.issued_at = timezone.now()
+    invoice.issued_at = now()
     invoice.save(update_fields=["subtotal", "total", "balance", "status", "issued_at", "updated_at"])
     record_event(
         request=request,

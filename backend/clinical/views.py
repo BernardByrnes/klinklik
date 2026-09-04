@@ -30,8 +30,15 @@ from clinical.serializers import (
     FollowUpRecommendationSerializer,
     FollowUpWriteSerializer,
     AllergyEnteredInErrorSerializer,
-    AllergyStatusSerializer,
+    AllergyStatusWriteSerializer,
     EncounterSerializer,
+    EncounterCreateSerializer,
+    TriageResponseSerializer,
+    AllergyStateResponseSerializer,
+    DiagnosisStateResponseSerializer,
+    DispositionResponseSerializer,
+    FollowUpStateResponseSerializer,
+    NoteResponseSerializer,
     NoteAmendSerializer,
     NoteWriteSerializer,
     TriageSerializer,
@@ -51,6 +58,8 @@ from scheduling.serializers import QueueEntrySerializer
 
 class TriageView(TenantAPIView):
     capability = "triage.record"
+    serializer_class = TriageSerializer
+    response_serializer_class = TriageResponseSerializer
 
     def post(self, request, queue_id):
         serializer = TriageSerializer(data=request.data)
@@ -241,6 +250,8 @@ def _allergy_state_response(*, snapshot, status_code=status.HTTP_200_OK, patient
 
 class PatientAllergyView(TenantAPIView):
     capability = "allergy.manage"
+    serializer_class = AllergyCreateSerializer
+    response_serializer_class = AllergyStateResponseSerializer
 
     def post(self, request, patient_id):
         patient = get_object_or_404(Patient, id=patient_id, organisation=request.organisation)
@@ -269,6 +280,8 @@ class PatientAllergyView(TenantAPIView):
 
 class PatientAllergyStatusView(TenantAPIView):
     capability = "allergy.manage"
+    serializer_class = AllergyStatusWriteSerializer
+    response_serializer_class = AllergyStateResponseSerializer
 
     def post(self, request, patient_id):
         patient = get_object_or_404(Patient, id=patient_id, organisation=request.organisation)
@@ -278,7 +291,7 @@ class PatientAllergyStatusView(TenantAPIView):
         )
         if error_response is not None:
             return error_response
-        serializer = AllergyStatusSerializer(data=request.data)
+        serializer = AllergyStatusWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             _, snapshot = set_allergy_status(
@@ -299,6 +312,8 @@ class PatientAllergyStatusView(TenantAPIView):
 
 class PatientAllergyEnteredInErrorView(TenantAPIView):
     capability = "allergy.manage"
+    serializer_class = AllergyEnteredInErrorSerializer
+    response_serializer_class = AllergyStateResponseSerializer
 
     def post(self, request, patient_id, allergy_id):
         patient = get_object_or_404(Patient, id=patient_id, organisation=request.organisation)
@@ -341,6 +356,7 @@ class PatientAllergyEnteredInErrorView(TenantAPIView):
 
 class EncounterAllergyReviewView(TenantAPIView):
     capability = "clinical.note.sign"
+    response_serializer_class = AllergyStateResponseSerializer
 
     def post(self, request, pk):
         encounter = get_object_or_404(
@@ -386,6 +402,8 @@ class EncounterAllergyReviewView(TenantAPIView):
 
 class EncounterListCreateView(TenantAPIView):
     capability = "clinical.note.create"
+    serializer_class = EncounterCreateSerializer
+    response_serializer_class = EncounterSerializer
 
     def post(self, request):
         queue_entry_id = request.data.get("queue_entry_id")
@@ -409,6 +427,9 @@ class EncounterListCreateView(TenantAPIView):
 
 class EncounterDiagnosisListCreateView(TenantAPIView):
     capability = "clinical.note.create"
+    serializer_class = DiagnosisWriteSerializer
+    response_serializer_class = DiagnosisStateResponseSerializer
+    response_is_list = False
 
     def _encounter(self, request, pk):
         return get_object_or_404(
@@ -461,6 +482,8 @@ class EncounterDiagnosisListCreateView(TenantAPIView):
 
 class EncounterDiagnosisDetailView(TenantAPIView):
     capability = "clinical.note.create"
+    serializer_class = DiagnosisWriteSerializer
+    response_serializer_class = DiagnosisStateResponseSerializer
 
     def _encounter(self, request, pk):
         return get_object_or_404(
@@ -515,6 +538,7 @@ class EncounterDiagnosisDetailView(TenantAPIView):
 
 class EncounterDiagnosisRemoveView(TenantAPIView):
     capability = "clinical.note.create"
+    response_serializer_class = DiagnosisStateResponseSerializer
 
     def post(self, request, pk, diagnosis_id):
         encounter = get_object_or_404(
@@ -560,6 +584,8 @@ class EncounterDiagnosisRemoveView(TenantAPIView):
 
 class EncounterDispositionView(TenantAPIView):
     capability = "clinical.note.create"
+    serializer_class = DispositionWriteSerializer
+    response_serializer_class = DispositionResponseSerializer
 
     def patch(self, request, pk):
         encounter = get_object_or_404(
@@ -595,6 +621,9 @@ class EncounterDispositionView(TenantAPIView):
 
 class EncounterFollowUpView(TenantAPIView):
     capability = "clinical.note.create"
+    serializer_class = FollowUpWriteSerializer
+    response_serializer_class = FollowUpStateResponseSerializer
+    response_is_list = False
 
     def _encounter(self, request, pk):
         return get_object_or_404(
@@ -676,6 +705,7 @@ class EncounterFollowUpView(TenantAPIView):
 
 class EncounterDetailView(TenantAPIView):
     capability = "clinical.note.create"
+    response_serializer_class = EncounterSerializer
 
     def get_object(self, request, pk):
         return get_object_or_404(
@@ -694,6 +724,8 @@ class EncounterDetailView(TenantAPIView):
 
 class EncounterNoteView(TenantAPIView):
     capability = "clinical.note.create"
+    serializer_class = NoteWriteSerializer
+    response_serializer_class = NoteResponseSerializer
 
     def _save(self, request, pk, conflict_status):
         encounter = get_object_or_404(
@@ -729,6 +761,9 @@ class EncounterNoteView(TenantAPIView):
 
 class EncounterSignView(TenantAPIView):
     capability = "clinical.note.sign"
+    operation_id = "signEncounter"
+    serializer_class = NoteWriteSerializer
+    response_serializer_class = NoteResponseSerializer
 
     def post(self, request, pk):
         encounter = get_object_or_404(
@@ -781,6 +816,8 @@ class EncounterSignView(TenantAPIView):
 
 class EncounterAmendView(TenantAPIView):
     capability = "clinical.note.amend"
+    serializer_class = NoteAmendSerializer
+    response_serializer_class = NoteResponseSerializer
 
     def post(self, request, pk):
         encounter = get_object_or_404(

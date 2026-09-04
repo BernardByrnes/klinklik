@@ -18,3 +18,11 @@ class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
         fields = ["id", "name", "code", "is_active", "facility"]
+
+
+class FacilityEnvelopeSerializer(serializers.Serializer):
+    facilities = FacilitySerializer(many=True)
+
+
+class DepartmentEnvelopeSerializer(serializers.Serializer):
+    departments = DepartmentSerializer(many=True)

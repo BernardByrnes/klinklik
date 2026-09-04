@@ -89,6 +89,213 @@ def contract_fingerprint(schema):
     return hashlib.sha256(payload).hexdigest()
 
 
+def _pascal_case(value):
+    parts = [part for part in str(value).replace("-", "_").split("_") if part]
+    return "".join(part[:1].upper() + part[1:] for part in parts) or "GeneratedSchema"
+
+
+def _ref_name(schema):
+    ref = (schema or {}).get("$ref", "")
+    return ref.rsplit("/", 1)[-1] if ref else None
+
+
+def _resolve_schema(schema, components):
+    seen = set()
+    current = schema or {}
+    while _ref_name(current) and _ref_name(current) not in seen:
+        name = _ref_name(current)
+        seen.add(name)
+        current = components.get(name, current)
+    return current
+
+
+def _ts_type(schema, *, components):
+    schema = schema or {}
+    ref_name = _ref_name(schema)
+    if ref_name:
+        result = ref_name
+    elif schema.get("oneOf") or schema.get("anyOf"):
+        result = " | ".join(_ts_type(option, components=components) for option in (schema.get("oneOf") or schema.get("anyOf")))
+    elif schema.get("allOf"):
+        result = " & ".join(_ts_type(option, components=components) for option in schema["allOf"])
+    elif "enum" in schema:
+        result = " | ".join(json.dumps(value, ensure_ascii=True) for value in schema["enum"]) or "never"
+    elif schema.get("type") == "array":
+        item_type = _ts_type(schema.get("items", {}), components=components)
+        result = f"Array<{item_type}>"
+    elif schema.get("type") == "object" or "properties" in schema:
+        properties = schema.get("properties") or {}
+        required = set(schema.get("required") or []) | {
+            name for name, field in properties.items() if field.get("readOnly")
+        }
+        members = []
+        for name, field in properties.items():
+            safe_name = name if name.isidentifier() else json.dumps(name, ensure_ascii=True)
+            optional = "" if name in required else "?"
+            members.append(f"{safe_name}{optional}: {_ts_type(field, components=components)};")
+        if schema.get("additionalProperties") is True and properties:
+            members.append("[key: string]: unknown;")
+        if schema.get("additionalProperties") and not properties:
+            additional = schema["additionalProperties"]
+            value_type = "unknown" if additional is True else _ts_type(additional, components=components)
+            result = f"Record<string, {value_type}>"
+        else:
+            result = "{ " + " ".join(members) + " }"
+    else:
+        result = {
+            "string": "string",
+            "integer": "number",
+            "number": "number",
+            "boolean": "boolean",
+        }.get(schema.get("type"), "unknown")
+    if schema.get("nullable") and not result.rstrip().endswith("| null"):
+        result += " | null"
+    return result
+
+
+def _component_types(schema):
+    components = ((schema or {}).get("components") or {}).get("schemas") or {}
+    rendered = []
+    for name, definition in sorted(components.items(), key=lambda pair: str(pair[0])):
+        rendered.append(f"export type {name} = {_ts_type(definition, components=components)};")
+    return rendered
+
+
+def _operation_types(schema):
+    types = []
+    for contract in _operation_contracts(schema):
+        operation_id = contract["operationId"]
+        if not operation_id:
+            continue
+        request_schema = ((contract.get("requestBody") or {}).get("content") or {}).get("application/json", {}).get("schema")
+        if request_schema:
+            types.append(f"export type {_pascal_case(operation_id)}Request = {_ts_type(request_schema, components={})};")
+        response_schema = None
+        for code in sorted((contract.get("responses") or {}).keys()):
+            if str(code).startswith("2"):
+                response_schema = (((contract["responses"][code] or {}).get("content") or {}).get("application/json", {}).get("schema"))
+                if response_schema:
+                    break
+        if response_schema:
+            types.append(f"export type {_pascal_case(operation_id)}Response = {_ts_type(response_schema, components={})};")
+    return types
+
+
+_NESTED_TYPE_ALIASES = {
+    "patient": "Patient",
+    "patients": "Patient",
+    "visit": "Visit",
+    "visits": "Visit",
+    "department": "Department",
+    "queue": "QueueEntry",
+    "queue_entries": "QueueEntry",
+    "invoice": "Invoice",
+    "invoices": "Invoice",
+    "service": "Service",
+    "services": "Service",
+    "payment": "Payment",
+    "payments": "Payment",
+    "items": "InvoiceItem",
+    "receipt": "Receipt",
+    "clinical": "Encounter",
+    "encounters": "Encounter",
+    "notes": "ClinicalNote",
+    "content": "ClinicalNoteContent",
+    "diagnoses": "Diagnosis",
+    "complaints": "PresentingComplaint",
+    "active_allergies": "ActiveAllergy",
+    "follow_up": "FollowUpRecommendation",
+    "duplicate_candidates": "PatientDuplicateCandidate",
+    "departments": "Department",
+    "facilities": "Facility",
+}
+
+
+def _type_aliases(schema):
+    """Name repeated transport shapes from the OpenAPI response surface."""
+
+    aliases = {}
+    components = ((schema or {}).get("components") or {}).get("schemas") or {}
+
+    def richness(definition):
+        resolved = _resolve_schema(definition, components)
+        properties = resolved.get("properties") or {}
+        return (len(properties), len(resolved.get("required") or []), bool(resolved.get("type")))
+
+    def put_alias(name, definition):
+        if not definition:
+            return
+        current = aliases.get(name)
+        if current is None or richness(definition) > richness(current):
+            aliases[name] = _resolve_schema(definition, components)
+
+    def visit_nested(definition, depth=0):
+        if depth > 3:
+            return
+        resolved = _resolve_schema(definition, components)
+        if resolved.get("type") == "array":
+            visit_nested(resolved.get("items", {}), depth + 1)
+            return
+        for property_name, property_schema in (resolved.get("properties") or {}).items():
+            alias = _NESTED_TYPE_ALIASES.get(property_name)
+            candidate = _resolve_schema(property_schema, components)
+            if candidate.get("type") == "array":
+                candidate = _resolve_schema(candidate.get("items", {}), components)
+            if alias and candidate.get("type") == "object":
+                put_alias(alias, candidate)
+            visit_nested(property_schema, depth + 1)
+
+    for contract in _operation_contracts(schema):
+        path = contract["path"]
+        response_schema = None
+        for code in sorted((contract.get("responses") or {}).keys()):
+            if str(code).startswith("2"):
+                response_schema = (((contract["responses"][code] or {}).get("content") or {}).get("application/json", {}).get("schema"))
+                if response_schema:
+                    break
+        if not response_schema:
+            continue
+        resolved_response = _resolve_schema(response_schema, components)
+        if "/patients/" in path and resolved_response.get("type") == "array":
+            put_alias("Patient", resolved_response.get("items", {}))
+        elif "/clinic/queue/" in path and resolved_response.get("type") == "array":
+            put_alias("QueueEntry", resolved_response.get("items", {}))
+        elif "/billing/invoices/" in path and "receipt" not in path:
+            put_alias("Invoice", resolved_response.get("items", resolved_response))
+        elif "/billing/services/" in path and resolved_response.get("type") == "array":
+            put_alias("Service", resolved_response.get("items", {}))
+        elif "receipt" in path:
+            put_alias("Receipt", resolved_response)
+        elif "/clinic/encounters/" in path:
+            put_alias("Encounter", resolved_response.get("items", resolved_response))
+        elif "/tenancy/departments/" in path:
+            department_schema = (resolved_response.get("properties") or {}).get("departments", resolved_response)
+            if department_schema.get("type") == "array":
+                department_schema = department_schema.get("items", {})
+            put_alias("Department", department_schema)
+        elif "/tenancy/facilities/" in path:
+            facility_schema = (resolved_response.get("properties") or {}).get("facilities", resolved_response)
+            if facility_schema.get("type") == "array":
+                facility_schema = facility_schema.get("items", {})
+            put_alias("Facility", facility_schema)
+        visit_nested(resolved_response)
+
+    enum_aliases = {
+        "DiagnosisType": ("Diagnosis", "diagnosis_type"),
+        "EncounterDisposition": ("Encounter", "disposition"),
+        "AllergyStatus": ("Encounter", "allergy_status"),
+        "ComplaintDurationUnit": ("PresentingComplaint", "duration_unit"),
+    }
+    for alias, (source, property_name) in enum_aliases.items():
+        source_schema = aliases.get(source) or components.get(source)
+        property_schema = (source_schema or {}).get("properties", {}).get(property_name)
+        if property_schema:
+            property_schema = dict(property_schema)
+            property_schema.pop("nullable", None)
+            put_alias(alias, property_schema)
+    return aliases
+
+
 def schema_for(root: Path):
     backend = root / "backend"
     sys.path.insert(0, str(backend))
@@ -116,6 +323,21 @@ def render(schema):
     ]
     operations_json = json.dumps(operations, ensure_ascii=True, indent=2)
     fingerprint = contract_fingerprint(schema)
+    generated_types = _component_types(schema)
+    existing_names = {
+        line.split("export type ", 1)[1].split(" =", 1)[0]
+        for line in generated_types
+        if line.startswith("export type ")
+    }
+    generated_types.extend(
+        f"export type {name} = {_ts_type(definition, components={})};"
+        for name, definition in sorted(_type_aliases(schema).items())
+        if name not in existing_names
+    )
+    generated_types += _operation_types(schema)
+    type_block = "\n".join(generated_types)
+    if type_block:
+        type_block += "\n\n"
     return (
         HEADER
         + "export type GeneratedApiError = {\n"
@@ -123,6 +345,7 @@ def render(schema):
         + "  detail?: string;\n"
         + "  [key: string]: unknown;\n"
         + "};\n\n"
+        + type_block
         + "export type GeneratedRequestOptions = RequestInit & {\n"
         + "  idempotencyKey?: string;\n"
         + "  facilityId?: string;\n"

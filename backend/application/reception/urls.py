@@ -2,6 +2,7 @@ from django.urls import path
 
 from application.reception.views import (
     ArrivalEnquiryView,
+    PatientCheckInSummaryView,
     PatientRegisterView,
     ReferralSourceView,
     VisitCancelErrorView,
@@ -12,6 +13,7 @@ from application.reception.views import (
 
 urlpatterns = [
     path("patients/register/", PatientRegisterView.as_view(), name="patient_register"),
+    path("patients/<uuid:pk>/check-in-summary/", PatientCheckInSummaryView.as_view(), name="patient_check_in_summary"),
     path("visits/check-in/", VisitCheckInView.as_view(), name="visit_check_in"),
     path("visits/<uuid:pk>/", VisitContextView.as_view(), name="visit_context"),
     path("visits/<uuid:pk>/context/", VisitContextView.as_view(), name="visit_context_explicit"),

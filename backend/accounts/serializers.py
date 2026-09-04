@@ -36,3 +36,11 @@ class SessionResponseSerializer(serializers.Serializer):
     facilities = FacilitySerializer(many=True)
     roles = UserRoleGrantSerializer(many=True)
     capabilities = serializers.ListField(child=serializers.CharField())
+
+
+class MeResponseSerializer(serializers.Serializer):
+    user = UserSummarySerializer()
+    organisation = OrganisationSerializer()
+    facilities = FacilitySerializer(many=True)
+    roles = UserRoleGrantSerializer(many=True)
+    capabilities = serializers.ListField(child=serializers.CharField())

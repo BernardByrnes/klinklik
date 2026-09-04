@@ -46,3 +46,7 @@ class CheckInSerializer(serializers.Serializer):
     department_id = serializers.UUIDField(required=False)
     visit_type = serializers.CharField(required=False, default="WALK_IN")
     notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class QueueEntryListSerializer(serializers.ListSerializer):
+    child = QueueEntrySerializer()

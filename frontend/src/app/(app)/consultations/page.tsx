@@ -19,6 +19,13 @@ import {
   PresentingComplaint,
   QueueEntry,
 } from "../../../features/clinic";
+import type {
+  AllergyStateResponse,
+  DiagnosisStateResponse,
+  DispositionResponse,
+  FollowUpStateResponse,
+  NoteResponse,
+} from "../../../generated/api-client";
 import { AllergyBanner, type AllergyFormValues } from "../../../components/clinical/allergy-banner";
 import {
   DiagnosisSection,
@@ -170,27 +177,12 @@ type StartEncounterVariables = {
   queueEntryId: string;
   session: number;
 };
-type NoteSaveResponse = {
-  note: string;
-  status: string;
-  content: ClinicalNoteContent;
-  complaints: PresentingComplaint[];
-  etag: string;
-  saved_at: string;
-};
-
-type NoteSignResponse = NoteSaveResponse & {
-  current_version: number;
-};
+type NoteSaveResponse = NoteResponse;
+type NoteSignResponse = NoteResponse;
 
 type DispositionSaveState = "idle" | "unsaved" | "saved";
 
-type DispositionSaveResponse = {
-  disposition: EncounterDisposition | null;
-  disposition_note: string;
-  consultation_etag: string;
-  encounter_status: string;
-};
+type DispositionSaveResponse = DispositionResponse;
 
 type FollowUpDraftValues = {
   recommendedDate: string;
@@ -211,11 +203,7 @@ type FollowUpMutationVariables = FollowUpContext & {
   values: FollowUpDraftValues;
 };
 
-type FollowUpSaveResponse = {
-  follow_up: FollowUpRecommendation;
-  consultation_etag: string;
-  encounter_status: string;
-};
+type FollowUpSaveResponse = FollowUpStateResponse;
 type DispositionContext = {
   patientId: string;
   encounterId: string;
@@ -227,16 +215,6 @@ type DispositionContext = {
 type DispositionMutationVariables = DispositionContext & {
   disposition: EncounterDisposition | null;
   disposition_note: string;
-};
-
-type AllergyStateResponse = {
-  allergy_status: AllergyStatus;
-  active_allergies: ActiveAllergy[];
-  allergy_revision: number;
-  allergy_state_etag: string;
-  allergies_reviewed_at?: string | null;
-  allergies_reviewed_revision?: number | null;
-  allergies_review_is_current?: boolean;
 };
 
 type AllergyContext = {
@@ -261,11 +239,6 @@ type AllergyEnteredInErrorMutationVariables = AllergyContext & {
 };
 
 type AllergyReviewMutationVariables = AllergyContext;
-type DiagnosisStateResponse = {
-  diagnoses: Diagnosis[];
-  consultation_etag: string;
-};
-
 type DiagnosisConflictData = DiagnosisStateResponse & {
   detail: string;
   encounter_status: string;

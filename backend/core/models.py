@@ -114,3 +114,70 @@ class NumberSequence(OrganisationScopedModel):
                 name="number_sequence_next_value_positive",
             ),
         ]
+
+
+class MigrationReconciliation(OrganisationScopedModel):
+    """Non-PHI evidence for a legacy row that needs migration reconciliation."""
+
+    RESOLUTION_STATES = [("PENDING", "Pending"), ("RESOLVED", "Resolved")]
+
+    migration_id = models.CharField(max_length=40)
+    facility = models.ForeignKey(
+        "tenancy.Facility",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="migration_reconciliation_records",
+    )
+    legacy_table = models.CharField(max_length=120)
+    legacy_pk = models.CharField(max_length=120)
+    evidence_codes = models.JSONField(default=list)
+    proposed_target_refs = models.JSONField(null=True, blank=True)
+    source_hash = models.CharField(max_length=64, blank=True)
+    target_hash = models.CharField(max_length=64, blank=True)
+    backfill_run_id = models.UUIDField(null=True, blank=True)
+    resolution_state = models.CharField(max_length=20, choices=RESOLUTION_STATES, default="PENDING")
+    resolved_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="resolved_migration_reconciliations",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    reason = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "migration_id", "legacy_table", "legacy_pk"],
+                name="uniq_migration_reconciliation_source",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(resolution_state="PENDING", resolved_by__isnull=True, resolved_at__isnull=True)
+                    | models.Q(resolution_state="RESOLVED", resolved_by__isnull=False, resolved_at__isnull=False)
+                ),
+                name="migration_reconciliation_resolution_fields_match",
+            ),
+        ]
+
+
+class MigrationCutover(OrganisationScopedModel):
+    """Persistent route switches used by reversible material migrations."""
+
+    migration_id = models.CharField(max_length=40)
+    phase = models.CharField(max_length=30, default="CUTOVER")
+    target_reads_enabled = models.BooleanField(default=True)
+    target_writes_enabled = models.BooleanField(default=True)
+    rollback_at = models.DateTimeField(null=True, blank=True)
+    rollback_reason = models.CharField(max_length=240, blank=True)
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "migration_id"],
+                name="uniq_migration_cutover_org_id",
+            ),
+        ]

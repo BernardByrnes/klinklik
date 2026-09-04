@@ -3,16 +3,20 @@ from rest_framework.response import Response
 
 from core.tenant_api import TenantAPIView
 from tenancy.models import Department, Facility
-from tenancy.serializers import DepartmentSerializer, FacilitySerializer
+from tenancy.serializers import DepartmentEnvelopeSerializer, DepartmentSerializer, FacilityEnvelopeSerializer, FacilitySerializer
 
 
 class FacilityListView(TenantAPIView):
+    response_serializer_class = FacilityEnvelopeSerializer
+    response_is_list = False
     def get(self, request):
         facilities = Facility.objects.filter(organisation=request.organisation, is_active=True)
         return Response({"facilities": FacilitySerializer(facilities, many=True).data})
 
 
 class DepartmentListView(TenantAPIView):
+    response_serializer_class = DepartmentEnvelopeSerializer
+    response_is_list = False
     def get(self, request):
         departments = Department.objects.filter(
             organisation=request.organisation, facility=request.facility, is_active=True

@@ -169,6 +169,43 @@ def test_check_in_opens_visit_queue_and_issued_consultation_invoice(tenant, auth
     assert Invoice.objects.filter(visit=visit).count() == 1
 
 
+def test_check_in_warns_and_audits_when_patient_has_prior_balance(tenant, authed_client):
+    patient = register(
+        authed_client,
+        {**registration_payload(), "first_name": "Balance", "date_of_birth": "1990-09-09"},
+        key="s01-register-balance",
+    ).data
+    with tenant_atomic(tenant.organisation.id):
+        Invoice.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            patient_id=patient["patient_id"],
+            invoice_no="INV-PRIOR-BALANCE",
+            status="ISSUED",
+            total="15000.00",
+            balance="15000.00",
+            created_by=tenant.user,
+        )
+
+    summary = authed_client.get(
+        f"/api/v1/reception/patients/{patient['patient_id']}/check-in-summary/"
+    )
+    assert summary.status_code == 200, summary.data
+    assert summary.data["outstanding_balance"] == "15000.00"
+    assert summary.data["outstanding_invoice_no"] == "INV-PRIOR-BALANCE"
+
+    response = check_in(
+        authed_client,
+        patient["patient_id"],
+        key="s01-checkin-balance",
+        department_id=str(tenant.department.id),
+    )
+    assert response.status_code == 201, response.data
+    event = AuditEvent.objects.get(event_code="OUTSTANDING_BALANCE_OVERRIDDEN")
+    assert event.after == {"outstanding_balance_present": True}
+    assert "15000" not in str(event.after)
+
+
 def test_check_in_failure_keeps_registered_patient_and_creates_no_visit(tenant, authed_client):
     patient = register(authed_client, key="s01-register-unpriced").data
     with tenant_atomic(tenant.organisation.id):

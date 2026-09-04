@@ -7,7 +7,12 @@ from rest_framework.response import Response
 
 from core.tenant_api import TenantAPIView
 from patients.models import Patient
-from patients.serializers import PatientCreateSerializer, PatientLinkSerializer, PatientSerializer
+from patients.serializers import (
+    PatientCreateSerializer,
+    PatientLinkResponseSerializer,
+    PatientLinkSerializer,
+    PatientSerializer,
+)
 from patients.services import create_patient, link_patients, search_patients
 
 
@@ -17,6 +22,9 @@ def patient_etag(patient):
 
 
 class PatientListCreateView(TenantAPIView):
+    serializer_class = PatientCreateSerializer
+    response_serializer_classes = {"GET": PatientSerializer, "POST": PatientSerializer}
+    response_is_list = {"GET": True, "POST": False}
     def get_permissions(self):
         self.capability = "patient.create" if self.request.method == "POST" else "patient.view"
         return super().get_permissions()
@@ -42,6 +50,8 @@ class PatientListCreateView(TenantAPIView):
 
 
 class PatientDetailView(TenantAPIView):
+    serializer_class = PatientSerializer
+    response_serializer_class = PatientSerializer
     def get_permissions(self):
         self.capability = "patient.edit" if self.request.method in {"PATCH", "PUT"} else "patient.view"
         return super().get_permissions()
@@ -67,6 +77,8 @@ class PatientDetailView(TenantAPIView):
 
 class PatientLinkView(TenantAPIView):
     capability = "patient.link"
+    serializer_class = PatientLinkSerializer
+    response_serializer_class = PatientLinkResponseSerializer
 
     def post(self, request, pk):
         source = get_object_or_404(Patient, id=pk, organisation=request.organisation)

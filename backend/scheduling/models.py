@@ -50,6 +50,7 @@ class Visit(FacilityScopedModel):
         related_name="closed_visits",
     )
     payer_binding_id = models.UUIDField(null=True, blank=True)
+    legacy_source_key = models.CharField(max_length=160, null=True, blank=True)
     emergency_setup_pending = models.BooleanField(default=False)
     related_visit = models.ForeignKey(
         "self",
@@ -93,6 +94,11 @@ class Visit(FacilityScopedModel):
                     )
                 ),
                 name="visit_closure_fields_match_state",
+            ),
+            models.UniqueConstraint(
+                fields=["organisation", "legacy_source_key"],
+                condition=models.Q(legacy_source_key__isnull=False),
+                name="uniq_visit_legacy_source_key",
             ),
         ]
         indexes = [

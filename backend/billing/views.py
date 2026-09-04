@@ -9,6 +9,7 @@ from billing.serializers import (
     InvoiceSerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
+    ReceiptSerializer,
     ServiceCatalogSerializer,
 )
 from billing.services import create_invoice, post_payment
@@ -19,6 +20,8 @@ INVOICE_STATUSES = {choice[0] for choice in Invoice.STATUS_CHOICES}
 
 class ServiceCatalogView(TenantAPIView):
     capability = "billing.invoice.create"
+    response_serializer_class = ServiceCatalogSerializer
+    response_is_list = True
 
     def get(self, request):
         services = ServiceCatalogItem.objects.filter(organisation=request.organisation, is_active=True).prefetch_related("prices")
@@ -27,6 +30,9 @@ class ServiceCatalogView(TenantAPIView):
 
 class InvoiceListCreateView(TenantAPIView):
     capability = "billing.invoice.create"
+    serializer_class = InvoiceCreateSerializer
+    response_serializer_classes = {"GET": InvoiceSerializer, "POST": InvoiceSerializer}
+    response_is_list = {"GET": True, "POST": False}
 
     def get(self, request):
         invoices = Invoice.objects.filter(
@@ -74,6 +80,7 @@ class InvoiceListCreateView(TenantAPIView):
 
 class InvoiceDetailView(TenantAPIView):
     capability = "billing.invoice.create"
+    response_serializer_class = InvoiceSerializer
 
     def get(self, request, pk):
         invoice = get_object_or_404(
@@ -87,6 +94,8 @@ class InvoiceDetailView(TenantAPIView):
 
 class InvoicePaymentView(TenantAPIView):
     capability = "billing.payment.record"
+    serializer_class = PaymentCreateSerializer
+    response_serializer_class = PaymentSerializer
 
     def post(self, request, pk):
         serializer = PaymentCreateSerializer(data=request.data)
@@ -107,6 +116,7 @@ class InvoicePaymentView(TenantAPIView):
 
 class InvoiceReceiptView(TenantAPIView):
     capability = "billing.receipt.print"
+    response_serializer_class = ReceiptSerializer
 
     def get(self, request, pk):
         invoice = get_object_or_404(

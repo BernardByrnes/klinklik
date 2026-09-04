@@ -26,6 +26,19 @@ class TenantAPIView(APIView):
     denial_audit_required = False
     requires_idempotency = False
     idempotency_operation = None
+    serializer_class = None
+    serializer_classes = None
+    response_serializer_class = None
+    response_serializer_classes = None
+
+    def get_serializer(self, *args, **kwargs):
+        serializer_class = self.serializer_class
+        serializer_classes = self.serializer_classes or {}
+        method = getattr(getattr(self, "request", None), "method", "").upper()
+        serializer_class = serializer_classes.get(method, serializer_class)
+        if serializer_class is None:
+            return None
+        return serializer_class(*args, **kwargs)
 
     def initial(self, request, *args, **kwargs):
         self.format_kwarg = self.get_format_suffix(**kwargs)

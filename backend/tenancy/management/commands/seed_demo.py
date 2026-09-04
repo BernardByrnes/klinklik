@@ -1,11 +1,10 @@
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.utils import timezone
-
 from accounts.models import OrganisationMembership, Role, User, UserCredential, UserFacilityRole
 from accounts.services import ensure_default_permissions
-from billing.models import ServiceCatalogItem, ServicePrice
+from billing.models import PriceList, ServiceCatalogItem, ServicePrice
+from core.clock import local_service_date
 from core.services import tenant_atomic
 from patients.models import Patient
 from scheduling.models import QueueEntry
@@ -143,15 +142,32 @@ class Command(BaseCommand):
                 code="CONSULTATION",
                 defaults={"name": "General consultation", "category": "CLINIC", "is_active": True},
             )
+            # Referenced catalogue versions are immutable after MIG-001.  Keep
+            # the demo seed idempotent without trying to rewrite a version
+            # that may already have issued prices or payer bindings.
+            price_list, _ = PriceList.objects.get_or_create(
+                organisation=organisation,
+                stable_code="STANDARD",
+                version=1,
+                defaults={
+                    "name": "Standard cash",
+                    "payer_type": "CASH",
+                    "active": True,
+                    "effective_from": local_service_date(),
+                },
+            )
             ServicePrice.objects.update_or_create(
                 organisation=organisation,
                 facility=facility,
                 service=service,
-                effective_from=timezone.localdate(),
+                price_list=price_list,
+                effective_from=local_service_date(),
                 defaults={
                     "amount": "30000.00",
                     "currency": organisation.default_currency,
                     "is_active": True,
+                    "active": True,
+                    "source_version": "v1",
                 },
             )
 
@@ -179,7 +195,7 @@ class Command(BaseCommand):
                     organisation=organisation,
                     facility=facility,
                     patient=patients["DEMO-0001"],
-                    queue_date=timezone.localdate(),
+                    queue_date=local_service_date(),
                     status__in=["WAITING", "CALLED", "IN_TRIAGE", "TRIAGED", "IN_CONSULTATION"],
                 )
                 .order_by("sequence")
