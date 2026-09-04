@@ -16,7 +16,7 @@ from application.reception.commands import (
 )
 from application.reception.visit_query import get_visit_projection
 from audit.models import AuditEvent
-from billing.models import Invoice, InvoiceItem, PriceList, ServicePrice, VisitPayerBinding
+from billing.models import Invoice, InvoiceItem, PriceList, ServiceCatalogItem, ServicePrice, VisitPayerBinding
 from clinical.models import Encounter
 from clinical.services import start_encounter
 from core.errors import CanonicalError
@@ -24,7 +24,9 @@ from core.models import MigrationCutover, MigrationReconciliation
 from core.migration_reconciliation import (
     backfill_mig001,
     cutover_mig001,
+    inventory_mig001,
     rollback_mig001,
+    resolve_reconciliation,
     verify_mig001,
 )
 from core.rls import rls_status
@@ -49,6 +51,7 @@ def _sqlstate(error):
     while cause is not None and id(cause) not in seen:
         seen.add(id(cause))
         state = getattr(cause, "sqlstate", None) or getattr(cause, "pgcode", None)
+        state = state or getattr(getattr(cause, "diag", None), "sqlstate", None)
         if state:
             return state
         cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
@@ -123,7 +126,7 @@ def test_pg_competing_registrations_have_one_patient_and_one_duplicate_resolutio
         assert Patient.objects.filter(organisation=tenant.organisation, last_name="Registration").count() == 1
 
 
-def test_pg_competing_checkins_have_one_visit_invoice_and_consultation_line(tenant):
+def test_pg_competing_checkins_have_one_visit_invoice_and_consultation_line(tenant, enabled_mig001_target):
     patient = _new_patient(tenant, "CheckInRace")
 
     def operation():
@@ -158,7 +161,7 @@ def test_pg_competing_checkins_have_one_visit_invoice_and_consultation_line(tena
         ).count() == 1
 
 
-def test_pg_competing_enquiry_conversions_have_one_winner_and_no_orphan_visit(tenant):
+def test_pg_competing_enquiry_conversions_have_one_winner_and_no_orphan_visit(tenant, enabled_mig001_target):
     first_patient = _new_patient(tenant, "EnquiryWinnerA")
     second_patient = _new_patient(tenant, "EnquiryWinnerB")
     with tenant_atomic(tenant.organisation.id):
@@ -211,7 +214,7 @@ def test_pg_competing_enquiry_conversions_have_one_winner_and_no_orphan_visit(te
         assert Visit.objects.filter(patient_id__in=(first_patient.id, second_patient.id)).count() == 1
 
 
-def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenant):
+def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenant, enabled_mig001_target):
     patient = _new_patient(tenant, "CancelClinicalRace")
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -294,7 +297,7 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenan
 
 
 @pytest.mark.parametrize("payment_timing", ["PAY_AFTER", "PAY_BEFORE_TRIAGE"])
-def test_pg_all_visit_types_and_payment_policies(tenant, payment_timing):
+def test_pg_all_visit_types_and_payment_policies(tenant, enabled_mig001_target, payment_timing):
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
         facility = Facility.objects.get(id=tenant.facility.id)
@@ -457,7 +460,7 @@ def test_pg_cross_facility_links_are_rejected_by_database_scope_guards(tenant):
             assert _sqlstate(error) == "23514"
 
 
-def test_pg_cross_tenant_visit_is_hidden_from_query_and_rls(tenant, authed_client):
+def test_pg_cross_tenant_visit_is_hidden_from_query_and_rls(tenant, enabled_mig001_target, authed_client):
     other_organisation = Organisation.objects.create(
         name="Other S01 Clinic",
         slug=f"other-s01-{uuid4().hex[:8]}",
@@ -555,6 +558,60 @@ def test_pg_price_contracts_fail_closed_and_keep_referenced_history(tenant):
         assert _sqlstate(binding_update) == "55006"
 
 
+def test_pg_concurrent_overlapping_service_prices_have_one_database_winner(tenant):
+    """The exclusion constraint must arbitrate an actual overlapping race."""
+
+    with tenant_atomic(tenant.organisation.id):
+        service = ServiceCatalogItem.objects.create(
+            organisation=tenant.organisation,
+            code=f"RACE-{uuid4().hex[:12]}",
+            name="Concurrent synthetic service",
+        )
+        service_id = service.id
+
+    barrier = Barrier(2)
+
+    def attempt():
+        connections.close_all()
+        try:
+            with tenant_atomic(tenant.organisation.id):
+                organisation = Organisation.objects.get(id=tenant.organisation.id)
+                facility = Facility.objects.get(id=tenant.facility.id)
+                price_list = PriceList.objects.get(id=tenant.price_list.id)
+                service = ServiceCatalogItem.objects.get(id=service_id)
+                barrier.wait(timeout=20)
+                try:
+                    with transaction.atomic():
+                        ServicePrice.objects.create(
+                            organisation=organisation,
+                            facility=facility,
+                            service=service,
+                            price_list=price_list,
+                            amount="42000.00",
+                            currency="UGX",
+                            effective_from=date(2030, 1, 1),
+                            effective_to=date(2030, 12, 31),
+                        )
+                except DatabaseError as exc:
+                    return ("error", _sqlstate(exc))
+                return ("ok", None)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _item: attempt(), range(2)))
+
+    assert sorted(result[0] for result in results) == ["error", "ok"]
+    assert next(result[1] for result in results if result[0] == "error") == "23P01"
+    with tenant_atomic(tenant.organisation.id):
+        assert ServicePrice.objects.filter(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            service_id=service_id,
+            price_list=tenant.price_list,
+        ).count() == 1
+
+
 def test_pg_mig001_backfill_cutover_and_rollback_retain_target_links(tenant):
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -578,6 +635,8 @@ def test_pg_mig001_backfill_cutover_and_rollback_retain_target_links(tenant):
             claimed_by=actor,
         )
         run_id = uuid4()
+        inventory = inventory_mig001(organisation=organisation)
+        assert inventory.inspected == 1
         summary = backfill_mig001(organisation=organisation, run_id=run_id)
         assert summary.backfilled == 1
         migrated_visit = Visit.objects.get(legacy_source_key=f"queue:{queue.id}")
@@ -669,6 +728,7 @@ def test_pg_mig001_ambiguous_legacy_rows_are_pc050_and_block_cutover(tenant):
                 visit_type="WALK_IN",
                 claimed_by=actor,
             )
+        inventory_mig001(organisation=organisation)
         summary = backfill_mig001(organisation=organisation, run_id=uuid4())
         assert summary.backfilled == 0
         assert summary.exceptions == 2
@@ -684,7 +744,83 @@ def test_pg_mig001_ambiguous_legacy_rows_are_pc050_and_block_cutover(tenant):
             cutover_mig001(organisation=organisation)
 
 
-def test_pg_audited_clinical_read_failure_returns_no_payload_and_no_audit(monkeypatch, tenant, authed_client):
+def test_pg_mig001_reconciliation_resolution_converges_and_is_idempotent(tenant):
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        actor = User.objects.get(id=tenant.user.id)
+        patient = Patient.objects.create(
+            organisation=organisation,
+            patient_no=f"P-PG-S01-RESOLVE-{uuid4().hex[:8]}",
+            first_name="Resolution",
+            last_name="Synthetic",
+            sex="UNKNOWN",
+        )
+        queue = QueueEntry.objects.create(
+            organisation=organisation,
+            facility=facility,
+            patient=patient,
+            department=tenant.department,
+            queue_date=timezone.localdate(),
+            sequence=1,
+            visit_type="WALK_IN",
+        )
+
+        inventory_mig001(organisation=organisation)
+        backfill_mig001(organisation=organisation, run_id=uuid4())
+        evidence = MigrationReconciliation.objects.get(
+            organisation=organisation,
+            migration_id="MIG-001",
+            legacy_table="scheduling_queueentry",
+            legacy_pk=str(queue.id),
+        )
+        assert evidence.resolution_state == "PENDING"
+
+        # Correct the source attribution, then rerun the restartable backfill.
+        # Resolution is allowed only after the deterministic target exists.
+        queue.claimed_by = actor
+        queue.claimed_at = timezone.now()
+        queue.save(update_fields=["claimed_by", "claimed_at", "updated_at"])
+        backfill_mig001(organisation=organisation, run_id=uuid4())
+        queue.refresh_from_db()
+        assert queue.visit_id is not None
+
+        resolved = resolve_reconciliation(
+            organisation=organisation,
+            reconciliation_id=evidence.id,
+            actor=actor,
+            reason="Corrected legacy opener attribution",
+        )
+        resolved.proposed_target_refs = {
+            **resolved.proposed_target_refs,
+            "stale_target_ref": "must be removed by convergence",
+        }
+        resolved.save(update_fields=["proposed_target_refs", "updated_at"])
+        repeated = resolve_reconciliation(
+            organisation=organisation,
+            reconciliation_id=evidence.id,
+            actor=actor,
+            reason="Repeated convergence check",
+        )
+        assert resolved.id == repeated.id == evidence.id
+        assert repeated.resolution_state == "RESOLVED"
+        assert repeated.proposed_target_refs == {
+            "queue_id": str(queue.id),
+            "visit_id": str(queue.visit_id),
+        }
+        verified = verify_mig001(organisation=organisation)
+        assert verified.unresolved == 0
+        assert verified.queue_without_visit == 0
+        assert verified.scope_link_hash_verified is True
+
+        queue.claimed_by = None
+        queue.save(update_fields=["claimed_by", "updated_at"])
+        source_drift = verify_mig001(organisation=organisation)
+        assert source_drift.unresolved == 1
+        assert source_drift.scope_link_hash_verified is False
+
+
+def test_pg_audited_clinical_read_failure_returns_no_payload_and_no_audit(monkeypatch, tenant, enabled_mig001_target, authed_client):
     patient = _new_patient(tenant, "AuditedReadFailure")
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)

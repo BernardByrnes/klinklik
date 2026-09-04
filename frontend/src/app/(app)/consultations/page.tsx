@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest } from "../../../lib/api";
+import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import {
   ActiveAllergy,
@@ -479,7 +480,7 @@ function diagnosisSignPrerequisiteMessage(diagnoses: Diagnosis[]) {
     return "Review the final diagnosis state before signing.";
   }
   if (noDiagnoses.length > 0) {
-    return noDiagnoses.length === 1 && Boolean(noDiagnoses[0].no_diagnosis_reason.trim())
+    return noDiagnoses.length === 1 && Boolean((noDiagnoses[0].no_diagnosis_reason ?? "").trim())
       ? null
       : "Review the final diagnosis state before signing.";
   }
@@ -1865,6 +1866,7 @@ function TreatmentSection({
 function ConsultationsWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
+  const queueKey = useProtectedQueryKey("queue", "TRIAGED,IN_CONSULTATION");
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("entry");
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
@@ -1994,7 +1996,7 @@ function ConsultationsWorkspace() {
   }, []);
 
   const queue = useQuery({
-    queryKey: ["queue", "TRIAGED,IN_CONSULTATION"],
+    queryKey: queueKey,
     queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/?status=TRIAGED,IN_CONSULTATION"),
     enabled: can("clinical.note.create"),
   });
@@ -2579,7 +2581,7 @@ function ConsultationsWorkspace() {
         body: JSON.stringify({ queue_entry_id: queueEntryId }),
       }),
     onSuccess: (created, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
       if (
         variables.session !== draftSessionRef.current ||
         selectedQueueEntryIdRef.current !== variables.queueEntryId
@@ -3789,7 +3791,7 @@ function ConsultationsWorkspace() {
       setConfirmingSign(false);
       setNotice("Consultation signed for " + (selected?.patient_name ?? "the patient") + ".");
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
     },
     onError: (reason, variables) => {
       if (!variables || variables.session !== draftSessionRef.current) return;

@@ -5,6 +5,7 @@ from accounts.models import OrganisationMembership, Role, User, UserCredential, 
 from accounts.services import ensure_default_permissions
 from billing.models import PriceList, ServiceCatalogItem, ServicePrice
 from core.clock import local_service_date
+from core.migration_reconciliation import backfill_mig001, cutover_mig001, inventory_mig001
 from core.services import tenant_atomic
 from patients.models import Patient
 from scheduling.models import QueueEntry
@@ -210,6 +211,16 @@ class Command(BaseCommand):
                     department_id=departments["OPD"].id,
                     notes="Synthetic development queue entry",
                 )
+            if queue_entry.visit_id is None:
+                # Give the synthetic legacy row the exact attribution required
+                # for deterministic MIG-001 proof, then enable the target only
+                # through the durable inventory/backfill/parity gates.
+                queue_entry.claimed_by = users["admin@clinicopus.local"]
+                queue_entry.claimed_at = queue_entry.arrival_at
+                queue_entry.save(update_fields=["claimed_by", "claimed_at", "updated_at"])
+            inventory_mig001(organisation=organisation)
+            backfill_mig001(organisation=organisation)
+            cutover_mig001(organisation=organisation)
 
         self.stdout.write(self.style.SUCCESS("Demo seed ready (development-only)."))
         self.stdout.write(f"organisation_id={organisation.id} slug={organisation.slug} name={organisation.name}")

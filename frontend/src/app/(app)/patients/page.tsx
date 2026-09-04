@@ -6,15 +6,16 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest, ApiRequestError, newIdempotencyKey } from "../../../lib/api";
+import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import {
   ArrivalEnquiryResponse,
+  CreatePatientRegisterResponse,
   Department,
   DepartmentEnvelope,
   Patient,
   PatientCheckInSummary,
   PatientDuplicateCandidate,
-  PatientRegisterResponse,
   VisitCancelErrorResponse,
   VisitCheckInResponse,
   VisitContextResponse,
@@ -188,13 +189,18 @@ function PatientsWorkspace() {
     return () => clearTimeout(timer);
   }, [search]);
 
+  const patientsKey = useProtectedQueryKey("patients", debouncedSearch);
+  const departmentsKey = useProtectedQueryKey("departments");
+  const patientSummaryKey = useProtectedQueryKey("patient-check-in-summary", selected?.id);
+  const visitContextKey = useProtectedQueryKey("visit-context", contextVisitId);
+
   const patients = useQuery({
-    queryKey: ["patients", debouncedSearch],
+    queryKey: patientsKey,
     queryFn: () => apiRequest<Patient[]>("/api/v1/patients/?q=" + encodeURIComponent(debouncedSearch)),
     enabled: can("patient.view"),
   });
   const departments = useQuery({
-    queryKey: ["departments"],
+    queryKey: departmentsKey,
     queryFn: async () => (await apiRequest<DepartmentEnvelope>("/api/v1/tenancy/departments/")).departments,
   });
   const defaultDepartment = useMemo(() => {
@@ -206,12 +212,12 @@ function PatientsWorkspace() {
   }, [departments.data, visitType]);
 
   const patientSummary = useQuery<PatientCheckInSummary>({
-    queryKey: ["patient-check-in-summary", selected?.id],
+    queryKey: patientSummaryKey,
     queryFn: () => apiRequest<PatientCheckInSummary>(`/api/v1/reception/patients/${selected?.id}/check-in-summary/`),
     enabled: Boolean(selected) && can("visit.read"),
   });
   const visitContext = useQuery<VisitContextResponse>({
-    queryKey: ["visit-context", contextVisitId],
+    queryKey: visitContextKey,
     queryFn: () => apiRequest<VisitContextResponse>(`/api/v1/reception/visits/${contextVisitId}/context/`),
     enabled: Boolean(contextVisitId) && can("visit.read"),
   });
@@ -238,7 +244,7 @@ function PatientsWorkspace() {
 
   const createPatient = useMutation({
     mutationFn: (resolution?: Record<string, unknown>) =>
-      post<PatientRegisterResponse>(
+      post<CreatePatientRegisterResponse>(
         "/api/v1/reception/patients/register/",
         {
           first_name: firstName,
@@ -259,7 +265,7 @@ function PatientsWorkspace() {
         registerIdempotencyKey.current ?? (registerIdempotencyKey.current = newIdempotencyKey("patient-register")),
       ),
     onSuccess: (result) => {
-      if (result.duplicate_candidates?.length) {
+      if (!("patient" in result)) {
         registerIdempotencyKey.current = null;
         setFailedAction(null);
         setDuplicateCandidates(result.duplicate_candidates);
@@ -289,7 +295,7 @@ function PatientsWorkspace() {
       setDistrict("");
       setNextOfKinName("");
       setNextOfKinPhone("");
-      queryClient.invalidateQueries({ queryKey: ["patients"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("patients") });
     },
     onError: (reason) => {
       if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
@@ -327,9 +333,9 @@ function PatientsWorkspace() {
       const invoice = result.invoice?.invoice_no ? ` · invoice ${result.invoice.invoice_no}` : "";
       setNotice(`${selected?.display_name ?? "Patient"} checked in${label ? ` as ${label}` : ""}${invoice}.`);
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
-      queryClient.invalidateQueries({ queryKey: ["patient-check-in-summary", selected?.id] });
-      queryClient.invalidateQueries({ queryKey: ["visit-context", result.visit_id] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("patient-check-in-summary", selected?.id) });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("visit-context", result.visit_id) });
     },
     onError: (reason) => {
       if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
@@ -401,9 +407,9 @@ function PatientsWorkspace() {
       setCancelReason("");
       setNotice("Erroneous check-in cancelled. The Visit and any invoice history were retained.");
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
-      queryClient.invalidateQueries({ queryKey: ["patient-check-in-summary", selected?.id] });
-      queryClient.invalidateQueries({ queryKey: ["visit-context", result.visit_id] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("patient-check-in-summary", selected?.id) });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("visit-context", result.visit_id) });
     },
     onError: (reason) => {
       if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {

@@ -230,9 +230,9 @@ export function DiagnosisSection({
       diagnosis_type: diagnosis.diagnosis_type,
       label: diagnosis.label,
       code: diagnosis.code,
-      certainty_note: diagnosis.certainty_note,
+      certainty_note: diagnosis.certainty_note ?? "",
       is_primary: diagnosis.is_primary,
-      no_diagnosis_reason: diagnosis.no_diagnosis_reason,
+      no_diagnosis_reason: diagnosis.no_diagnosis_reason ?? "",
     };
     updateFormState({
       ...formState,
@@ -241,9 +241,9 @@ export function DiagnosisSection({
         diagnosis_type: mode === "promote" ? "FINAL" : diagnosis.diagnosis_type,
         label: diagnosis.label,
         code: diagnosis.code,
-        certainty_note: diagnosis.certainty_note,
+        certainty_note: diagnosis.certainty_note ?? "",
         is_primary: mode === "promote" ? false : diagnosis.is_primary,
-        no_diagnosis_reason: diagnosis.no_diagnosis_reason,
+        no_diagnosis_reason: diagnosis.no_diagnosis_reason ?? "",
         mode,
         initial,
       },

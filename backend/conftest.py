@@ -7,7 +7,9 @@ from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
 from accounts.services import ensure_default_permissions
 from billing.models import PriceList, ServiceCatalogItem, ServicePrice
 from core.clock import local_service_date
+from core.migration_reconciliation import backfill_mig001, cutover_mig001, inventory_mig001
 from core.services import tenant_atomic
+from core.models import MigrationCutover
 from tenancy.models import Department, Facility, Organisation
 
 
@@ -59,6 +61,20 @@ def tenant(db):
         service=service,
         price_list=price_list,
     )
+
+
+@pytest.fixture
+def enabled_mig001_target(tenant):
+    """Opt tests into S-01 only through the same durable cutover gates."""
+
+    with tenant_atomic(tenant.organisation.id):
+        inventory_mig001(organisation=tenant.organisation)
+        backfill_mig001(organisation=tenant.organisation)
+        cutover_mig001(organisation=tenant.organisation)
+        return MigrationCutover.objects.get(
+            organisation=tenant.organisation,
+            migration_id="MIG-001",
+        )
 
 
 @pytest.fixture

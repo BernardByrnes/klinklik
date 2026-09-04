@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiRequest } from "../../lib/api";
+import { useProtectedQueryKey } from "../../lib/authority";
 import { useSession } from "../../lib/session";
 import { roleLabel } from "../../lib/roles";
 import { QueueEntry } from "../../features/clinic";
@@ -45,8 +46,9 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 function useQueueBadge(enabled: boolean) {
+  const queryKey = useProtectedQueryKey("queue");
   const query = useQuery({
-    queryKey: ["queue"],
+    queryKey,
     queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/"),
     enabled,
     staleTime: 10_000,

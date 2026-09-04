@@ -20,8 +20,10 @@ from application.reception.serializers import (
     ArrivalEnquiryWriteSerializer,
     PatientRegisterSerializer,
     PatientDuplicateCandidateSerializer,
+    PatientDuplicateResponseSerializer,
     PatientRegisterResponseSerializer,
     PatientCheckInSummarySerializer,
+    PayerBindingSerializer,
     PatientSerializer,
     ReferralSourceSerializer,
     VisitCheckInSerializer,
@@ -34,8 +36,20 @@ from application.reception.serializers import (
 from billing.serializers import InvoiceSerializer
 from clinical.serializers import EncounterSerializer
 from core.tenant_api import TenantAPIView
-from core.idempotency import UncommittedResponse
+from core.idempotency import UncommittedResponse, json_safe
 from scheduling.serializers import QueueEntrySerializer
+
+
+def _store_exact_idempotent_response(response):
+    """Replay the same safe response body that the first request returned."""
+
+    # DRF serializers may leave UUID, Decimal, and datetime instances in
+    # ``Response.data`` until rendering.  Normalize once before both the
+    # first response and the durable replay record are finalized so replay is
+    # equivalent at the JSON boundary as well as at the Python payload level.
+    response.idempotency_body = json_safe(response.data)
+    response.data = response.idempotency_body
+    return response
 
 
 class PatientRegisterView(TenantAPIView):
@@ -44,6 +58,12 @@ class PatientRegisterView(TenantAPIView):
     requires_idempotency = True
     serializer_class = PatientRegisterSerializer
     response_serializer_class = PatientRegisterResponseSerializer
+    response_serializer_classes_by_status = {
+        "POST": {
+            "200": PatientDuplicateResponseSerializer,
+            "201": PatientRegisterResponseSerializer,
+        },
+    }
 
     def post(self, request):
         serializer = PatientRegisterSerializer(data=request.data)
@@ -78,10 +98,7 @@ class PatientRegisterView(TenantAPIView):
             },
             status=status.HTTP_201_CREATED,
         )
-        response.idempotency_body = {
-            "patient_id": str(outcome.patient.id),
-            "next_action": "CHECK_IN",
-        }
+        _store_exact_idempotent_response(response)
         response.result_reference = {"entity_type": "Patient", "entity_id": str(outcome.patient.id)}
         return response
 
@@ -121,15 +138,13 @@ class VisitCheckInView(TenantAPIView):
                 "visit": visit_data,
                 "queue": queue_data,
                 "invoice": invoice_data,
-                "payer_binding": {
-                    "id": str(outcome.payer_binding.id),
-                    "payer_type": outcome.payer_binding.payer_type,
-                    "price_list_id": (
-                        str(outcome.payer_binding.price_list_id)
-                        if outcome.payer_binding.price_list_id
-                        else None
-                    ),
-                },
+                "payer_binding": PayerBindingSerializer(
+                    {
+                        "id": outcome.payer_binding.id,
+                        "payer_type": outcome.payer_binding.payer_type,
+                        "price_list_id": outcome.payer_binding.price_list_id,
+                    }
+                ).data,
                 "arrival_enquiry": (
                     ArrivalEnquirySerializer(outcome.arrival_enquiry).data
                     if outcome.arrival_enquiry is not None
@@ -138,13 +153,7 @@ class VisitCheckInView(TenantAPIView):
             },
             status=status.HTTP_201_CREATED,
         )
-        response.idempotency_body = {
-            "visit_id": str(outcome.visit.id),
-            "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
-            "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
-            "patient_id": str(outcome.visit.patient_id),
-            "next_action": "LAB_REQUEST_CAPTURE" if outcome.visit.visit_type == "LAB_ONLY" else "CHECK_IN_COMPLETE",
-        }
+        _store_exact_idempotent_response(response)
         response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
         return response
 
@@ -196,7 +205,7 @@ class ArrivalEnquiryView(TenantAPIView):
             {"id": str(outcome.enquiry.id), "enquiry_id": str(outcome.enquiry.id), "enquiry": data},
             status=status.HTTP_201_CREATED,
         )
-        response.idempotency_body = {"enquiry_id": str(outcome.enquiry.id)}
+        _store_exact_idempotent_response(response)
         response.result_reference = {"entity_type": "ArrivalEnquiry", "entity_id": str(outcome.enquiry.id)}
         return response
 
@@ -220,7 +229,7 @@ class ReferralSourceView(TenantAPIView):
             **serializer.validated_data,
         )
         response = Response(VisitSerializer(visit).data)
-        response.idempotency_body = {"visit_id": str(visit.id), "version": visit.version}
+        _store_exact_idempotent_response(response)
         response.result_reference = {"entity_type": "Visit", "entity_id": str(visit.id)}
         return response
 
@@ -353,6 +362,6 @@ class VisitCancelErrorView(TenantAPIView):
                 "invoice": InvoiceSerializer(outcome.invoice).data if outcome.invoice is not None else None,
             }
         )
-        response.idempotency_body = {"visit_id": str(outcome.visit.id), "state": outcome.visit.state}
+        _store_exact_idempotent_response(response)
         response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
         return response

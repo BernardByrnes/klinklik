@@ -1,19 +1,31 @@
+import json
 from datetime import date, timedelta
 
 import pytest
 from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from application.reception.commands import patient_register, visit_check_in
+from application.reception.visit_query import get_clinical_projection, get_visit_projection
 from audit.models import AuditEvent
 from billing.models import Invoice, InvoiceItem, ServicePrice
+from clinical.models import ClinicalNote, Diagnosis, Encounter, PatientAllergyState, TriageAssessment
+from clinical.serializers import EncounterSerializer
 from core.services import tenant_atomic
 from patients.models import Patient
-from scheduling.models import ArrivalEnquiry, QueueEntry, Visit
+from scheduling.models import ArrivalEnquiry, FollowUpRecommendation, QueueEntry, Visit
 from tenancy.models import Department, FacilityWorkflowPolicy, Organisation
 
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def s01_target_cutover(enabled_mig001_target):
+    """Run reception API tests against the explicitly gated target routes."""
+
+    return enabled_mig001_target
 
 
 def registration_payload():
@@ -49,6 +61,16 @@ def check_in(client, patient_id, key="s01-checkin-1", **extra):
         format="json",
         HTTP_IDEMPOTENCY_KEY=key,
     )
+
+
+def assert_exact_replay(first, replay):
+    assert replay.status_code == first.status_code
+    assert replay.data == first.data
+    assert json.loads(replay.content) == json.loads(first.content)
+    first_headers = {key.lower(): value for key, value in first.items() if key.lower() != "idempotent-replay"}
+    replay_headers = {key.lower(): value for key, value in replay.items() if key.lower() != "idempotent-replay"}
+    assert replay_headers == first_headers
+    assert replay["Idempotent-Replay"] == "true"
 
 
 def test_registration_duplicate_resolution_and_audit(tenant, authed_client):
@@ -167,6 +189,106 @@ def test_check_in_opens_visit_queue_and_issued_consultation_invoice(tenant, auth
     assert Visit.objects.count() == 1
     assert QueueEntry.objects.filter(visit=visit).count() == 1
     assert Invoice.objects.filter(visit=visit).count() == 1
+
+
+def test_created_command_replays_are_byte_and_payload_equivalent(tenant, authed_client):
+    registration_payload_one = {
+        **registration_payload(),
+        "first_name": "Replay",
+        "last_name": "Registration",
+        "phone": "0700000101",
+    }
+    registered = register(authed_client, registration_payload_one, key="s01-replay-register")
+    registered_replay = register(authed_client, registration_payload_one, key="s01-replay-register")
+    assert_exact_replay(registered, registered_replay)
+
+    patient_id = registered.data["patient_id"]
+    checked_in = check_in(
+        authed_client,
+        patient_id,
+        key="s01-replay-checkin",
+        department_id=str(tenant.department.id),
+    )
+    checked_in_replay = check_in(
+        authed_client,
+        patient_id,
+        key="s01-replay-checkin",
+        department_id=str(tenant.department.id),
+    )
+    assert_exact_replay(checked_in, checked_in_replay)
+
+    cancel_registration = register(
+        authed_client,
+        {**registration_payload(), "first_name": "Replay", "last_name": "Cancellation", "phone": "0700000102"},
+        key="s01-replay-cancel-register",
+    )
+    cancel_checkin = check_in(
+        authed_client,
+        cancel_registration.data["patient_id"],
+        key="s01-replay-cancel-checkin",
+        department_id=str(tenant.department.id),
+    )
+    cancel_visit = Visit.objects.get(id=cancel_checkin.data["visit_id"])
+    cancel_payload = {"reason": "Synthetic replay cancellation", "expected_version": cancel_visit.version}
+    cancelled = authed_client.post(
+        f"/api/v1/reception/visits/{cancel_visit.id}/cancel-error/",
+        cancel_payload,
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s01-replay-cancel",
+    )
+    cancelled_replay = authed_client.post(
+        f"/api/v1/reception/visits/{cancel_visit.id}/cancel-error/",
+        cancel_payload,
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s01-replay-cancel",
+    )
+    assert_exact_replay(cancelled, cancelled_replay)
+
+    referral_registration = register(
+        authed_client,
+        {**registration_payload(), "first_name": "Replay", "last_name": "Referral", "phone": "0700000103"},
+        key="s01-replay-referral-register",
+    )
+    referral_checkin = check_in(
+        authed_client,
+        referral_registration.data["patient_id"],
+        key="s01-replay-referral-checkin",
+        department_id=str(tenant.department.id),
+    )
+    referral_visit = Visit.objects.get(id=referral_checkin.data["visit_id"])
+    referral_payload = {"source_type": "REFERRED_PERSON", "source_name": "Synthetic referral"}
+    referred = authed_client.post(
+        f"/api/v1/reception/visits/{referral_visit.id}/referral-source/",
+        referral_payload,
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s01-replay-referral",
+    )
+    referred_replay = authed_client.post(
+        f"/api/v1/reception/visits/{referral_visit.id}/referral-source/",
+        referral_payload,
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s01-replay-referral",
+    )
+    assert_exact_replay(referred, referred_replay)
+
+    enquiry_payload = {
+        "reason_code": "SERVICE_UNAVAILABLE",
+        "source_event_id": "s01-replay-arrival-enquiry",
+        "safe_notes": "Synthetic replay note",
+    }
+    enquiry = authed_client.post(
+        "/api/v1/reception/arrival-enquiries/",
+        enquiry_payload,
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s01-replay-enquiry",
+    )
+    enquiry_replay = authed_client.post(
+        "/api/v1/reception/arrival-enquiries/",
+        enquiry_payload,
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s01-replay-enquiry",
+    )
+    assert_exact_replay(enquiry, enquiry_replay)
 
 
 def test_check_in_warns_and_audits_when_patient_has_prior_balance(tenant, authed_client):
@@ -446,6 +568,99 @@ def test_visit_context_filters_clinical_values_by_role_and_audits_clinical_read(
     assert AuditEvent.objects.filter(event_code="PHI_READ").count() == 1
 
 
+def test_clinical_context_serialization_has_no_lazy_owner_queries(tenant, authed_client):
+    patient = register(
+        authed_client,
+        {**registration_payload(), "first_name": "Owner", "last_name": "Projection"},
+        key="s01-register-owner-projection",
+    ).data
+    checked_in = check_in(
+        authed_client,
+        patient["patient_id"],
+        key="s01-checkin-owner-projection",
+        department_id=str(tenant.department.id),
+    )
+    assert checked_in.status_code == 201, checked_in.data
+    with tenant_atomic(tenant.organisation.id):
+        patient_row = Patient.objects.get(id=patient["patient_id"])
+        visit = Visit.objects.get(id=checked_in.data["visit_id"])
+        queue = QueueEntry.objects.get(id=checked_in.data["queue_id"])
+        encounter = Encounter.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            patient=patient_row,
+            visit=visit,
+            queue_entry=queue,
+            encounter_no="ENC-S01-OWNER-PROJECTION",
+            clinician=tenant.user,
+            complaints=[{"text": "cough"}],
+        )
+        ClinicalNote.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            encounter=encounter,
+            author=tenant.user,
+            content={"consultation": "Owner query projection"},
+        )
+        Diagnosis.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            encounter=encounter,
+            recorded_by=tenant.user,
+            diagnosis_type="FINAL",
+            label="Synthetic diagnosis",
+            is_primary=True,
+        )
+        FollowUpRecommendation.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            patient=patient_row,
+            encounter=encounter,
+            created_by=tenant.user,
+            instructions="Synthetic follow-up",
+        )
+        PatientAllergyState.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            patient=patient_row,
+            status="NKA",
+            updated_by=tenant.user,
+        )
+        TriageAssessment.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            queue_entry=queue,
+            patient=patient_row,
+            assessed_by=tenant.user,
+            chief_complaint="cough",
+            observations={},
+        )
+
+        projection = get_visit_projection(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            visit_id=visit.id,
+        )
+        with CaptureQueriesContext(connection) as owner_queries:
+            clinical_projection = get_clinical_projection(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                projection=projection,
+                include_clinical=True,
+            )
+        with CaptureQueriesContext(connection) as serializer_queries:
+            payload = EncounterSerializer(
+                clinical_projection.clinical_values,
+                many=True,
+            ).data
+
+        assert owner_queries, "QRY-003 must load its owner projections explicitly"
+        assert len(serializer_queries) == 0
+        assert payload[0]["diagnoses"][0]["label"] == "Synthetic diagnosis"
+        assert payload[0]["follow_up"]["instructions"] == "Synthetic follow-up"
+        assert payload[0]["triage_complaint"] == "cough"
+
+
 def test_arrival_enquiry_has_no_patient_and_converts_atomically(tenant, authed_client):
     enquiry_response = authed_client.post(
         "/api/v1/reception/arrival-enquiries/",
@@ -519,7 +734,7 @@ def test_canonical_check_in_permission_is_server_enforced(tenant, authed_client)
     assert response.status_code == 403
 
 
-def test_command_service_contract_runs_inside_tenant_transaction(tenant):
+def test_command_service_contract_runs_inside_tenant_transaction(tenant, enabled_mig001_target):
     with tenant_atomic(tenant.organisation.id):
         registered = patient_register(
             organisation=tenant.organisation,

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest } from "../../../lib/api";
+import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { QueueEntry } from "../../../features/clinic";
 import { IconCheckCircle, IconTriage } from "../../../components/icons";
@@ -42,6 +43,7 @@ function errorMessage(error: unknown) {
 function TriageWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
+  const queueKey = useProtectedQueryKey("queue", "WAITING,CALLED");
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("entry");
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
@@ -55,7 +57,7 @@ function TriageWorkspace() {
   const [error, setError] = useState("");
 
   const queue = useQuery({
-    queryKey: ["queue", "WAITING,CALLED"],
+    queryKey: queueKey,
     queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/?status=WAITING,CALLED"),
     enabled: can("triage.record"),
   });
@@ -98,7 +100,7 @@ function TriageWorkspace() {
       setSystolic("");
       setDiastolic("");
       setSelectedId(null);
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
     },
     onError: (reason) => {
       setNotice("");

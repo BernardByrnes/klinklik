@@ -1,5 +1,14 @@
 import type { SessionResponse } from "../generated/api-client";
 
+import {
+  clearAuthority,
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  setAuthorityFacility,
+  setAuthoritySession,
+  type AuthoritySnapshot,
+} from "./authority";
+
 export type ApiSession = SessionResponse;
 export type RoleGrant = SessionResponse["roles"][number];
 export type Facility = SessionResponse["facilities"][number];
@@ -23,15 +32,30 @@ export class ApiRequestError extends Error {
   }
 }
 
+export class StaleAuthorityResponseError extends Error {
+  constructor() {
+    super("The response belongs to an earlier authority or facility context.");
+    this.name = "StaleAuthorityResponseError";
+  }
+}
+
 let accessToken: string | null = null;
 let facilityId: string | null = null;
+const activeProtectedControllers = new Set<AbortController>();
+
+export function cancelProtectedRequests() {
+  for (const controller of activeProtectedControllers) controller.abort();
+  activeProtectedControllers.clear();
+}
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
 
 export function setFacilityId(id: string | null) {
+  if (facilityId === id) return;
   facilityId = id;
+  setAuthorityFacility(id);
 }
 
 let restoreInFlight: Promise<ApiSession | null> | null = null;
@@ -47,12 +71,19 @@ export function restoreSession(): Promise<ApiSession | null> {
         if (!response.ok) {
           accessToken = null;
           facilityId = null;
+          clearAuthority();
           return null;
         }
         const data = (await response.json()) as ApiSession;
         accessToken = data.access_token;
         facilityId = data.facilities[0]?.id || null;
+        setAuthoritySession(data.organisation.id, facilityId);
         return data;
+      } catch (error) {
+        accessToken = null;
+        facilityId = null;
+        clearAuthority();
+        throw error;
       } finally {
         restoreInFlight = null;
       }
@@ -80,25 +111,47 @@ export async function login(username: string, password: string, organisationId?:
     throw new Error(data.detail || "Could not sign in.");
   }
   accessToken = data.access_token;
+  facilityId = data.facilities[0]?.id || null;
+  setAuthoritySession(data.organisation.id, facilityId);
   return data as ApiSession;
 }
 
 export async function logout() {
-  if (accessToken) {
-    await fetch(API_URL + "/api/v1/auth/logout/", {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        Authorization: "Bearer " + accessToken,
-        ...(facilityId ? { "X-Facility-Id": facilityId } : {}),
-      },
-    });
+  cancelProtectedRequests();
+  try {
+    if (accessToken) {
+      await fetch(API_URL + "/api/v1/auth/logout/", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Authorization: "Bearer " + accessToken,
+          ...(facilityId ? { "X-Facility-Id": facilityId } : {}),
+        },
+      });
+    }
+  } finally {
+    accessToken = null;
+    facilityId = null;
+    clearAuthority();
   }
-  accessToken = null;
-  facilityId = null;
+}
+
+function attachExternalAbort(signal: AbortSignal | null | undefined, controller: AbortController) {
+  if (!signal) return () => undefined;
+  if (signal.aborted) {
+    controller.abort(signal.reason);
+    return () => undefined;
+  }
+  const abort = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  return () => signal.removeEventListener("abort", abort);
 }
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+  const origin: AuthoritySnapshot = getAuthoritySnapshot();
+  const controller = new AbortController();
+  const removeExternalAbort = attachExternalAbort(init.signal, controller);
+  activeProtectedControllers.add(controller);
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
   if (accessToken) {
@@ -107,20 +160,29 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retry 
   if (facilityId) {
     headers.set("X-Facility-Id", facilityId);
   }
-  const response = await fetch(API_URL + path, {
-    ...init,
-    headers,
-    credentials: "include",
-  });
-  if (response.status === 401 && retry && (await refreshAccessToken())) {
-    return apiRequest<T>(path, init, false);
+  try {
+    const response = await fetch(API_URL + path, {
+      ...init,
+      headers,
+      credentials: "include",
+      signal: controller.signal,
+    });
+    if (!isCurrentAuthority(origin)) throw new StaleAuthorityResponseError();
+    if (response.status === 401 && retry && (await refreshAccessToken())) {
+      if (!isCurrentAuthority(origin)) throw new StaleAuthorityResponseError();
+      return apiRequest<T>(path, init, false);
+    }
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!isCurrentAuthority(origin)) throw new StaleAuthorityResponseError();
+    if (!response.ok) {
+      throw new ApiRequestError(response.status, data, response.headers);
+    }
+    return data as T;
+  } finally {
+    removeExternalAbort();
+    activeProtectedControllers.delete(controller);
   }
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    throw new ApiRequestError(response.status, data, response.headers);
-  }
-  return data as T;
 }
 
 export function newIdempotencyKey(prefix: string) {

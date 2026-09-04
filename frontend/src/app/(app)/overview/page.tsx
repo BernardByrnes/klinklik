@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiRequest } from "../../../lib/api";
+import { useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { uiRole } from "../../../lib/roles";
 import { Invoice, QueueEntry } from "../../../features/clinic";
@@ -80,17 +81,19 @@ function headerCta(role: ReturnType<typeof uiRole>): { label: string; href: stri
 
 export default function OverviewPage() {
   const { session, can, currentFacility } = useSession();
+  const queueKey = useProtectedQueryKey("queue");
+  const outstandingInvoicesKey = useProtectedQueryKey("invoices", "outstanding");
   const role = uiRole(session!);
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => setNow(new Date()), []);
 
   const queue = useQuery({
-    queryKey: ["queue"],
+    queryKey: queueKey,
     queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/"),
     enabled: can("queue.view"),
   });
   const unpaidInvoices = useQuery({
-    queryKey: ["invoices", "outstanding"],
+    queryKey: outstandingInvoicesKey,
     queryFn: () => apiRequest<Invoice[]>("/api/v1/billing/invoices/?status=ISSUED,PARTIALLY_PAID"),
     enabled: can("billing.invoice.create"),
   });

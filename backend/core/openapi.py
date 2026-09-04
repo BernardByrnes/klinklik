@@ -26,6 +26,19 @@ class KlinKlikAutoSchema(AutoSchema):
             return response_serializer_class()
         return super().get_response_serializer(path, method)
 
+    def get_response_serializers_by_status(self, path, method):
+        configured = getattr(self.view, "response_serializer_classes_by_status", None) or {}
+        return configured.get(method.upper(), {})
+
+    def get_components(self, path, method):
+        components = super().get_components(path, method)
+        for serializer_class in self.get_response_serializers_by_status(path, method).values():
+            serializer = serializer_class() if isinstance(serializer_class, type) else serializer_class
+            if isinstance(serializer, serializers.Serializer):
+                component_name = self.get_component_name(serializer)
+                components.setdefault(component_name, self.map_serializer(serializer))
+        return components
+
     def _is_list_response(self, path, method):
         configured = getattr(self.view, "response_is_list", None)
         if isinstance(configured, dict):
@@ -35,28 +48,33 @@ class KlinKlikAutoSchema(AutoSchema):
         return is_list_view(path, method, self.view)
 
     def get_responses(self, path, method):
+        method = method.upper()
         if method == "DELETE":
             return {"204": {"description": ""}}
 
         self.response_media_types = self.map_renderers(path, method)
-        serializer = self.get_response_serializer(path, method)
-        item_schema = self.get_reference(serializer) if isinstance(serializer, serializers.Serializer) else {}
-        response_schema = item_schema
-        if self._is_list_response(path, method):
-            response_schema = {"type": "array", "items": item_schema}
-            paginator = self.get_paginator()
-            if paginator:
-                response_schema = paginator.get_paginated_response_schema(response_schema)
-        status_code = "201" if method == "POST" else "200"
-        return {
-            status_code: {
+        configured = self.get_response_serializers_by_status(path, method)
+        if not configured:
+            configured = {"201" if method == "POST" else "200": self.get_response_serializer(path, method)}
+
+        responses = {}
+        for status_code, serializer_class in sorted(configured.items(), key=lambda item: str(item[0])):
+            serializer = serializer_class() if isinstance(serializer_class, type) else serializer_class
+            item_schema = self.get_reference(serializer) if isinstance(serializer, serializers.Serializer) else {}
+            response_schema = item_schema
+            if self._is_list_response(path, method):
+                response_schema = {"type": "array", "items": item_schema}
+                paginator = self.get_paginator()
+                if paginator:
+                    response_schema = paginator.get_paginated_response_schema(response_schema)
+            responses[str(status_code)] = {
                 "content": {
                     content_type: {"schema": response_schema}
                     for content_type in self.response_media_types
                 },
                 "description": "",
             }
-        }
+        return responses
 
     def get_request_serializer(self, path, method):
         request_serializer_classes = getattr(self.view, "request_serializer_classes", None) or {}

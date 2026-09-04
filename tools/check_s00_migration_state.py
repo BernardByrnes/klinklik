@@ -35,7 +35,7 @@ def main() -> int:
     if connection.vendor != "postgresql":
         print("NOT EXECUTED: S-00 migration-state proof requires PostgreSQL.")
         return 2
-    applied = MigrationRecorder(connection).applied_migrations()
+    applied = set(MigrationRecorder(connection).applied_migrations().keys())
     missing = sorted(REQUIRED_S00 - applied)
     if missing:
         for app, name in missing:

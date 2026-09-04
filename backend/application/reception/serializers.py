@@ -4,6 +4,7 @@ from patients.models import Patient
 from patients.serializers import PatientCreateSerializer, PatientSerializer
 from scheduling.models import ArrivalEnquiry, Visit
 from scheduling.serializers import QueueEntrySerializer
+from billing.models import PriceList
 from billing.serializers import InvoiceSerializer
 from clinical.serializers import EncounterSerializer
 
@@ -154,6 +155,17 @@ class PatientRegisterResponseSerializer(PatientSerializer):
         fields = PatientSerializer.Meta.fields + ["patient_id", "next_action", "patient", "duplicate_candidates"]
 
 
+class PatientDuplicateResponseSerializer(serializers.Serializer):
+    duplicate_candidates = PatientDuplicateCandidateSerializer(many=True)
+    next_action = serializers.CharField()
+
+
+class PayerBindingSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    payer_type = serializers.ChoiceField(choices=PriceList.PAYER_TYPE_CHOICES)
+    price_list_id = serializers.UUIDField(allow_null=True)
+
+
 class VisitCheckInResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     visit_id = serializers.UUIDField()
@@ -164,7 +176,7 @@ class VisitCheckInResponseSerializer(serializers.Serializer):
     visit = VisitSerializer()
     queue = QueueEntrySerializer(allow_null=True)
     invoice = InvoiceSerializer(allow_null=True)
-    payer_binding = serializers.DictField()
+    payer_binding = PayerBindingSerializer()
     arrival_enquiry = ArrivalEnquirySerializer(allow_null=True, required=False)
 
 
@@ -231,12 +243,28 @@ class VisitCancelErrorResponseSerializer(serializers.Serializer):
     invoice = InvoiceSerializer(allow_null=True)
 
 
+class PatientCheckInPatientSerializer(serializers.ModelSerializer):
+    display_name = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Patient
+        fields = ["id", "patient_no", "display_name", "sex", "date_of_birth", "version"]
+        read_only_fields = fields
+
+
+class CheckInVisitSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Visit
+        fields = ["id", "local_service_date", "visit_type", "state", "opened_at", "version"]
+        read_only_fields = fields
+
+
 class PatientCheckInSummarySerializer(serializers.Serializer):
-    patient = PatientSerializer()
+    patient = PatientCheckInPatientSerializer()
     outstanding_balance = serializers.DecimalField(max_digits=14, decimal_places=2)
     outstanding_invoice_no = serializers.CharField(allow_null=True)
     outstanding_visit_id = serializers.UUIDField(allow_null=True)
-    active_visit = VisitSerializer(allow_null=True)
+    active_visit = CheckInVisitSummarySerializer(allow_null=True)
     active_queue_label = serializers.CharField(allow_null=True)
 
 
@@ -251,6 +279,8 @@ __all__ = [
     "VisitCancelErrorSerializer",
     "VisitSerializer",
     "PatientRegisterResponseSerializer",
+    "PatientDuplicateResponseSerializer",
+    "PayerBindingSerializer",
     "VisitCheckInResponseSerializer",
     "ArrivalEnquiryResponseSerializer",
     "QueueHistoryEntrySerializer",
@@ -259,4 +289,6 @@ __all__ = [
     "VisitContextResponseSerializer",
     "VisitCancelErrorResponseSerializer",
     "PatientCheckInSummarySerializer",
+    "PatientCheckInPatientSerializer",
+    "CheckInVisitSummarySerializer",
 ]

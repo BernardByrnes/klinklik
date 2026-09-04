@@ -170,14 +170,31 @@ def _operation_types(schema):
         request_schema = ((contract.get("requestBody") or {}).get("content") or {}).get("application/json", {}).get("schema")
         if request_schema:
             types.append(f"export type {_pascal_case(operation_id)}Request = {_ts_type(request_schema, components={})};")
-        response_schema = None
+        success_responses = []
         for code in sorted((contract.get("responses") or {}).keys()):
             if str(code).startswith("2"):
                 response_schema = (((contract["responses"][code] or {}).get("content") or {}).get("application/json", {}).get("schema"))
                 if response_schema:
-                    break
-        if response_schema:
-            types.append(f"export type {_pascal_case(operation_id)}Response = {_ts_type(response_schema, components={})};")
+                    success_responses.append((str(code), response_schema))
+        if len(success_responses) == 1:
+            types.append(
+                f"export type {_pascal_case(operation_id)}Response = "
+                f"{_ts_type(success_responses[0][1], components={})};"
+            )
+        elif success_responses:
+            response_types = []
+            for status_code, response_schema in success_responses:
+                status_type = f"{_pascal_case(operation_id)}Response{status_code}"
+                types.append(
+                    f"export type {status_type} = "
+                    f"{_ts_type(response_schema, components={})};"
+                )
+                response_types.append(status_type)
+            types.append(
+                f"export type {_pascal_case(operation_id)}Response = "
+                + " | ".join(response_types)
+                + ";"
+            )
     return types
 
 

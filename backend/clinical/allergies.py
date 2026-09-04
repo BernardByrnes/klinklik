@@ -128,7 +128,7 @@ def _snapshot(*, organisation_id, facility_id, patient_id, state=None, active=No
 
 
 def patient_allergy_state_etag(*, organisation_id, facility_id, patient_id, state=None, active=None):
-    if state is None:
+    if state is None and active is None:
         state = _state_query(
             organisation_id=organisation_id,
             facility_id=facility_id,

@@ -1,6 +1,8 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.contrib.postgres.constraints import ExclusionConstraint
+from django.contrib.postgres.fields import DateRangeField, RangeOperators
 from django.db import models
 
 from core.clock import now
@@ -71,6 +73,26 @@ class ServicePrice(FacilityScopedModel):
             models.CheckConstraint(
                 condition=models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=models.F("effective_from")),
                 name="service_price_effective_dates_valid",
+            ),
+            ExclusionConstraint(
+                name="service_price_active_period_excl",
+                expressions=[
+                    (models.F("organisation"), RangeOperators.EQUAL),
+                    (models.F("facility"), RangeOperators.EQUAL),
+                    (models.F("price_list"), RangeOperators.EQUAL),
+                    (models.F("service"), RangeOperators.EQUAL),
+                    (
+                        models.Func(
+                            models.F("effective_from"),
+                            models.F("effective_to"),
+                            models.Value("[]"),
+                            function="daterange",
+                            output_field=DateRangeField(),
+                        ),
+                        RangeOperators.OVERLAPS,
+                    ),
+                ],
+                condition=models.Q(is_active=True, active=True),
             ),
         ]
 

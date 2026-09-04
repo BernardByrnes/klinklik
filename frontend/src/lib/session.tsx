@@ -11,13 +11,15 @@ import {
   restoreSession,
   setFacilityId,
 } from "./api";
+import { subscribeAuthority } from "./authority";
+import { clearProtectedState } from "./query-state";
 
 type SessionContextValue = {
   session: ApiSession | null;
   restoring: boolean;
   signIn: (username: string, password: string, organisationId?: string) => Promise<ApiSession>;
   signOut: () => Promise<void>;
-  switchFacility: (facilityId: string) => void;
+  switchFacility: (facilityId: string) => Promise<void>;
   can: (capability: string) => boolean;
   currentFacility: Facility | undefined;
 };
@@ -29,6 +31,12 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
   const [session, setSession] = useState<ApiSession | null>(null);
   const [facilityId, setFacilityIdState] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(true);
+
+  useEffect(() => {
+    return subscribeAuthority(() => {
+      void clearProtectedState(queryClient).catch(() => undefined);
+    });
+  }, [queryClient]);
 
   useEffect(() => {
     let mounted = true;
@@ -52,30 +60,34 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
 
   const signIn = useCallback(
     async (username: string, password: string, organisationId?: string) => {
+      await clearProtectedState(queryClient);
       const opened = await apiLogin(username, password, organisationId);
       const firstFacility = opened.facilities[0]?.id ?? null;
-      setFacilityId(firstFacility);
       setSession(opened);
       setFacilityIdState(firstFacility);
       return opened;
     },
-    [],
+    [queryClient],
   );
 
   const signOut = useCallback(async () => {
-    await apiLogout();
-    queryClient.clear();
-    setSession(null);
-    setFacilityIdState(null);
+    try {
+      await clearProtectedState(queryClient);
+      await apiLogout();
+    } finally {
+      setSession(null);
+      setFacilityIdState(null);
+    }
   }, [queryClient]);
 
   const switchFacility = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      if (!session?.facilities.some((facility) => facility.id === id)) return;
+      await clearProtectedState(queryClient);
       setFacilityId(id);
       setFacilityIdState(id);
-      queryClient.invalidateQueries();
     },
-    [queryClient],
+    [queryClient, session],
   );
 
   const value = useMemo<SessionContextValue>(

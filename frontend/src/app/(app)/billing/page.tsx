@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest } from "../../../lib/api";
+import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { Invoice, Patient, Receipt, Service } from "../../../features/clinic";
 import { IconBilling, IconCheckCircle, IconPrinter, IconSearch } from "../../../components/icons";
@@ -70,8 +71,12 @@ function BillingWorkspace() {
     return () => clearTimeout(timer);
   }, [patientSearch]);
 
+  const invoicesKey = useProtectedQueryKey("invoices", "outstanding", debouncedSearch);
+  const patientsKey = useProtectedQueryKey("patients", debouncedPatientSearch);
+  const servicesKey = useProtectedQueryKey("services");
+
   const invoices = useQuery({
-    queryKey: ["invoices", "outstanding", debouncedSearch],
+    queryKey: invoicesKey,
     queryFn: () =>
       apiRequest<Invoice[]>(
         "/api/v1/billing/invoices/?status=ISSUED,PARTIALLY_PAID" +
@@ -81,12 +86,12 @@ function BillingWorkspace() {
   });
 
   const patientResults = useQuery({
-    queryKey: ["patients", debouncedPatientSearch],
+    queryKey: patientsKey,
     queryFn: () => apiRequest<Patient[]>("/api/v1/patients/?q=" + encodeURIComponent(debouncedPatientSearch)),
     enabled: can("patient.view"),
   });
   const services = useQuery({
-    queryKey: ["services"],
+    queryKey: servicesKey,
     queryFn: () => apiRequest<Service[]>("/api/v1/billing/services/"),
   });
 
@@ -114,7 +119,7 @@ function BillingWorkspace() {
       setPaymentAmount(invoice.balance);
       setNotice(`Invoice ${invoice.invoice_no} created for ${invoice.patient_name}.`);
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
     },
     onError: (reason) => {
       setNotice("");
@@ -134,7 +139,7 @@ function BillingWorkspace() {
       setNotice(`Payment recorded. Receipt ${data.receipt_no}.`);
       setError("");
       setReference("");
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
     },
     onError: (reason) => {
       setNotice("");

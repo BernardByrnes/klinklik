@@ -5,9 +5,9 @@ export type {
   ClinicalNote,
   ClinicalNoteContent,
   ComplaintDurationUnit,
+  CreatePatientRegisterResponse,
   Department,
   DepartmentEnvelope,
-  Diagnosis,
   DiagnosisType,
   Encounter,
   EncounterDisposition,
@@ -16,6 +16,7 @@ export type {
   InvoiceItem,
   Patient,
   PatientCheckInSummary,
+  PatientDuplicateResponse,
   PatientDuplicateCandidate,
   PatientRegisterResponse,
   Payment,
@@ -28,5 +29,10 @@ export type {
   VisitCheckInResponse,
   VisitContextResponse,
 } from "../../generated/api-client";
+
+// Diagnosis mutations and their query both return DiagnosisStateResponse. Keep
+// the consumer aligned with the generated response item's shape instead of
+// importing a similarly named component that may drift independently.
+export type Diagnosis = import("../../generated/api-client").DiagnosisStateResponse["diagnoses"][number];
 
 export type AllergyStatus = import("../../generated/api-client").Encounter["allergy_status"];

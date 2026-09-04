@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest } from "../../../lib/api";
+import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { QueueEntry } from "../../../features/clinic";
 import { IconQueue, IconSearch } from "../../../components/icons";
@@ -40,8 +41,9 @@ export default function QueuePage() {
   const [error, setError] = useState("");
 
   const statusParam = FILTERS.find((item) => item.key === filter)!.status;
+  const queueKey = useProtectedQueryKey("queue", statusParam);
   const queue = useQuery({
-    queryKey: ["queue", statusParam],
+    queryKey: queueKey,
     queryFn: () =>
       apiRequest<QueueEntry[]>("/api/v1/clinic/queue/" + (statusParam ? `?status=${statusParam}` : "")),
     enabled: can("queue.view"),
@@ -51,7 +53,7 @@ export default function QueuePage() {
     mutationFn: (id: string) => apiRequest<QueueEntry>(`/api/v1/clinic/queue/${id}/claim/`, { method: "POST", body: "{}" }),
     onSuccess: () => {
       setError("");
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
     },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "The claim could not be completed."),
   });

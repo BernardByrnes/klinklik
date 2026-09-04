@@ -281,12 +281,16 @@ class EncounterSerializer(serializers.ModelSerializer):
         return obj._allergy_snapshot
 
     def get_diagnoses(self, obj):
+        if hasattr(obj, "_diagnosis_snapshot_for_serialization"):
+            return obj._diagnosis_snapshot_for_serialization
         return active_diagnosis_snapshot(obj)
 
     def get_complaints(self, obj):
         return obj.complaints
 
     def get_triage_complaint(self, obj):
+        if hasattr(obj, "_triage_complaint_for_serialization"):
+            return obj._triage_complaint_for_serialization
         if obj.queue_entry_id is None:
             return None
         return TriageAssessment.objects.filter(
@@ -316,7 +320,10 @@ class EncounterSerializer(serializers.ModelSerializer):
         )
 
     def get_consultation_etag(self, obj):
-        return consultation_note_etag(encounter=obj, note=consultation_note_for_encounter(obj))
+        note = getattr(obj, "_consultation_note_for_serialization", None)
+        if not hasattr(obj, "_consultation_note_for_serialization"):
+            note = consultation_note_for_encounter(obj)
+        return consultation_note_etag(encounter=obj, note=note)
 
     def get_follow_up(self, obj):
         follow_up = getattr(obj, "_follow_up_for_serialization", None)
