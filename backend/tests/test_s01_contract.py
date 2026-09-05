@@ -16,6 +16,8 @@ def test_s01_openapi_keeps_status_specific_registration_and_typed_checkin_contra
         "/PatientRegisterResponse"
     )
     assert "PatientDuplicateResponse" in schema["components"]["schemas"]
+    duplicate_schema = schema["components"]["schemas"]["PatientDuplicateResponse"]
+    assert set(duplicate_schema["required"]) == {"duplicate_candidates", "next_action"}
     duplicate_candidate = schema["components"]["schemas"]["PatientDuplicateResponse"]["properties"]["duplicate_candidates"]
     assert duplicate_candidate["type"] == "array"
     assert set(duplicate_candidate["items"]["properties"]) == {
@@ -26,14 +28,24 @@ def test_s01_openapi_keeps_status_specific_registration_and_typed_checkin_contra
         "last_visit_date",
         "last_seen_at",
     }
+    created_schema = schema["components"]["schemas"]["PatientRegisterResponse"]
+    assert created_schema != duplicate_schema
+    assert set(created_schema["required"]) == {"patient_id", "next_action"}
+    assert set(created_schema["properties"]) == {"patient_id", "next_action"}
+    assert created_schema["properties"]["next_action"]["enum"] == ["CHECK_IN"]
+    assert duplicate_schema["properties"]["next_action"]["enum"] == ["RESOLVE_DUPLICATE"]
 
     check_in = schema["paths"]["/api/v1/reception/visits/check-in/"]["post"]
     check_in_response_ref = check_in["responses"]["201"]["content"]["application/json"]["schema"]["$ref"]
     check_in_response = schema["components"]["schemas"][check_in_response_ref.rsplit("/", 1)[-1]]
-    payer_binding = check_in_response["properties"]["payer_binding"]
-    assert payer_binding["properties"]["id"] == {"type": "string", "format": "uuid"}
-    assert payer_binding["properties"]["payer_type"]["enum"] == ["CASH", "SELF_PAY_MOMO"]
-    assert payer_binding["properties"]["price_list_id"]["nullable"] is True
+    assert set(check_in_response["properties"]) == {
+        "visit_id",
+        "queue_id",
+        "invoice_id",
+        "patient_id",
+        "next_action",
+    }
+    assert set(check_in_response["required"]) == set(check_in_response["properties"])
 
     summary = schema["paths"]["/api/v1/reception/patients/{id}/check-in-summary/"]["get"]
     summary_ref = summary["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]

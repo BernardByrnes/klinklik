@@ -53,7 +53,7 @@ test("S-01 reception supports enquiry conversion, cancellation, and accessible w
   await expect(page.getByText("This check-in will convert the recorded arrival enquiry atomically.", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Check in patient", exact: true }).click();
-  await expect(page.getByText(/checked in as/)).toBeVisible();
+  await expect(page.getByText(/checked in\./)).toBeVisible();
   await expect(page.getByText("Open visit already exists today", { exact: true })).toBeVisible();
 
   // REC-010: disabled until a reason exists, then leaves a retained context.

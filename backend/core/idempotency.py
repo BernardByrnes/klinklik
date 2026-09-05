@@ -224,8 +224,16 @@ def execute_idempotent(
     callback,
     response_schema_version=RESPONSE_SCHEMA_VERSION,
     result_reference=None,
+    replay_callback=None,
 ):
-    """Run a first-use callback or return the committed result for a replay."""
+    """Run a first-use callback or rebuild a committed replay response.
+
+    The durable PC-048 row is intentionally a PHI-minimal result envelope. A
+    command may provide a replay callback when its public response contains a
+    richer, still-authorised projection. Rebuilding that projection from the
+    committed result reference keeps the replay byte-equivalent without
+    copying the projection into the idempotency record.
+    """
 
     record, replay = claim(
         organisation=organisation,
@@ -235,11 +243,16 @@ def execute_idempotent(
         response_schema_version=response_schema_version,
     )
     if replay:
+        body = (
+            json_safe(replay_callback(record))
+            if replay_callback is not None
+            else record.response_body
+        )
         return IdempotencyOutcome(
             value=None,
             replay=True,
             status_code=record.status_code,
-            body=record.response_body,
+            body=body,
             headers=record.response_headers,
             result_reference=record.result_reference,
         )

@@ -290,6 +290,8 @@ def main():
                     and status[7] == 1
                 )
                 owner_matches = bool(status) and role is not None and status[6] == role[0]
+                # The web role must remain a non-owner: table ownership can
+                # bypass ordinary RLS semantics even when the policy exists.
                 if not policy_ok or owner_matches:
                     failures.append(f"{table}: missing ENABLE/FORCE or exact tenant policy semantics")
 

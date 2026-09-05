@@ -91,6 +91,43 @@ FOLLOW_UP_SCHEMA = {
         "updated_at": {"type": "string", "format": "date-time"},
     },
 }
+PATIENT_CONTEXT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "patient_no": {"type": "string"},
+        "display_name": {"type": "string"},
+        "sex": {"type": "string"},
+        "date_of_birth": {"type": "string", "format": "date", "nullable": True},
+        "version": {"type": "integer"},
+    },
+    "required": ["id", "patient_no", "display_name", "sex", "date_of_birth", "version"],
+}
+ALLERGY_CONTEXT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "patient_id": {"type": "string", "format": "uuid"},
+        "status": {"type": "string", "enum": ["NOT_RECORDED", "NKA", "UNKNOWN", "RECORDED"]},
+        "revision": {"type": "integer"},
+        "active_allergies": {"type": "array", "items": ACTIVE_ALLERGY_SCHEMA},
+        "etag": {"type": "string"},
+    },
+    "required": ["patient_id", "status", "revision", "active_allergies", "etag"],
+}
+VISIT_HISTORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "local_service_date": {"type": "string", "format": "date"},
+        "visit_type": {"type": "string"},
+        "state": {"type": "string"},
+        "opened_at": {"type": "string", "format": "date-time"},
+        "closed_at": {"type": "string", "format": "date-time", "nullable": True},
+        "version": {"type": "integer"},
+    },
+    "required": ["id", "local_service_date", "visit_type", "state", "opened_at", "closed_at", "version"],
+}
+EMPTY_OWNER_PROJECTION_SCHEMA = {"type": "object", "additionalProperties": True}
 
 
 class OpenAPISchemaField(serializers.JSONField):
@@ -255,6 +292,43 @@ class ProjectedField(serializers.SerializerMethodField):
         super().__init__(*args, **kwargs)
 
 
+class PatientContextProjectionSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    patient_no = serializers.CharField()
+    display_name = serializers.CharField()
+    sex = serializers.CharField()
+    date_of_birth = serializers.DateField(allow_null=True)
+    version = serializers.IntegerField()
+
+
+class AllergyContextProjectionSerializer(serializers.Serializer):
+    patient_id = serializers.UUIDField()
+    status = serializers.CharField()
+    revision = serializers.IntegerField()
+    active_allergies = serializers.ListField(child=OpenAPISchemaField(openapi_schema=ACTIVE_ALLERGY_SCHEMA))
+    etag = serializers.CharField()
+
+
+class VisitHistoryProjectionSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    local_service_date = serializers.DateField()
+    visit_type = serializers.CharField()
+    state = serializers.CharField()
+    opened_at = serializers.DateTimeField()
+    closed_at = serializers.DateTimeField(allow_null=True)
+    version = serializers.IntegerField()
+
+
+class OwnerProjectionSerializer(serializers.Serializer):
+    """Explicit empty-state envelope for an owner not yet enabled in S-01."""
+
+    # Owner domains may add their own non-PHI projection fields in their
+    # authorised slice.  S-01 deliberately exposes an empty object array for
+    # laboratory and pharmacy because those persistence contracts are not yet
+    # enabled; no guessed clinical or medication schema belongs here.
+    pass
+
+
 class EncounterSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     notes = ClinicalNoteSerializer(many=True, read_only=True)
@@ -270,6 +344,11 @@ class EncounterSerializer(serializers.ModelSerializer):
     allergies_review_is_current = ProjectedField({"type": "boolean"})
     consultation_etag = ProjectedField({"type": "string"})
     follow_up = ProjectedField({**FOLLOW_UP_SCHEMA, "nullable": True})
+    patient_projection = ProjectedField({**PATIENT_CONTEXT_SCHEMA, "nullable": True})
+    visit_history = ProjectedField({"type": "array", "items": VISIT_HISTORY_SCHEMA})
+    laboratory = ProjectedField({"type": "array", "items": EMPTY_OWNER_PROJECTION_SCHEMA})
+    prescriptions = ProjectedField({"type": "array", "items": EMPTY_OWNER_PROJECTION_SCHEMA})
+    dispenses = ProjectedField({"type": "array", "items": EMPTY_OWNER_PROJECTION_SCHEMA})
 
     def _allergy_snapshot(self, obj):
         if not hasattr(obj, "_allergy_snapshot"):
@@ -333,6 +412,22 @@ class EncounterSerializer(serializers.ModelSerializer):
             follow_up = follow_up_recommendation_for_encounter(obj)
         return FollowUpRecommendationSerializer(follow_up).data if follow_up is not None else None
 
+    def get_patient_projection(self, obj):
+        projection = getattr(obj, "_patient_projection_for_serialization", None)
+        return PatientContextProjectionSerializer(projection).data if projection is not None else None
+
+    def get_visit_history(self, obj):
+        return list(getattr(obj, "_visit_history_for_serialization", ()))
+
+    def get_laboratory(self, obj):
+        return list(getattr(obj, "_laboratory_for_serialization", ()))
+
+    def get_prescriptions(self, obj):
+        return list(getattr(obj, "_prescriptions_for_serialization", ()))
+
+    def get_dispenses(self, obj):
+        return list(getattr(obj, "_dispenses_for_serialization", ()))
+
     class Meta:
         model = Encounter
         fields = [
@@ -340,7 +435,7 @@ class EncounterSerializer(serializers.ModelSerializer):
             "allergy_status", "active_allergies", "allergy_revision", "allergy_state_etag",
             "allergies_reviewed_at", "allergies_reviewed_revision", "allergies_review_is_current",
             "facility", "clinician", "status", "disposition", "disposition_note", "started_at", "signed_at", "closed_at", "notes", "diagnoses",
-            "follow_up", "consultation_etag",
+            "follow_up", "consultation_etag", "patient_projection", "visit_history", "laboratory", "prescriptions", "dispenses",
         ]
 
 

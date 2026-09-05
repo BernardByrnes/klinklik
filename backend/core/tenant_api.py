@@ -94,6 +94,11 @@ class TenantAPIView(APIView):
             key=self._idempotency_key,
             fingerprint=self._idempotency_fingerprint,
             callback=lambda: handler(request, *args, **kwargs),
+            replay_callback=(
+                getattr(self, "replay_idempotent_response", None)
+                if callable(getattr(self, "replay_idempotent_response", None))
+                else None
+            ),
         )
         if outcome.replay:
             response = Response(

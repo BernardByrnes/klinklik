@@ -171,8 +171,7 @@ function PatientsWorkspace() {
   const [enquiryReason, setEnquiryReason] = useState("NO_CLINICIAN");
   const [enquiryNotes, setEnquiryNotes] = useState("");
   const [cancelReason, setCancelReason] = useState("");
-  const [lastCheckIn, setLastCheckIn] = useState<VisitCheckInResponse | null>(null);
-  const [cancelledVisit, setCancelledVisit] = useState<VisitCancelErrorResponse["visit"] | null>(null);
+  const [cancelledVisit, setCancelledVisit] = useState<string | null>(null);
   const [contextVisitId, setContextVisitId] = useState<string | null>(null);
   const [failedAction, setFailedAction] = useState<FailedAction>(null);
   const [candidateLoadingId, setCandidateLoadingId] = useState<string | null>(null);
@@ -222,8 +221,8 @@ function PatientsWorkspace() {
     enabled: Boolean(contextVisitId) && can("visit.read"),
   });
 
-  const activeVisit = lastCheckIn?.visit ?? patientSummary.data?.active_visit ?? null;
-  const openVisit = activeVisit && activeVisit.id !== cancelledVisit?.id ? activeVisit : null;
+  const activeVisit = patientSummary.data?.active_visit ?? null;
+  const openVisit = activeVisit && activeVisit.id !== cancelledVisit ? activeVisit : null;
   useEffect(() => {
     if (!openVisit) {
       setClockMs(null);
@@ -264,8 +263,8 @@ function PatientsWorkspace() {
         },
         registerIdempotencyKey.current ?? (registerIdempotencyKey.current = newIdempotencyKey("patient-register")),
       ),
-    onSuccess: (result) => {
-      if (!("patient" in result)) {
+    onSuccess: async (result) => {
+      if (result.next_action === "RESOLVE_DUPLICATE") {
         registerIdempotencyKey.current = null;
         setFailedAction(null);
         setDuplicateCandidates(result.duplicate_candidates);
@@ -273,17 +272,25 @@ function PatientsWorkspace() {
         setError("");
         return;
       }
-      const patient = result.patient ?? result;
       registerIdempotencyKey.current = null;
       setFailedAction(null);
-      setSelected(patient);
-      setLastCheckIn(null);
       setCancelledVisit(null);
       setContextVisitId(null);
-      setNotice(`${patient.display_name} registered as ${patient.patient_no}.`);
       setError("");
       setDuplicateCandidates([]);
       setDuplicateReason("");
+      const registeredPatientId = result.patient_id;
+      try {
+        // CMD-002 deliberately returns only its committed result reference.
+        // Fetch the normal minimum patient projection before showing the next
+        // independent CMD-001 check-in step.
+        const patient = await apiRequest<Patient>(`/api/v1/patients/${registeredPatientId}/`);
+        setSelected(patient);
+        setNotice(`${patient.display_name} registered as ${patient.patient_no}.`);
+      } catch (reason) {
+        setNotice("Patient registered. Search for the new patient to continue.");
+        setError(errorMessage(reason));
+      }
       setFirstName("");
       setLastName("");
       setPhone("");
@@ -324,14 +331,11 @@ function PatientsWorkspace() {
     onSuccess: (result) => {
       checkInIdempotencyKey.current = null;
       setFailedAction(null);
-      setLastCheckIn(result);
       setCancelledVisit(null);
       setContextVisitId(result.visit_id);
       setArrivalEnquiryId(null);
       setArrivalEnquiryVersion(null);
-      const label = result.queue?.queue_label;
-      const invoice = result.invoice?.invoice_no ? ` · invoice ${result.invoice.invoice_no}` : "";
-      setNotice(`${selected?.display_name ?? "Patient"} checked in${label ? ` as ${label}` : ""}${invoice}.`);
+      setNotice(`${selected?.display_name ?? "Patient"} checked in.`);
       setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patient-check-in-summary", selected?.id) });
@@ -371,7 +375,7 @@ function PatientsWorkspace() {
       enquiryIdempotencyKey.current = null;
       enquirySourceEventId.current = null;
       setArrivalEnquiryId(result.enquiry_id);
-      setArrivalEnquiryVersion(result.enquiry?.version ?? null);
+      setArrivalEnquiryVersion(null);
       setFailedAction(null);
       setNotice("Arrival enquiry recorded. It will be linked atomically to the next check-in.");
       setError("");
@@ -401,8 +405,7 @@ function PatientsWorkspace() {
     onSuccess: (result) => {
       cancelIdempotencyKey.current = null;
       setFailedAction(null);
-      setCancelledVisit(result.visit);
-      setLastCheckIn(null);
+      setCancelledVisit(result.visit_id);
       setContextVisitId(result.visit_id);
       setCancelReason("");
       setNotice("Erroneous check-in cancelled. The Visit and any invoice history were retained.");
@@ -452,7 +455,6 @@ function PatientsWorkspace() {
     try {
       const patient = await apiRequest<Patient>(`/api/v1/patients/${candidate.id}/`);
       setSelected(patient);
-      setLastCheckIn(null);
       setCancelledVisit(null);
       setContextVisitId(null);
       setDuplicateCandidates([]);
@@ -585,7 +587,6 @@ function PatientsWorkspace() {
                           className={active ? "bg-primary-soft text-primary-text border-primary-soft" : ""}
                           onClick={() => {
                             setSelected(patient);
-                            setLastCheckIn(null);
                             setCancelledVisit(null);
                             setContextVisitId(null);
                             setNotice("");
@@ -612,6 +613,7 @@ function PatientsWorkspace() {
               <div ref={registerRef} className="scroll-mt-24" />
               <CardTitleBar title="Register patient" />
               <form
+                aria-label="Register patient"
                 className="px-5 py-5 grid gap-4 sm:grid-cols-2"
                 onSubmit={(event: FormEvent) => {
                   event.preventDefault();
@@ -866,9 +868,9 @@ function PatientsWorkspace() {
                 <div className="rounded-[14px] border border-line-soft bg-surface-muted px-4 py-3" role="status">
                   <p className="text-[12px] font-semibold text-ink">Check-in cancelled in error</p>
                   <p className="mt-1 text-[12px] font-medium text-muted">
-                    The cancelled Visit remains retained as {cancelledVisit.id}. You may check in again if needed.
+                    The cancelled Visit remains retained as {cancelledVisit}. You may check in again if needed.
                   </p>
-                  <Button variant="link" className="mt-2" onClick={() => setContextVisitId(cancelledVisit.id)}>
+                  <Button variant="link" className="mt-2" onClick={() => setContextVisitId(cancelledVisit)}>
                     View cancelled visit context
                   </Button>
                 </div>

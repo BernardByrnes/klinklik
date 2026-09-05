@@ -12,8 +12,10 @@ from audit.models import AuditEvent
 from billing.models import Invoice, InvoiceItem, ServicePrice
 from clinical.models import ClinicalNote, Diagnosis, Encounter, PatientAllergyState, TriageAssessment
 from clinical.serializers import EncounterSerializer
+from core.idempotency import key_hash
+from core.models import IdempotencyRecord
 from core.services import tenant_atomic
-from patients.models import Patient
+from patients.models import Patient, PatientContact
 from scheduling.models import ArrivalEnquiry, FollowUpRecommendation, QueueEntry, Visit
 from tenancy.models import Department, FacilityWorkflowPolicy, Organisation
 
@@ -73,12 +75,44 @@ def assert_exact_replay(first, replay):
     assert replay["Idempotent-Replay"] == "true"
 
 
+def assert_phi_minimal_result(tenant, operation, key, expected):
+    with tenant_atomic(tenant.organisation.id):
+        record = IdempotencyRecord.objects.get(
+            organisation=tenant.organisation,
+            operation=operation,
+            key_hash=key_hash(key),
+        )
+        assert record.response_body == expected
+        assert set(record.result_reference) == {"entity_type", "entity_id"}
+        encoded = json.dumps(record.response_body).lower()
+        assert not any(
+            f'"{field}"' in encoded
+            for field in (
+                "first_name",
+                "last_name",
+                "phone",
+                "contacts",
+                "patient",
+                "queue",
+                "invoice",
+                "enquiry",
+                "safe_notes",
+                "source_event_id",
+            )
+        )
+
+
 def test_registration_duplicate_resolution_and_audit(tenant, authed_client):
     first = register(authed_client)
     assert first.status_code == 201, first.data
     patient_id = first.data["patient_id"]
     assert first.data["next_action"] == "CHECK_IN"
-    assert first.data["contacts"][0]["relationship"] == "NEXT_OF_KIN"
+    assert set(first.data) == {"patient_id", "next_action"}
+    assert PatientContact.objects.filter(
+        patient_id=patient_id,
+        relationship="NEXT_OF_KIN",
+        name="Kato",
+    ).exists()
 
     duplicate = register(authed_client, key="s01-register-duplicate")
     assert duplicate.status_code == 200, duplicate.data
@@ -130,8 +164,12 @@ def test_registration_accepts_partial_next_of_kin_contact(tenant, authed_client)
         key="s01-register-partial-kin",
     )
     assert response.status_code == 201, response.data
-    assert response.data["contacts"][0]["name"] == "Kato"
-    assert response.data["contacts"][0]["phone"] == ""
+    assert set(response.data) == {"patient_id", "next_action"}
+    assert PatientContact.objects.filter(
+        patient_id=response.data["patient_id"],
+        name="Kato",
+        phone="",
+    ).exists()
 
 
 def test_check_in_opens_visit_queue_and_issued_consultation_invoice(tenant, authed_client):
@@ -146,8 +184,13 @@ def test_check_in_opens_visit_queue_and_issued_consultation_invoice(tenant, auth
     )
     assert response.status_code == 201, response.data
     assert response.data["next_action"] == "CHECK_IN_COMPLETE"
-    assert response.data["invoice"]["status"] == "ISSUED"
-    assert response.data["queue"]["status"] == "WAITING"
+    assert set(response.data) == {
+        "visit_id",
+        "queue_id",
+        "invoice_id",
+        "patient_id",
+        "next_action",
+    }
 
     visit = Visit.objects.get(id=response.data["visit_id"])
     queue = QueueEntry.objects.get(id=response.data["queue_id"])
@@ -155,7 +198,9 @@ def test_check_in_opens_visit_queue_and_issued_consultation_invoice(tenant, auth
     assert visit.state == "OPEN"
     assert queue.visit_id == visit.id
     assert queue.queue_type == "TRIAGE"
+    assert queue.status == "WAITING"
     assert invoice.visit_id == visit.id
+    assert invoice.status == "ISSUED"
     assert invoice.items.filter(source_type="CONSULTATION", state="ACTIVE").count() == 1
     assert InvoiceItem.objects.filter(invoice=invoice).count() == 1
     assert AuditEvent.objects.filter(entity_id=str(visit.id), event_code="VISIT_OPENED").exists()
@@ -201,6 +246,12 @@ def test_created_command_replays_are_byte_and_payload_equivalent(tenant, authed_
     registered = register(authed_client, registration_payload_one, key="s01-replay-register")
     registered_replay = register(authed_client, registration_payload_one, key="s01-replay-register")
     assert_exact_replay(registered, registered_replay)
+    assert_phi_minimal_result(
+        tenant,
+        "CMD-002",
+        "s01-replay-register",
+        registered.data,
+    )
 
     patient_id = registered.data["patient_id"]
     checked_in = check_in(
@@ -216,6 +267,12 @@ def test_created_command_replays_are_byte_and_payload_equivalent(tenant, authed_
         department_id=str(tenant.department.id),
     )
     assert_exact_replay(checked_in, checked_in_replay)
+    assert_phi_minimal_result(
+        tenant,
+        "CMD-001",
+        "s01-replay-checkin",
+        checked_in.data,
+    )
 
     cancel_registration = register(
         authed_client,
@@ -243,6 +300,12 @@ def test_created_command_replays_are_byte_and_payload_equivalent(tenant, authed_
         HTTP_IDEMPOTENCY_KEY="s01-replay-cancel",
     )
     assert_exact_replay(cancelled, cancelled_replay)
+    assert_phi_minimal_result(
+        tenant,
+        "CMD-006",
+        "s01-replay-cancel",
+        cancelled.data,
+    )
 
     referral_registration = register(
         authed_client,
@@ -270,6 +333,12 @@ def test_created_command_replays_are_byte_and_payload_equivalent(tenant, authed_
         HTTP_IDEMPOTENCY_KEY="s01-replay-referral",
     )
     assert_exact_replay(referred, referred_replay)
+    assert_phi_minimal_result(
+        tenant,
+        "CMD-010",
+        "s01-replay-referral",
+        referred.data,
+    )
 
     enquiry_payload = {
         "reason_code": "SERVICE_UNAVAILABLE",
@@ -289,6 +358,12 @@ def test_created_command_replays_are_byte_and_payload_equivalent(tenant, authed_
         HTTP_IDEMPOTENCY_KEY="s01-replay-enquiry",
     )
     assert_exact_replay(enquiry, enquiry_replay)
+    assert_phi_minimal_result(
+        tenant,
+        "CMD-011",
+        "s01-replay-enquiry",
+        enquiry.data,
+    )
 
 
 def test_check_in_warns_and_audits_when_patient_has_prior_balance(tenant, authed_client):
@@ -394,7 +469,7 @@ def test_check_in_policy_and_non_consultation_visit_types(tenant, authed_client)
         department_id=str(tenant.department.id),
     )
     assert gated.status_code == 201, gated.data
-    assert gated.data["queue"]["status"] == "WAITING_PAYMENT"
+    assert QueueEntry.objects.get(id=gated.data["queue_id"]).status == "WAITING_PAYMENT"
     visible_queue = authed_client.get("/api/v1/clinic/queue/")
     assert visible_queue.status_code == 200, visible_queue.data
     assert gated.data["queue_id"] not in {entry["id"] for entry in visible_queue.data}
@@ -463,8 +538,10 @@ def test_cancel_error_is_reversible_and_does_not_recycle_queue_number(tenant, au
         department_id=str(tenant.department.id),
     )
     assert replacement.status_code == 201, replacement.data
-    assert replacement.data["queue"]["sequence"] > queue.sequence
-    assert replacement.data["invoice"]["invoice_no"] != invoice.invoice_no
+    replacement_queue = QueueEntry.objects.get(id=replacement.data["queue_id"])
+    replacement_invoice = Invoice.objects.get(id=replacement.data["invoice_id"])
+    assert replacement_queue.sequence > queue.sequence
+    assert replacement_invoice.invoice_no != invoice.invoice_no
 
 
 def test_cancel_error_rejects_expired_and_clinical_visits(tenant, authed_client):
@@ -555,6 +632,12 @@ def test_visit_context_filters_clinical_values_by_role_and_audits_clinical_read(
     )
     assert admin_context.status_code == 200, admin_context.data
     assert admin_context.data["clinical"] is None
+    assert admin_context.data["patient"] is None
+    assert admin_context.data["allergy"] is None
+    assert admin_context.data["visit_history"] == []
+    assert admin_context.data["laboratory"] == []
+    assert admin_context.data["prescriptions"] == []
+    assert admin_context.data["dispenses"] == []
     assert "complaints" not in str(admin_context.data)
     assert "diagnoses" not in str(admin_context.data)
     assert "vitals" not in str(admin_context.data)
@@ -565,6 +648,21 @@ def test_visit_context_filters_clinical_values_by_role_and_audits_clinical_read(
     )
     assert clinician_context.status_code == 200, clinician_context.data
     assert clinician_context.data["clinical"][0]["complaints"] == ["cough"]
+    assert clinician_context.data["patient"]["id"] == patient["patient_id"]
+    assert set(clinician_context.data["patient"]) == {
+        "id",
+        "patient_no",
+        "display_name",
+        "sex",
+        "date_of_birth",
+        "version",
+    }
+    assert "phone" not in clinician_context.data["patient"]
+    assert clinician_context.data["allergy"]["status"] == "NOT_RECORDED"
+    assert len(clinician_context.data["visit_history"]) == 1
+    assert clinician_context.data["laboratory"] == []
+    assert clinician_context.data["prescriptions"] == []
+    assert clinician_context.data["dispenses"] == []
     assert AuditEvent.objects.filter(event_code="PHI_READ").count() == 1
 
 
@@ -659,6 +757,11 @@ def test_clinical_context_serialization_has_no_lazy_owner_queries(tenant, authed
         assert payload[0]["diagnoses"][0]["label"] == "Synthetic diagnosis"
         assert payload[0]["follow_up"]["instructions"] == "Synthetic follow-up"
         assert payload[0]["triage_complaint"] == "cough"
+        assert payload[0]["patient_projection"]["id"] == patient["patient_id"]
+        assert payload[0]["visit_history"]
+        assert payload[0]["laboratory"] == []
+        assert payload[0]["prescriptions"] == []
+        assert payload[0]["dispenses"] == []
 
 
 def test_arrival_enquiry_has_no_patient_and_converts_atomically(tenant, authed_client):

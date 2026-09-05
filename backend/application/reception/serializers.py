@@ -3,10 +3,13 @@ from rest_framework import serializers
 from patients.models import Patient
 from patients.serializers import PatientCreateSerializer, PatientSerializer
 from scheduling.models import ArrivalEnquiry, Visit
-from scheduling.serializers import QueueEntrySerializer
 from billing.models import PriceList
-from billing.serializers import InvoiceSerializer
-from clinical.serializers import EncounterSerializer
+from clinical.serializers import (
+    AllergyContextProjectionSerializer,
+    EncounterSerializer,
+    PatientContextProjectionSerializer,
+    VisitHistoryProjectionSerializer,
+)
 
 
 class PatientRegisterSerializer(PatientCreateSerializer):
@@ -145,19 +148,29 @@ class VisitCancelErrorSerializer(serializers.Serializer):
     expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
 
-class PatientRegisterResponseSerializer(PatientSerializer):
-    patient_id = serializers.UUIDField(required=False)
-    next_action = serializers.CharField()
-    patient = PatientSerializer(required=False)
-    duplicate_candidates = PatientDuplicateCandidateSerializer(many=True, required=False)
+class PatientRegisterResponseSerializer(serializers.Serializer):
+    """The committed CMD-002 result, separate from duplicate discovery.
 
-    class Meta(PatientSerializer.Meta):
-        fields = PatientSerializer.Meta.fields + ["patient_id", "next_action", "patient", "duplicate_candidates"]
+    Registration commits an identity and tells the client which independent
+    command to invoke next. Patient/contact/chart fields belong to their
+    owner queries and are deliberately not part of this idempotent result.
+    """
+
+    patient_id = serializers.UUIDField(required=True)
+    next_action = serializers.ChoiceField(
+        choices=[("CHECK_IN", "Continue to check-in")],
+        required=True,
+    )
 
 
 class PatientDuplicateResponseSerializer(serializers.Serializer):
-    duplicate_candidates = PatientDuplicateCandidateSerializer(many=True)
-    next_action = serializers.CharField()
+    """The non-committing CMD-002 duplicate decision response."""
+
+    duplicate_candidates = PatientDuplicateCandidateSerializer(many=True, required=True)
+    next_action = serializers.ChoiceField(
+        choices=[("RESOLVE_DUPLICATE", "Resolve duplicate")],
+        required=True,
+    )
 
 
 class PayerBindingSerializer(serializers.Serializer):
@@ -167,23 +180,26 @@ class PayerBindingSerializer(serializers.Serializer):
 
 
 class VisitCheckInResponseSerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    visit_id = serializers.UUIDField()
-    queue_id = serializers.UUIDField(allow_null=True)
-    invoice_id = serializers.UUIDField(allow_null=True)
-    patient_id = serializers.UUIDField()
-    next_action = serializers.CharField()
-    visit = VisitSerializer()
-    queue = QueueEntrySerializer(allow_null=True)
-    invoice = InvoiceSerializer(allow_null=True)
-    payer_binding = PayerBindingSerializer()
-    arrival_enquiry = ArrivalEnquirySerializer(allow_null=True, required=False)
+    visit_id = serializers.UUIDField(required=True)
+    queue_id = serializers.UUIDField(required=True, allow_null=True)
+    invoice_id = serializers.UUIDField(required=True, allow_null=True)
+    patient_id = serializers.UUIDField(required=True)
+    next_action = serializers.ChoiceField(
+        choices=[
+            ("CHECK_IN_COMPLETE", "Check-in complete"),
+            ("LAB_REQUEST_CAPTURE", "Capture laboratory request"),
+        ],
+        required=True,
+    )
 
 
 class ArrivalEnquiryResponseSerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    enquiry_id = serializers.UUIDField()
-    enquiry = ArrivalEnquirySerializer()
+    enquiry_id = serializers.UUIDField(required=True)
+
+
+class ReferralSourceResponseSerializer(serializers.Serializer):
+    visit_id = serializers.UUIDField(required=True)
+    version = serializers.IntegerField(required=True)
 
 
 class QueueHistoryEntrySerializer(serializers.Serializer):
@@ -234,13 +250,17 @@ class VisitContextResponseSerializer(serializers.Serializer):
     invoice = InvoiceSummarySerializer(allow_null=True)
     clinical_summary = EncounterSummarySerializer(many=True)
     clinical = EncounterSerializer(many=True, allow_null=True, required=False)
+    patient = PatientContextProjectionSerializer(allow_null=True, required=True)
+    allergy = AllergyContextProjectionSerializer(allow_null=True, required=True)
+    visit_history = VisitHistoryProjectionSerializer(many=True, required=True)
+    laboratory = serializers.ListField(child=serializers.DictField(), required=True)
+    prescriptions = serializers.ListField(child=serializers.DictField(), required=True)
+    dispenses = serializers.ListField(child=serializers.DictField(), required=True)
 
 
 class VisitCancelErrorResponseSerializer(serializers.Serializer):
-    visit_id = serializers.UUIDField()
-    visit = VisitSerializer()
-    queue_entries = QueueEntrySerializer(many=True)
-    invoice = InvoiceSerializer(allow_null=True)
+    visit_id = serializers.UUIDField(required=True)
+    state = serializers.CharField(required=True)
 
 
 class PatientCheckInPatientSerializer(serializers.ModelSerializer):
@@ -283,6 +303,7 @@ __all__ = [
     "PayerBindingSerializer",
     "VisitCheckInResponseSerializer",
     "ArrivalEnquiryResponseSerializer",
+    "ReferralSourceResponseSerializer",
     "QueueHistoryEntrySerializer",
     "InvoiceSummarySerializer",
     "EncounterSummarySerializer",

@@ -13,6 +13,7 @@ from uuid import uuid4
 from django.db import IntegrityError, models, transaction
 from django.utils.timezone import now
 
+from audit.services import record_fact
 from core.models import MigrationCutover, MigrationReconciliation
 from core.services import assert_transaction_active
 from clinical.models import Encounter
@@ -42,6 +43,13 @@ class MigrationSummary:
     parity_digest: str = ""
     scope_link_hash_verified: bool = False
     blocker_checks_passed: bool = False
+    organisation_counts: dict = None
+    facility_counts: dict = None
+    shadow_read_equal: bool = False
+    shadow_read_digest: str = ""
+    stable_full_scan_count: int = 0
+    applicable_blockers: tuple = ()
+    run_id: str = ""
 
     def as_dict(self):
         return {
@@ -57,6 +65,13 @@ class MigrationSummary:
             "parity_digest": self.parity_digest,
             "scope_link_hash_verified": self.scope_link_hash_verified,
             "blocker_checks_passed": self.blocker_checks_passed,
+            "organisation_counts": self.organisation_counts or {},
+            "facility_counts": self.facility_counts or {},
+            "shadow_read_equal": self.shadow_read_equal,
+            "shadow_read_digest": self.shadow_read_digest,
+            "stable_full_scan_count": self.stable_full_scan_count,
+            "applicable_blockers": list(self.applicable_blockers),
+            "run_id": str(self.run_id) if self.run_id else "",
         }
 
 
@@ -64,6 +79,115 @@ def _stable_hash(value):
     return sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
+
+
+def _scope_counts(queues):
+    """Return non-PHI source counts by organisation and facility."""
+
+    organisation_counts = {}
+    facility_counts = {}
+    for queue in queues:
+        organisation_key = str(queue.organisation_id)
+        facility_key = str(queue.facility_id)
+        organisation_counts[organisation_key] = organisation_counts.get(organisation_key, 0) + 1
+        facility_counts[facility_key] = facility_counts.get(facility_key, 0) + 1
+    return organisation_counts, facility_counts
+
+
+def _shadow_legacy_projection(queue):
+    """The stable, non-PHI journey identity exposed by the legacy reader."""
+
+    return {
+        "organisation_id": str(queue.organisation_id),
+        "facility_id": str(queue.facility_id),
+        "patient_id": str(queue.patient_id),
+        "local_service_date": queue.queue_date.isoformat(),
+        "visit_type": "OUTPATIENT_NEW" if queue.visit_type == "WALK_IN" else queue.visit_type,
+    }
+
+
+def _shadow_target_projection(queue):
+    """The matching identity from the canonical Visit reader."""
+
+    visit = getattr(queue, "visit", None)
+    if visit is None:
+        return None
+    return {
+        "organisation_id": str(visit.organisation_id),
+        "facility_id": str(visit.facility_id),
+        "patient_id": str(visit.patient_id),
+        "local_service_date": visit.local_service_date.isoformat(),
+        "visit_type": visit.visit_type,
+    }
+
+
+def _shadow_read_snapshot(queues):
+    rows = []
+    for queue in queues:
+        legacy = _shadow_legacy_projection(queue)
+        target = _shadow_target_projection(queue)
+        rows.append(
+            {
+                "source_key": f"queue:{queue.id}",
+                "legacy": legacy,
+                "target": target,
+                "equal": target == legacy,
+            }
+        )
+    return {
+        "equal": all(row["equal"] for row in rows),
+        "digest": _stable_hash(rows),
+        "rows": rows,
+    }
+
+
+def _target_invoices_for_visit(*, organisation_id, visit_id):
+    return list(
+        Invoice.objects.filter(
+            organisation_id=organisation_id,
+            visit_id=visit_id,
+        ).order_by("id")
+    )
+
+
+def _deterministic_row_evidence(*, queues, run_id):
+    """Build durable per-source proof without copying any patient payload."""
+
+    evidence = {}
+    for queue in queues:
+        visit = getattr(queue, "visit", None)
+        if visit is None:
+            continue
+        encounters = list(
+            Encounter.objects.filter(
+                organisation_id=queue.organisation_id,
+                queue_entry_id=queue.id,
+            ).order_by("id")
+        )
+        source = _source_evidence(queue, encounters)
+        target = _target_evidence(
+            queue=queue,
+            visit=visit,
+            encounters=encounters,
+            invoices=_target_invoices_for_visit(
+                organisation_id=queue.organisation_id,
+                visit_id=visit.id,
+            ),
+        )
+        evidence[f"{LEGACY_QUEUE_TABLE}:{queue.id}"] = {
+            "legacy_table": LEGACY_QUEUE_TABLE,
+            "legacy_pk": str(queue.id),
+            "organisation_id": str(queue.organisation_id),
+            "facility_id": str(queue.facility_id),
+            "source_hash": _stable_hash(source),
+            "target_hash": _stable_hash({"source": source, "target": target}),
+            "backfill_run_id": str(run_id),
+            "target_refs": {
+                "queue_id": str(queue.id),
+                "visit_id": str(visit.id),
+            },
+        }
+    return evidence
 
 
 def _source_evidence(queue, encounters):
@@ -255,6 +379,13 @@ def _cutover_switch(organisation, *, phase="EXPANDED"):
 
 
 def _record_exception(*, queue=None, legacy_table, legacy_pk, organisation_id, facility_id, codes, target_refs=None, source_hash="", target_hash="", run_id=None):
+    if not target_hash and target_refs:
+        target_hash = _stable_hash(
+            {
+                "source_hash": source_hash,
+                "target_refs": target_refs,
+            }
+        )
     evidence, created = MigrationReconciliation.objects.get_or_create(
         organisation_id=organisation_id,
         migration_id=MIGRATION_ID,
@@ -348,12 +479,14 @@ def _inventory_snapshot(*, organisation, facility_id=None):
     """Return durable, non-PHI source evidence for the current legacy population."""
 
     queue_rows = []
+    queues_seen = []
     queue_exception_count = 0
     queues = _legacy_queue_population(
         organisation=organisation,
         facility_id=facility_id,
     ).select_related("facility", "patient", "department")
     for queue in queues.iterator():
+        queues_seen.append(queue)
         if queue.visit_id is None:
             codes, encounters, _, _ = _classify_queue(queue)
         else:
@@ -419,9 +552,12 @@ def _inventory_snapshot(*, organisation, facility_id=None):
         }
         for identifier, row_facility, row_patient in orphan_invoices
     ]
+    organisation_counts, facility_counts = _scope_counts(queues_seen)
     return {
         "source_count": len(queue_rows),
         "exception_count": queue_exception_count + len(orphan_encounter_rows) + len(orphan_invoice_rows),
+        "organisation_counts": organisation_counts,
+        "facility_counts": facility_counts,
         "digest": _stable_hash(
             {
                 "queues": queue_rows,
@@ -572,6 +708,23 @@ def _backfill_one(queue, *, run_id):
                     encounter.visit = visit
                     encounter.save(update_fields=["visit", "updated_at"])
                 _link_invoice(visit=visit, encounter=encounter, run_id=run_id)
+            linked_encounters = list(
+                Encounter.objects.filter(
+                    organisation_id=queue.organisation_id,
+                    queue_entry_id=queue.id,
+                ).order_by("id")
+            )
+            target = _target_evidence(
+                queue=queue,
+                visit=visit,
+                encounters=linked_encounters,
+                invoices=_target_invoices_for_visit(
+                    organisation_id=queue.organisation_id,
+                    visit_id=visit.id,
+                ),
+            )
+            target_refs = {"queue_id": str(queue.id), "visit_id": str(visit.id)}
+            target_hash = _stable_hash({"source": source, "target": target})
             evidence = MigrationReconciliation.objects.filter(
                 organisation_id=queue.organisation_id,
                 migration_id=MIGRATION_ID,
@@ -580,10 +733,14 @@ def _backfill_one(queue, *, run_id):
             ).first()
             if evidence is not None:
                 evidence.source_hash = source_hash
-                evidence.proposed_target_refs = {"queue_id": str(queue.id)}
+                evidence.proposed_target_refs = target_refs
+                evidence.target_hash = target_hash
                 evidence.backfill_run_id = run_id
                 evidence.save(
-                    update_fields=["source_hash", "proposed_target_refs", "backfill_run_id", "updated_at"]
+                    update_fields=[
+                        "source_hash", "proposed_target_refs", "target_hash",
+                        "backfill_run_id", "updated_at",
+                    ]
                 )
             return True, visit
     except IntegrityError:
@@ -597,10 +754,11 @@ def _backfill_one(queue, *, run_id):
         raise
 
 
-def inventory_mig001(*, organisation, facility_id=None):
+def inventory_mig001(*, organisation, facility_id=None, run_id=None):
     """Classify every legacy source row and persist only exception evidence."""
 
     assert_transaction_active()
+    run_id = run_id or uuid4()
     queues = _legacy_queue_population(
         organisation=organisation,
         facility_id=facility_id,
@@ -619,6 +777,7 @@ def inventory_mig001(*, organisation, facility_id=None):
                 codes=codes,
                 target_refs={"queue_id": str(queue.id)},
                 source_hash=_stable_hash(_source_evidence(queue, encounters)),
+                run_id=run_id,
             )
     for encounter in Encounter.objects.filter(
         organisation=organisation,
@@ -633,6 +792,7 @@ def inventory_mig001(*, organisation, facility_id=None):
             facility_id=encounter.facility_id,
             codes=["QUEUELESS_ENCOUNTER"],
             source_hash=_stable_hash(_encounter_source_evidence(encounter)),
+            run_id=run_id,
         )
     for invoice in Invoice.objects.filter(
         organisation=organisation,
@@ -647,6 +807,7 @@ def inventory_mig001(*, organisation, facility_id=None):
             facility_id=invoice.facility_id,
             codes=["QUEUELESS_INVOICE_NO_LINEAGE"],
             source_hash=_stable_hash(_invoice_source_evidence(invoice)),
+            run_id=run_id,
         )
     snapshot = _inventory_snapshot(organisation=organisation, facility_id=facility_id)
     switch = _cutover_switch(organisation)
@@ -656,6 +817,8 @@ def inventory_mig001(*, organisation, facility_id=None):
     switch.inventory_completed_at = now()
     switch.inventory_source_count = snapshot["source_count"]
     switch.inventory_digest = snapshot["digest"]
+    switch.inventory_organisation_counts = snapshot["organisation_counts"]
+    switch.inventory_facility_counts = snapshot["facility_counts"]
     # A new inventory invalidates any older backfill/parity proof. The target
     # rows themselves remain untouched and are retained for correction/rollback.
     switch.backfill_completed_at = None
@@ -666,14 +829,26 @@ def inventory_mig001(*, organisation, facility_id=None):
     switch.parity_passes = 0
     switch.scope_link_hash_verified = False
     switch.blocker_checks_passed = False
+    switch.backfill_organisation_counts = {}
+    switch.backfill_facility_counts = {}
+    switch.deterministic_row_evidence = {}
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.last_run_id = run_id
+    switch.write_fence += 1
     switch.version += 1
     switch.save(
         update_fields=[
             "phase", "target_reads_enabled", "target_writes_enabled",
             "inventory_completed_at", "inventory_source_count", "inventory_digest",
+            "inventory_organisation_counts", "inventory_facility_counts",
             "backfill_completed_at", "backfill_source_count", "backfill_digest",
             "last_verified_at", "parity_digest", "parity_passes",
-            "scope_link_hash_verified", "blocker_checks_passed", "version", "updated_at",
+            "scope_link_hash_verified", "blocker_checks_passed",
+            "backfill_organisation_counts", "backfill_facility_counts",
+            "deterministic_row_evidence", "shadow_read_equal", "shadow_read_digest",
+            "stable_full_scan_count", "last_run_id", "write_fence", "version", "updated_at",
         ]
     )
     return MigrationSummary(
@@ -681,6 +856,9 @@ def inventory_mig001(*, organisation, facility_id=None):
         "INVENTORY",
         inspected=snapshot["source_count"],
         exceptions=snapshot["exception_count"],
+        organisation_counts=snapshot["organisation_counts"],
+        facility_counts=snapshot["facility_counts"],
+        run_id=str(run_id),
     )
 
 
@@ -706,12 +884,13 @@ def backfill_mig001(*, organisation, facility_id=None, batch_size=500, after_id=
             backfilled += 1
         else:
             exceptions += 1
-    population_rows = list(
+    proof_queues = list(
         _legacy_queue_population(
             organisation=organisation,
             facility_id=facility_id,
-        ).values("id", "visit_id")
+        ).select_related("facility", "patient", "department", "visit").order_by("id")
     )
+    population_rows = [{"id": queue.id, "visit_id": queue.visit_id} for queue in proof_queues]
     known_queue_exceptions = set(
         MigrationReconciliation.objects.filter(
             organisation=organisation,
@@ -731,6 +910,15 @@ def backfill_mig001(*, organisation, facility_id=None, batch_size=500, after_id=
     if facility_id:
         unresolved = unresolved.filter(facility_id=facility_id)
     switch = _cutover_switch(organisation)
+    deterministic_evidence = _deterministic_row_evidence(
+        queues=proof_queues,
+        run_id=run_id,
+    )
+    persisted_deterministic_evidence = dict(switch.deterministic_row_evidence or {})
+    if facility_id:
+        persisted_deterministic_evidence.update(deterministic_evidence)
+    else:
+        persisted_deterministic_evidence = deterministic_evidence
     switch.phase = "EXPANDED"
     switch.target_reads_enabled = False
     switch.target_writes_enabled = False
@@ -738,22 +926,35 @@ def backfill_mig001(*, organisation, facility_id=None, batch_size=500, after_id=
         switch.backfill_completed_at = now()
         switch.backfill_source_count = snapshot["source_count"]
         switch.backfill_digest = snapshot["digest"]
+        switch.backfill_organisation_counts = snapshot["organisation_counts"]
+        switch.backfill_facility_counts = snapshot["facility_counts"]
     else:
         switch.backfill_completed_at = None
         switch.backfill_source_count = 0
         switch.backfill_digest = ""
+        switch.backfill_organisation_counts = {}
+        switch.backfill_facility_counts = {}
     switch.last_verified_at = None
     switch.parity_digest = ""
     switch.parity_passes = 0
     switch.scope_link_hash_verified = False
     switch.blocker_checks_passed = False
+    switch.deterministic_row_evidence = persisted_deterministic_evidence
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.last_run_id = run_id
+    switch.write_fence += 1
     switch.version += 1
     switch.save(
         update_fields=[
             "phase", "target_reads_enabled", "target_writes_enabled",
             "backfill_completed_at", "backfill_source_count", "backfill_digest",
+            "backfill_organisation_counts", "backfill_facility_counts",
             "last_verified_at", "parity_digest", "parity_passes",
-            "scope_link_hash_verified", "blocker_checks_passed", "version", "updated_at",
+            "scope_link_hash_verified", "blocker_checks_passed",
+            "deterministic_row_evidence", "shadow_read_equal", "shadow_read_digest",
+            "stable_full_scan_count", "last_run_id", "write_fence", "version", "updated_at",
         ]
     )
     return MigrationSummary(
@@ -764,6 +965,9 @@ def backfill_mig001(*, organisation, facility_id=None, batch_size=500, after_id=
         exceptions=exceptions,
         unresolved=unresolved.count(),
         parity_digest=snapshot["digest"],
+        organisation_counts=snapshot["organisation_counts"],
+        facility_counts=snapshot["facility_counts"],
+        run_id=str(run_id),
     )
 
 
@@ -771,6 +975,7 @@ def verify_mig001(*, organisation, facility_id=None):
     """Run the frozen MIG-001 gates without changing product data."""
 
     assert_transaction_active()
+    switch = _cutover_switch(organisation)
     queues = list(
         _legacy_queue_population(
             organisation=organisation,
@@ -794,7 +999,24 @@ def verify_mig001(*, organisation, facility_id=None):
         evidence for evidence in reconciliation_rows
         if evidence.resolution_state == "PENDING"
     ]
-    unresolved = len(pending_reconciliations)
+    unresolved_keys = {
+        (evidence.legacy_table, str(evidence.legacy_pk))
+        for evidence in pending_reconciliations
+    }
+    unresolved = len(unresolved_keys)
+
+    def mark_unresolved(legacy_table, legacy_pk):
+        nonlocal unresolved
+        key = (legacy_table, str(legacy_pk))
+        if key not in unresolved_keys:
+            unresolved_keys.add(key)
+            unresolved += 1
+
+    pending_queue_keys = {
+        (LEGACY_QUEUE_TABLE, str(evidence.legacy_pk))
+        for evidence in pending_reconciliations
+        if evidence.legacy_table == LEGACY_QUEUE_TABLE
+    }
     duplicate_groups = (
         Visit.objects.filter(
             id__in=[visit.id for visit in visits],
@@ -819,7 +1041,10 @@ def verify_mig001(*, organisation, facility_id=None):
             if visit.legacy_source_key not in expected_source_keys:
                 scope_mismatches += 1
                 hash_verified = False
-            else:
+            elif (
+                LEGACY_QUEUE_TABLE,
+                visit.legacy_source_key[len("queue:"):],
+            ) not in pending_queue_keys:
                 deterministic_visits.append(visit)
 
     exception_by_source = {
@@ -838,6 +1063,7 @@ def verify_mig001(*, organisation, facility_id=None):
             queue_without_visit += 1
             evidence = exception_by_source.get((LEGACY_QUEUE_TABLE, str(queue.id)))
             if evidence is None or not evidence.source_hash:
+                mark_unresolved(LEGACY_QUEUE_TABLE, queue.id)
                 hash_verified = False
                 row_hashes.append({"queue_id": str(queue.id), "source_hash": source_hash, "target_hash": ""})
             else:
@@ -867,25 +1093,20 @@ def verify_mig001(*, organisation, facility_id=None):
         linked_invoices = list(
             Invoice.objects.filter(
                 organisation=organisation,
-                encounter_id__in=encounter_ids,
+                visit=visit,
             ).order_by("id")
-        ) if encounter_ids else []
-        invoice_link_failure = bool(
-            linked_invoices
-            and any(invoice.visit_id != queue.visit_id for invoice in linked_invoices)
+        )
+        invoice_link_failure = any(
+            invoice.facility_id != queue.facility_id
+            or invoice.patient_id != queue.patient_id
+            or (
+                invoice.encounter_id is not None
+                and invoice.encounter_id not in encounter_ids
+            )
+            for invoice in linked_invoices
         )
         if invoice_link_failure:
             linked_invoice_mismatches += 1
-        if not encounter_ids:
-            linked_invoices = list(
-                Invoice.objects.filter(
-                    organisation=organisation,
-                    visit=visit,
-                ).exclude(patient_id=queue.patient_id).order_by("id")
-            )
-            if linked_invoices:
-                linked_invoice_mismatches += 1
-                invoice_link_failure = True
         target = _target_evidence(
             queue=queue,
             visit=visit,
@@ -896,12 +1117,35 @@ def verify_mig001(*, organisation, facility_id=None):
         row_hashes.append({"queue_id": str(queue.id), "source_hash": source_hash, "target_hash": target_hash})
         if encounter_link_failure or invoice_link_failure:
             hash_verified = False
+        persisted_proof = (switch.deterministic_row_evidence or {}).get(
+            f"{LEGACY_QUEUE_TABLE}:{queue.id}"
+        )
+        if (
+            not persisted_proof
+            or persisted_proof.get("source_hash") != source_hash
+            or persisted_proof.get("target_hash") != target_hash
+            or not persisted_proof.get("backfill_run_id")
+            or persisted_proof.get("target_refs") != {
+                "queue_id": str(queue.id),
+                "visit_id": str(visit.id),
+            }
+        ):
+            mark_unresolved(LEGACY_QUEUE_TABLE, queue.id)
+            hash_verified = False
 
     if queue_without_visit or linked_encounter_mismatches or linked_invoice_mismatches:
         hash_verified = False
     deterministic_visit_count = len(deterministic_visits)
-    if len(deterministic_visits) != linked_visit_count:
-        scope_mismatches += abs(len(deterministic_visits) - linked_visit_count)
+    pending_linked_visit_count = sum(
+        1
+        for queue in queues
+        if queue.visit_id is not None
+        and (LEGACY_QUEUE_TABLE, str(queue.id)) in pending_queue_keys
+    )
+    if len(deterministic_visits) + pending_linked_visit_count != linked_visit_count:
+        scope_mismatches += abs(
+            len(deterministic_visits) + pending_linked_visit_count - linked_visit_count
+        )
         hash_verified = False
     consistency_failures = linked_encounter_mismatches + linked_invoice_mismatches
     if duplicate_groups or scope_mismatches or consistency_failures:
@@ -914,7 +1158,7 @@ def verify_mig001(*, organisation, facility_id=None):
         and evidence.legacy_pk in expected_source_ids
     )
     if queue_count != deterministic_visit_count + exception_queue_count:
-        unresolved += 1
+        mark_unresolved(LEGACY_QUEUE_TABLE, "QUEUE_POPULATION_PARITY")
         hash_verified = False
     for evidence in reconciliation_rows:
         if not evidence.source_hash:
@@ -922,12 +1166,12 @@ def verify_mig001(*, organisation, facility_id=None):
         if evidence.resolution_state == "RESOLVED":
             current_source_hash = _current_source_hash(evidence)
             if not current_source_hash or current_source_hash != evidence.source_hash:
-                unresolved += 1
+                mark_unresolved(evidence.legacy_table, evidence.legacy_pk)
                 hash_verified = False
             converged, target_refs = _reconciliation_target(evidence)
             stored_refs = evidence.proposed_target_refs or {}
             if not converged or stored_refs != target_refs:
-                unresolved += 1
+                mark_unresolved(evidence.legacy_table, evidence.legacy_pk)
                 hash_verified = False
             else:
                 expected_target_hash = _stable_hash(
@@ -937,7 +1181,7 @@ def verify_mig001(*, organisation, facility_id=None):
                     }
                 )
                 if not evidence.target_hash or evidence.target_hash != expected_target_hash:
-                    unresolved += 1
+                    mark_unresolved(evidence.legacy_table, evidence.legacy_pk)
                     hash_verified = False
         if evidence.legacy_table != LEGACY_QUEUE_TABLE or evidence.legacy_pk not in expected_source_ids:
             row_hashes.append(
@@ -949,12 +1193,16 @@ def verify_mig001(*, organisation, facility_id=None):
                     "codes": sorted(evidence.evidence_codes),
                 }
             )
-    blocker_checks_passed = not Visit.objects.filter(
+    blocker_query = Visit.objects.filter(
         organisation=organisation,
         legacy_source_key__startswith="queue:",
         emergency_setup_pending=True,
         **({"facility_id": facility_id} if facility_id else {}),
-    ).exists()
+    )
+    applicable_blockers = ("EMERGENCY_SETUP_PENDING",) if blocker_query.exists() else ()
+    blocker_checks_passed = not applicable_blockers
+    shadow = _shadow_read_snapshot(queues)
+    organisation_counts, facility_counts = _scope_counts(queues)
     parity_digest = _stable_hash(
         {
             "queue_count": queue_count,
@@ -963,6 +1211,27 @@ def verify_mig001(*, organisation, facility_id=None):
         }
     )
     scope_link_hash_verified = hash_verified and not scope_mismatches and not consistency_failures
+    stable_full_scan_count = (
+        min(2, switch.stable_full_scan_count + 1)
+        if switch.parity_digest == parity_digest
+        and switch.shadow_read_digest == shadow["digest"]
+        and switch.shadow_read_equal == shadow["equal"]
+        else 1
+    )
+    switch.last_verified_at = now()
+    switch.parity_digest = parity_digest
+    switch.scope_link_hash_verified = scope_link_hash_verified
+    switch.blocker_checks_passed = blocker_checks_passed
+    switch.shadow_read_equal = shadow["equal"]
+    switch.shadow_read_digest = shadow["digest"]
+    switch.stable_full_scan_count = stable_full_scan_count
+    switch.save(
+        update_fields=[
+            "last_verified_at", "parity_digest", "scope_link_hash_verified",
+            "blocker_checks_passed", "shadow_read_equal", "shadow_read_digest",
+            "stable_full_scan_count", "updated_at",
+        ]
+    )
     return MigrationSummary(
         MIGRATION_ID,
         "VERIFY",
@@ -974,6 +1243,13 @@ def verify_mig001(*, organisation, facility_id=None):
         parity_digest=parity_digest,
         scope_link_hash_verified=scope_link_hash_verified,
         blocker_checks_passed=blocker_checks_passed,
+        organisation_counts=organisation_counts,
+        facility_counts=facility_counts,
+        shadow_read_equal=shadow["equal"],
+        shadow_read_digest=shadow["digest"],
+        stable_full_scan_count=stable_full_scan_count,
+        applicable_blockers=applicable_blockers,
+        run_id=str(switch.last_run_id) if switch.last_run_id else "",
     )
 
 
@@ -1006,6 +1282,8 @@ def cutover_mig001(*, organisation, facility_id=None, parity_passes=2):
             raise ValueError("MIG-001 cutover is blocked by unresolved legacy evidence.")
         if not current.scope_link_hash_verified:
             raise ValueError("MIG-001 cutover is blocked by scope, link, or hash verification failure.")
+        if not current.shadow_read_equal:
+            raise ValueError("MIG-001 cutover is blocked by unequal legacy/target shadow reads.")
         if not current.blocker_checks_passed:
             raise ValueError("MIG-001 cutover is blocked by an applicable product blocker.")
         signature = (
@@ -1021,6 +1299,8 @@ def cutover_mig001(*, organisation, facility_id=None, parity_passes=2):
             raise ValueError("MIG-001 parity scans are not stable.")
         previous_signature = signature
         summary = current
+    if summary is None or summary.stable_full_scan_count < 2:
+        raise ValueError("MIG-001 cutover requires two stable full scans.")
     switch.phase = "CUTOVER"
     switch.target_reads_enabled = True
     switch.target_writes_enabled = True
@@ -1031,13 +1311,14 @@ def cutover_mig001(*, organisation, facility_id=None, parity_passes=2):
     switch.blocker_checks_passed = summary.blocker_checks_passed
     switch.rollback_at = None
     switch.rollback_reason = ""
+    switch.write_fence += 1
     switch.version += 1
     switch.save(
         update_fields=[
             "phase", "target_reads_enabled", "target_writes_enabled",
             "last_verified_at", "parity_digest", "parity_passes",
             "scope_link_hash_verified", "blocker_checks_passed",
-            "rollback_at", "rollback_reason", "version", "updated_at",
+            "rollback_at", "rollback_reason", "write_fence", "version", "updated_at",
         ]
     )
     return MigrationSummary(
@@ -1067,13 +1348,18 @@ def rollback_mig001(*, organisation, reason, actor=None):
     switch.parity_passes = 0
     switch.scope_link_hash_verified = False
     switch.blocker_checks_passed = False
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.write_fence += 1
     switch.version += 1
     switch.save(
         update_fields=[
             "phase", "target_reads_enabled", "target_writes_enabled",
             "rollback_at", "rollback_reason", "last_verified_at", "parity_digest",
             "parity_passes", "scope_link_hash_verified", "blocker_checks_passed",
-            "version", "updated_at",
+            "shadow_read_equal", "shadow_read_digest", "stable_full_scan_count",
+            "write_fence", "version", "updated_at",
         ]
     )
     return switch
@@ -1086,17 +1372,25 @@ def target_reads_enabled(organisation):
 
 
 def target_writes_enabled(organisation):
+    """Lock the MIG-001 fence for the full duration of a target write.
+
+    Cutover and rollback take this same row lock and hold it until their
+    outer tenant transaction commits.  A writer that acquired the lock first
+    therefore commits before the transition; a writer that acquires it after
+    the transition observes the new flag and refuses to mutate.
+    """
+
     assert_transaction_active()
-    switch = MigrationCutover.objects.filter(organisation=organisation, migration_id=MIGRATION_ID).first()
-    return bool(switch is not None and switch.target_writes_enabled)
+    switch = _cutover_switch(organisation)
+    return bool(switch.target_writes_enabled)
 
 
 def legacy_writes_enabled(organisation):
     """Keep the pre-Visit queue writer available only before cutover or after rollback."""
 
     assert_transaction_active()
-    switch = MigrationCutover.objects.filter(organisation=organisation, migration_id=MIGRATION_ID).first()
-    return switch is None or not switch.target_writes_enabled
+    switch = _cutover_switch(organisation)
+    return not switch.target_writes_enabled
 
 
 def _reconciliation_target(evidence):
@@ -1274,6 +1568,7 @@ def resolve_reconciliation(*, organisation, reconciliation_id, actor, reason):
         raise ValueError(
             "Correct the source linkage and scope, then rerun backfill before resolving this evidence."
         )
+    was_resolved = evidence.resolution_state == "RESOLVED"
     evidence.source_hash = current_source_hash
     evidence.proposed_target_refs = target_refs
     evidence.target_hash = _stable_hash(
@@ -1293,4 +1588,26 @@ def resolve_reconciliation(*, organisation, reconciliation_id, actor, reason):
             "source_hash", "proposed_target_refs", "target_hash", "updated_at",
         ]
     )
+    if not was_resolved:
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            event_code="MIGRATION_RECONCILIATION_RESOLVED",
+            action="UPDATE",
+            entity_type="MigrationReconciliation",
+            entity_id=evidence.id,
+            source_ids={
+                "reconciliation_id": evidence.id,
+                "migration_id": evidence.migration_id,
+                "legacy_table": evidence.legacy_table,
+                "legacy_pk": evidence.legacy_pk,
+                "backfill_run_id": evidence.backfill_run_id or "none",
+            },
+            after={
+                "resolution_state": evidence.resolution_state,
+                "source_hash": evidence.source_hash,
+                "target_hash": evidence.target_hash,
+                "reason_hash": _stable_hash(str(reason).strip()),
+            },
+        )
     return evidence

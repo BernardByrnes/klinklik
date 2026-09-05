@@ -44,6 +44,10 @@ def open_visit(
     results_review=False,
 ):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise ValueError("The canonical Visit writer is disabled by the MIG-001 cutover fence.")
     if (
         patient.organisation_id != organisation.id
         or facility.organisation_id != organisation.id
@@ -69,6 +73,10 @@ def cancel_error_visit(*, organisation, facility, actor, visit_id, reason, expec
     """Cancel an unstarted Visit and its queue entries without deleting records."""
 
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise ValueError("The canonical Visit writer is disabled by the MIG-001 cutover fence.")
     visit = Visit.objects.select_for_update().filter(
         id=visit_id,
         organisation=organisation,
@@ -115,6 +123,10 @@ def create_initial_queue_entry(
     notes="",
 ):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise ValueError("The canonical QueueEntry writer is disabled by the MIG-001 cutover fence.")
     if (
         visit.organisation_id != organisation.id
         or visit.facility_id != facility.id
@@ -153,6 +165,10 @@ def create_initial_queue_entry(
 
 def record_arrival_enquiry(*, organisation, facility, actor, reason_code, source_event_id, safe_notes=""):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise ValueError("The canonical ArrivalEnquiry writer is disabled by the MIG-001 cutover fence.")
     return ArrivalEnquiry.objects.create(
         organisation=organisation,
         facility=facility,
@@ -166,6 +182,10 @@ def record_arrival_enquiry(*, organisation, facility, actor, reason_code, source
 
 def convert_arrival_enquiry(*, enquiry, visit, actor):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(visit.organisation_id):
+        raise ValueError("The canonical ArrivalEnquiry writer is disabled by the MIG-001 cutover fence.")
     if enquiry.organisation_id != visit.organisation_id or enquiry.facility_id != visit.facility_id:
         raise ValueError("The arrival enquiry and Visit must belong to the same facility.")
     if visit.state not in Visit.ACTIVE_STATES:
@@ -187,6 +207,10 @@ def convert_arrival_enquiry(*, enquiry, visit, actor):
 
 def set_referral_source(*, organisation, facility, actor, visit, source_type, source_name="", expected_version=None):
     assert_transaction_active()
+    from core.migration_reconciliation import target_writes_enabled
+
+    if not target_writes_enabled(organisation):
+        raise ValueError("The canonical Visit writer is disabled by the MIG-001 cutover fence.")
     visit = Visit.objects.select_for_update().filter(
         id=visit.id,
         organisation=organisation,

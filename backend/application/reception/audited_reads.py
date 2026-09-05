@@ -9,8 +9,6 @@ def audit_clinical_projection(*, organisation, actor, facility, visit, encounter
     """Commit one redacted PHI_READ fact before returning clinical values."""
 
     assert_transaction_active()
-    if not encounters:
-        return
     try:
         record_fact(
             organisation=organisation,
@@ -24,7 +22,7 @@ def audit_clinical_projection(*, organisation, actor, facility, visit, encounter
                 "visit_id": visit.id,
                 "encounter_ids": [encounter.id for encounter in encounters],
             },
-            after={"values_returned": True, "encounter_count": len(encounters)},
+            after={"values_returned": bool(encounters), "encounter_count": len(encounters)},
         )
     except Exception as exc:
         raise CanonicalError(

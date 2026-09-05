@@ -15,7 +15,6 @@ from application.reception.visit_query import (
     get_visit_projection,
 )
 from application.reception.serializers import (
-    ArrivalEnquirySerializer,
     ArrivalEnquiryResponseSerializer,
     ArrivalEnquiryWriteSerializer,
     PatientRegisterSerializer,
@@ -23,9 +22,8 @@ from application.reception.serializers import (
     PatientDuplicateResponseSerializer,
     PatientRegisterResponseSerializer,
     PatientCheckInSummarySerializer,
-    PayerBindingSerializer,
-    PatientSerializer,
     ReferralSourceSerializer,
+    ReferralSourceResponseSerializer,
     VisitCheckInSerializer,
     VisitCancelErrorSerializer,
     VisitCancelErrorResponseSerializer,
@@ -33,22 +31,26 @@ from application.reception.serializers import (
     VisitCheckInResponseSerializer,
     VisitSerializer,
 )
-from billing.serializers import InvoiceSerializer
-from clinical.serializers import EncounterSerializer
+from clinical.serializers import (
+    AllergyContextProjectionSerializer,
+    EncounterSerializer,
+    PatientContextProjectionSerializer,
+    VisitHistoryProjectionSerializer,
+)
 from core.tenant_api import TenantAPIView
 from core.idempotency import UncommittedResponse, json_safe
-from scheduling.serializers import QueueEntrySerializer
 
 
-def _store_exact_idempotent_response(response):
-    """Replay the same safe response body that the first request returned."""
+def _store_exact_idempotent_response(response, *, stored_body=None):
+    """Set the canonical, PHI-minimal result persisted in PC-048."""
 
     # DRF serializers may leave UUID, Decimal, and datetime instances in
     # ``Response.data`` until rendering.  Normalize once before both the
     # first response and the durable replay record are finalized so replay is
     # equivalent at the JSON boundary as well as at the Python payload level.
-    response.idempotency_body = json_safe(response.data)
-    response.data = response.idempotency_body
+    public_body = json_safe(response.data)
+    response.data = public_body
+    response.idempotency_body = json_safe(public_body if stored_body is None else stored_body)
     return response
 
 
@@ -64,6 +66,9 @@ class PatientRegisterView(TenantAPIView):
             "201": PatientRegisterResponseSerializer,
         },
     }
+
+    def replay_idempotent_response(self, record):
+        return record.response_body
 
     def post(self, request):
         serializer = PatientRegisterSerializer(data=request.data)
@@ -88,17 +93,20 @@ class PatientRegisterView(TenantAPIView):
             # Duplicate discovery is a non-committing decision point. Do not
             # persist a replay body containing candidate PHI in IdempotencyRecord.
             raise UncommittedResponse(response)
-        patient_data = PatientSerializer(outcome.patient).data
         response = Response(
             {
-                **patient_data,
-                "patient": patient_data,
                 "patient_id": str(outcome.patient.id),
                 "next_action": "CHECK_IN",
             },
             status=status.HTTP_201_CREATED,
         )
-        _store_exact_idempotent_response(response)
+        _store_exact_idempotent_response(
+            response,
+            stored_body={
+                "patient_id": str(outcome.patient.id),
+                "next_action": "CHECK_IN",
+            },
+        )
         response.result_reference = {"entity_type": "Patient", "entity_id": str(outcome.patient.id)}
         return response
 
@@ -110,6 +118,9 @@ class VisitCheckInView(TenantAPIView):
     serializer_class = VisitCheckInSerializer
     response_serializer_class = VisitCheckInResponseSerializer
 
+    def replay_idempotent_response(self, record):
+        return record.response_body
+
     def post(self, request):
         serializer = VisitCheckInSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -120,12 +131,8 @@ class VisitCheckInView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        visit_data = VisitSerializer(outcome.visit).data
-        queue_data = QueueEntrySerializer(outcome.queue).data if outcome.queue is not None else None
-        invoice_data = InvoiceSerializer(outcome.invoice).data if outcome.invoice is not None else None
         response = Response(
             {
-                "id": str(outcome.queue.id if outcome.queue is not None else outcome.visit.id),
                 "visit_id": str(outcome.visit.id),
                 "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
                 "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
@@ -135,25 +142,26 @@ class VisitCheckInView(TenantAPIView):
                     if outcome.visit.visit_type == "LAB_ONLY"
                     else "CHECK_IN_COMPLETE"
                 ),
-                "visit": visit_data,
-                "queue": queue_data,
-                "invoice": invoice_data,
-                "payer_binding": PayerBindingSerializer(
-                    {
-                        "id": outcome.payer_binding.id,
-                        "payer_type": outcome.payer_binding.payer_type,
-                        "price_list_id": outcome.payer_binding.price_list_id,
-                    }
-                ).data,
-                "arrival_enquiry": (
-                    ArrivalEnquirySerializer(outcome.arrival_enquiry).data
-                    if outcome.arrival_enquiry is not None
-                    else None
-                ),
             },
             status=status.HTTP_201_CREATED,
         )
-        _store_exact_idempotent_response(response)
+        _store_exact_idempotent_response(
+            response,
+            stored_body={
+                "visit_id": str(outcome.visit.id),
+                "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
+                "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
+                "patient_id": str(outcome.visit.patient_id),
+                "next_action": (
+                    "LAB_REQUEST_CAPTURE"
+                    if outcome.visit.visit_type == "LAB_ONLY"
+                    else "CHECK_IN_COMPLETE"
+                ),
+            },
+        )
+        # PC-048 needs only the committed owner result reference. Queue,
+        # invoice, payer, and enquiry identifiers are already represented by
+        # the PHI-minimal response body and are not needed to replay it.
         response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
         return response
 
@@ -190,6 +198,9 @@ class ArrivalEnquiryView(TenantAPIView):
     serializer_class = ArrivalEnquiryWriteSerializer
     response_serializer_class = ArrivalEnquiryResponseSerializer
 
+    def replay_idempotent_response(self, record):
+        return record.response_body
+
     def post(self, request):
         serializer = ArrivalEnquiryWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -200,12 +211,14 @@ class ArrivalEnquiryView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        data = ArrivalEnquirySerializer(outcome.enquiry).data
         response = Response(
-            {"id": str(outcome.enquiry.id), "enquiry_id": str(outcome.enquiry.id), "enquiry": data},
+            {"enquiry_id": str(outcome.enquiry.id)},
             status=status.HTTP_201_CREATED,
         )
-        _store_exact_idempotent_response(response)
+        _store_exact_idempotent_response(
+            response,
+            stored_body={"enquiry_id": str(outcome.enquiry.id)},
+        )
         response.result_reference = {"entity_type": "ArrivalEnquiry", "entity_id": str(outcome.enquiry.id)}
         return response
 
@@ -215,7 +228,10 @@ class ReferralSourceView(TenantAPIView):
     idempotency_operation = "CMD-010"
     requires_idempotency = True
     serializer_class = ReferralSourceSerializer
-    response_serializer_class = VisitSerializer
+    response_serializer_class = ReferralSourceResponseSerializer
+
+    def replay_idempotent_response(self, record):
+        return record.response_body
 
     def post(self, request, pk):
         serializer = ReferralSourceSerializer(data=request.data)
@@ -228,8 +244,11 @@ class ReferralSourceView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        response = Response(VisitSerializer(visit).data)
-        _store_exact_idempotent_response(response)
+        response = Response({"visit_id": str(visit.id), "version": visit.version})
+        _store_exact_idempotent_response(
+            response,
+            stored_body={"visit_id": str(visit.id), "version": visit.version},
+        )
         response.result_reference = {"entity_type": "Visit", "entity_id": str(visit.id)}
         return response
 
@@ -294,7 +313,7 @@ class VisitContextView(TenantAPIView):
             include_clinical=include_clinical,
         )
         clinical_summary = _clinical_summary_payload(clinical_projection.encounters)
-        if clinical_projection.has_clinical_values:
+        if include_clinical:
             audit_clinical_projection(
                 organisation=request.organisation,
                 actor=request.user,
@@ -317,6 +336,31 @@ class VisitContextView(TenantAPIView):
                     if clinical_projection is not None and clinical_projection.has_clinical_values
                     else None
                 ),
+                "patient": (
+                    PatientContextProjectionSerializer(
+                        clinical_projection.patient_projections[0]
+                    ).data
+                    if include_clinical and clinical_projection.patient_projections
+                    else None
+                ),
+                "allergy": (
+                    AllergyContextProjectionSerializer(
+                        clinical_projection.allergy_projections[0]
+                    ).data
+                    if include_clinical and clinical_projection.allergy_projections
+                    else None
+                ),
+                "visit_history": (
+                    VisitHistoryProjectionSerializer(
+                        clinical_projection.visit_history,
+                        many=True,
+                    ).data
+                    if include_clinical
+                    else []
+                ),
+                "laboratory": list(clinical_projection.laboratory) if include_clinical else [],
+                "prescriptions": list(clinical_projection.prescriptions) if include_clinical else [],
+                "dispenses": list(clinical_projection.dispenses) if include_clinical else [],
             }
         )
 
@@ -343,6 +387,9 @@ class VisitCancelErrorView(TenantAPIView):
     serializer_class = VisitCancelErrorSerializer
     response_serializer_class = VisitCancelErrorResponseSerializer
 
+    def replay_idempotent_response(self, record):
+        return record.response_body
+
     def post(self, request, pk):
         serializer = VisitCancelErrorSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -354,14 +401,10 @@ class VisitCancelErrorView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        response = Response(
-            {
-                "visit_id": str(outcome.visit.id),
-                "visit": VisitSerializer(outcome.visit).data,
-                "queue_entries": QueueEntrySerializer(outcome.queue_entries, many=True).data,
-                "invoice": InvoiceSerializer(outcome.invoice).data if outcome.invoice is not None else None,
-            }
+        response = Response({"visit_id": str(outcome.visit.id), "state": outcome.visit.state})
+        _store_exact_idempotent_response(
+            response,
+            stored_body={"visit_id": str(outcome.visit.id), "state": outcome.visit.state},
         )
-        _store_exact_idempotent_response(response)
         response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
         return response

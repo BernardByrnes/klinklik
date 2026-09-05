@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from uuid import uuid4
 
 import pytest
@@ -25,14 +25,17 @@ from core.migration_reconciliation import (
     backfill_mig001,
     cutover_mig001,
     inventory_mig001,
+    legacy_writes_enabled,
     rollback_mig001,
     resolve_reconciliation,
+    target_writes_enabled,
     verify_mig001,
 )
 from core.rls import rls_status
 from core.services import run_in_tenant, tenant_atomic
 from patients.models import Patient
 from scheduling.models import ArrivalEnquiry, QueueEntry, Visit
+from scheduling.services import check_in_patient, open_visit
 from tenancy.models import Department, Facility, FacilityWorkflowPolicy, Organisation
 
 
@@ -637,8 +640,11 @@ def test_pg_mig001_backfill_cutover_and_rollback_retain_target_links(tenant):
         run_id = uuid4()
         inventory = inventory_mig001(organisation=organisation)
         assert inventory.inspected == 1
+        assert inventory.organisation_counts[str(organisation.id)] == 1
+        assert inventory.facility_counts[str(facility.id)] == 1
         summary = backfill_mig001(organisation=organisation, run_id=run_id)
         assert summary.backfilled == 1
+        assert summary.run_id == str(run_id)
         migrated_visit = Visit.objects.get(legacy_source_key=f"queue:{queue.id}")
         queue.refresh_from_db()
         assert queue.visit_id == migrated_visit.id
@@ -674,9 +680,26 @@ def test_pg_mig001_backfill_cutover_and_rollback_retain_target_links(tenant):
         verified = verify_mig001(organisation=organisation)
         assert verified.unresolved == 0
         assert verified.queue_without_visit == 0
+        assert verified.shadow_read_equal is True
+        assert verified.stable_full_scan_count == 1
+        assert verified.organisation_counts[str(organisation.id)] == 1
+        assert verified.facility_counts[str(facility.id)] == 1
+        switch = MigrationCutover.objects.get(
+            organisation=organisation,
+            migration_id="MIG-001",
+        )
+        proof = switch.deterministic_row_evidence[f"scheduling_queueentry:{queue.id}"]
+        assert len(proof["source_hash"]) == 64
+        assert len(proof["target_hash"]) == 64
+        assert proof["backfill_run_id"] == str(run_id)
+        assert proof["target_refs"] == {
+            "queue_id": str(queue.id),
+            "visit_id": str(migrated_visit.id),
+        }
 
         cutover = cutover_mig001(organisation=organisation)
         assert cutover.parity_passes == 2
+        assert cutover.stable_full_scan_count == 2
         switch = MigrationCutover.objects.get(
             organisation=organisation,
             migration_id="MIG-001",
@@ -808,6 +831,12 @@ def test_pg_mig001_reconciliation_resolution_converges_and_is_idempotent(tenant)
             "queue_id": str(queue.id),
             "visit_id": str(queue.visit_id),
         }
+        reconciliation_audit = AuditEvent.objects.get(
+            event_code="MIGRATION_RECONCILIATION_RESOLVED",
+            entity_id=str(evidence.id),
+        )
+        assert reconciliation_audit.source_ids["reconciliation_id"] == str(evidence.id)
+        assert "Corrected legacy opener attribution" not in str(reconciliation_audit.__dict__)
         verified = verify_mig001(organisation=organisation)
         assert verified.unresolved == 0
         assert verified.queue_without_visit == 0
@@ -818,6 +847,194 @@ def test_pg_mig001_reconciliation_resolution_converges_and_is_idempotent(tenant)
         source_drift = verify_mig001(organisation=organisation)
         assert source_drift.unresolved == 1
         assert source_drift.scope_link_hash_verified is False
+
+
+def test_pg_mig001_cutover_and_rollback_fences_serialize_writers(tenant):
+    """The transition row lock fences both legacy and canonical writers."""
+
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        actor = User.objects.get(id=tenant.user.id)
+        legacy_patient = Patient.objects.create(
+            organisation=organisation,
+            patient_no=f"P-PG-S01-FENCE-LEGACY-{uuid4().hex[:8]}",
+            first_name="Legacy",
+            last_name="Fence",
+            sex="UNKNOWN",
+        )
+        target_patient = Patient.objects.create(
+            organisation=organisation,
+            patient_no=f"P-PG-S01-FENCE-TARGET-{uuid4().hex[:8]}",
+            first_name="Target",
+            last_name="Fence",
+            sex="UNKNOWN",
+        )
+        MigrationCutover.objects.create(
+            organisation=organisation,
+            migration_id="MIG-001",
+            phase="EXPANDED",
+            target_reads_enabled=False,
+            target_writes_enabled=False,
+        )
+
+    events = []
+    events_lock = Lock()
+
+    def mark(label):
+        with events_lock:
+            events.append(label)
+
+    legacy_ready = Event()
+    release_legacy = Event()
+
+    def legacy_writer():
+        connections.close_all()
+        try:
+            with tenant_atomic(tenant.organisation.id):
+                organisation = Organisation.objects.get(id=tenant.organisation.id)
+                facility = Facility.objects.get(id=tenant.facility.id)
+                actor = User.objects.get(id=tenant.user.id)
+                assert legacy_writes_enabled(organisation) is True
+                legacy_ready.set()
+                assert release_legacy.wait(timeout=20)
+                check_in_patient(
+                    organisation=organisation,
+                    facility=facility,
+                    actor=actor,
+                    patient_id=legacy_patient.id,
+                    department_id=tenant.department.id,
+                )
+            mark("legacy_committed")
+        finally:
+            connections.close_all()
+
+    def successful_cutover_transition():
+        connections.close_all()
+        try:
+            with tenant_atomic(tenant.organisation.id):
+                switch = MigrationCutover.objects.select_for_update().get(
+                    organisation_id=tenant.organisation.id,
+                    migration_id="MIG-001",
+                )
+                switch.phase = "CUTOVER"
+                switch.target_reads_enabled = True
+                switch.target_writes_enabled = True
+                switch.write_fence += 1
+                switch.version += 1
+                switch.save(
+                    update_fields=[
+                        "phase",
+                        "target_reads_enabled",
+                        "target_writes_enabled",
+                        "write_fence",
+                        "version",
+                        "updated_at",
+                    ]
+                )
+                mark("cutover_applied")
+            mark("cutover_committed")
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        legacy_future = executor.submit(legacy_writer)
+        assert legacy_ready.wait(timeout=20)
+        cutover_future = executor.submit(successful_cutover_transition)
+        release_legacy.set()
+        legacy_future.result()
+        cutover_future.result()
+
+    assert events.index("legacy_committed") < events.index("cutover_applied")
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        actor = User.objects.get(id=tenant.user.id)
+        post_cutover_patient = Patient.objects.create(
+            organisation=organisation,
+            patient_no=f"P-PG-S01-FENCE-POST-{uuid4().hex[:8]}",
+            first_name="After",
+            last_name="Cutover",
+            sex="UNKNOWN",
+        )
+        with pytest.raises(CanonicalError) as legacy_disabled:
+            check_in_patient(
+                organisation=organisation,
+                facility=facility,
+                actor=actor,
+                patient_id=post_cutover_patient.id,
+                department_id=tenant.department.id,
+            )
+        assert legacy_disabled.value.code == "LEGACY_WRITER_DISABLED"
+        assert not QueueEntry.objects.filter(patient=post_cutover_patient).exists()
+
+    target_ready = Event()
+    release_target = Event()
+
+    def target_writer():
+        connections.close_all()
+        try:
+            with tenant_atomic(tenant.organisation.id):
+                organisation = Organisation.objects.get(id=tenant.organisation.id)
+                facility = Facility.objects.get(id=tenant.facility.id)
+                actor = User.objects.get(id=tenant.user.id)
+                patient = Patient.objects.get(id=target_patient.id)
+                assert target_writes_enabled(organisation) is True
+                target_ready.set()
+                assert release_target.wait(timeout=20)
+                open_visit(
+                    organisation=organisation,
+                    facility=facility,
+                    actor=actor,
+                    patient=patient,
+                    local_service_day=timezone.localdate(),
+                    visit_type="OUTPATIENT_NEW",
+                )
+            mark("target_committed")
+        finally:
+            connections.close_all()
+
+    def rollback_transition():
+        connections.close_all()
+        try:
+            with tenant_atomic(tenant.organisation.id):
+                organisation = Organisation.objects.get(id=tenant.organisation.id)
+                actor = User.objects.get(id=tenant.user.id)
+                rollback_mig001(
+                    organisation=organisation,
+                    actor=actor,
+                    reason="Synthetic fence race rollback",
+                )
+                mark("rollback_applied")
+            mark("rollback_committed")
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        target_future = executor.submit(target_writer)
+        assert target_ready.wait(timeout=20)
+        rollback_future = executor.submit(rollback_transition)
+        release_target.set()
+        target_future.result()
+        rollback_future.result()
+
+    assert events.index("target_committed") < events.index("rollback_applied")
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        actor = User.objects.get(id=tenant.user.id)
+        patient = Patient.objects.get(id=target_patient.id)
+        assert target_writes_enabled(organisation) is False
+        with pytest.raises(ValueError, match="disabled"):
+            open_visit(
+                organisation=organisation,
+                facility=facility,
+                actor=actor,
+                patient=patient,
+                local_service_day=timezone.localdate(),
+                visit_type="OUTPATIENT_NEW",
+            )
+        assert Visit.objects.filter(patient=patient).count() == 1
 
 
 def test_pg_audited_clinical_read_failure_returns_no_payload_and_no_audit(monkeypatch, tenant, enabled_mig001_target, authed_client):
