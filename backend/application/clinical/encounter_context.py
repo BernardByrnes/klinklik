@@ -36,6 +36,22 @@ class EncounterContextProjection:
     def has_clinical_values(self):
         return bool(self.clinical_values)
 
+    @property
+    def has_protected_values(self):
+        """Whether the composed response contains any protected projection."""
+
+        return any(
+            (
+                self.clinical_values,
+                self.patient_projections,
+                self.allergy_projections,
+                self.visit_history,
+                self.laboratory,
+                self.prescriptions,
+                self.dispenses,
+            )
+        )
+
 
 def query_encounter_context(*, organisation, facility, visit, queue_entries=(), include_clinical=False):
     """Return owner-scoped Encounter objects without writing or auditing.

@@ -43,6 +43,8 @@ def test_s01_openapi_keeps_status_specific_registration_and_typed_checkin_contra
         "queue_id",
         "invoice_id",
         "patient_id",
+        "arrival_enquiry_id",
+        "arrival_enquiry_state",
         "next_action",
     }
     assert set(check_in_response["required"]) == set(check_in_response["properties"])

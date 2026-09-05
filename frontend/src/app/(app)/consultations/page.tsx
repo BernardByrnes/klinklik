@@ -77,6 +77,12 @@ const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
 const AUTOSAVE_DELAY_MS = 3000;
 const RETRY_BACKOFF_MS = [2000, 5000, 10000, 20000, 30000] as const;
 const TERMINAL_ENCOUNTER_STATUSES = ["SIGNED", "CLOSED", "CANCELLED"] as const;
+type EncounterStatus = NonNullable<Encounter["status"]>;
+const ENCOUNTER_STATUSES: readonly EncounterStatus[] = ["OPEN", "SIGNED", "CLOSED", "CANCELLED"];
+
+function isEncounterStatus(value: unknown): value is EncounterStatus {
+  return typeof value === "string" && ENCOUNTER_STATUSES.includes(value as EncounterStatus);
+}
 
 const DISPOSITION_OPTIONS: Array<{ value: EncounterDisposition; label: string }> = [
   { value: "TREATED_AND_DISCHARGED", label: "Treated and discharged" },
@@ -242,7 +248,7 @@ type AllergyEnteredInErrorMutationVariables = AllergyContext & {
 type AllergyReviewMutationVariables = AllergyContext;
 type DiagnosisConflictData = DiagnosisStateResponse & {
   detail: string;
-  encounter_status: string;
+  encounter_status: EncounterStatus;
 };
 
 type DiagnosisContext = {
@@ -312,7 +318,7 @@ const CLINICAL_FIELD_LABELS: Record<ClinicalNoteField, string> = {
 type ClinicalNoteConflictData = {
   etag: string;
   status: string;
-  encounter_status: string;
+  encounter_status: EncounterStatus;
   content: ClinicalNoteContent;
   complaints: PresentingComplaint[];
   diagnoses: Diagnosis[];
@@ -342,7 +348,7 @@ function clinicalNoteConflict(error: unknown): ClinicalNoteConflictData | null {
   if (
     typeof data.etag !== "string" ||
     typeof data.status !== "string" ||
-    typeof data.encounter_status !== "string" ||
+    !isEncounterStatus(data.encounter_status) ||
     typeof data.content !== "object" ||
     data.content === null ||
     !Array.isArray(data.complaints) ||
@@ -445,7 +451,7 @@ function diagnosisStateConflict(error: unknown): DiagnosisConflictData | null {
   if (
     typeof etag !== "string" ||
     typeof data.detail !== "string" ||
-    typeof data.encounter_status !== "string" ||
+    !isEncounterStatus(data.encounter_status) ||
     !Array.isArray(data.diagnoses)
   ) {
     return null;
@@ -2032,7 +2038,7 @@ function ConsultationsWorkspace() {
     });
   }
 
-  function applyDiagnosisSnapshot(diagnoses: Diagnosis[], etag?: string, encounterStatus?: string) {
+  function applyDiagnosisSnapshot(diagnoses: Diagnosis[], etag?: string, encounterStatus?: EncounterStatus) {
     if (etag && activeEncounterIdRef.current) encounterEtagRef.current = etag;
     setEncounter((current) => {
       if (!current || current.id !== activeEncounterIdRef.current) return current;

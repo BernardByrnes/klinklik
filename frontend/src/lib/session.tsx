@@ -33,9 +33,12 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
   const [restoring, setRestoring] = useState(true);
 
   useEffect(() => {
-    return subscribeAuthority(() => {
+    const unsubscribe = subscribeAuthority(() => {
       void clearProtectedState(queryClient).catch(() => undefined);
     });
+    return () => {
+      unsubscribe();
+    };
   }, [queryClient]);
 
   useEffect(() => {

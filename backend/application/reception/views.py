@@ -137,6 +137,8 @@ class VisitCheckInView(TenantAPIView):
                 "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
                 "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
                 "patient_id": str(outcome.visit.patient_id),
+                "arrival_enquiry_id": str(outcome.arrival_enquiry.id) if outcome.arrival_enquiry is not None else None,
+                "arrival_enquiry_state": outcome.arrival_enquiry.state if outcome.arrival_enquiry is not None else None,
                 "next_action": (
                     "LAB_REQUEST_CAPTURE"
                     if outcome.visit.visit_type == "LAB_ONLY"
@@ -152,6 +154,8 @@ class VisitCheckInView(TenantAPIView):
                 "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
                 "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
                 "patient_id": str(outcome.visit.patient_id),
+                "arrival_enquiry_id": str(outcome.arrival_enquiry.id) if outcome.arrival_enquiry is not None else None,
+                "arrival_enquiry_state": outcome.arrival_enquiry.state if outcome.arrival_enquiry is not None else None,
                 "next_action": (
                     "LAB_REQUEST_CAPTURE"
                     if outcome.visit.visit_type == "LAB_ONLY"
@@ -320,6 +324,7 @@ class VisitContextView(TenantAPIView):
                 facility=request.facility,
                 visit=projection.visit,
                 encounters=clinical_projection.encounters,
+                values_returned=clinical_projection.has_protected_values,
             )
         return Response(
             {

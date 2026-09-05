@@ -44,7 +44,7 @@ PRESENTING_COMPLAINT_SCHEMA = {
             "nullable": True,
         },
     },
-    "required": ["text"],
+    "required": ["text", "duration_value", "duration_unit"],
 }
 ACTIVE_ALLERGY_SCHEMA = {
     "type": "object",
@@ -73,7 +73,21 @@ DIAGNOSIS_SCHEMA = {
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"},
     },
-    "required": ["id", "encounter", "diagnosis_type", "code", "label", "coded", "is_primary", "status"],
+    "required": [
+        "id",
+        "encounter",
+        "diagnosis_type",
+        "code",
+        "label",
+        "coded",
+        "certainty_note",
+        "is_primary",
+        "no_diagnosis_reason",
+        "status",
+        "recorded_by",
+        "created_at",
+        "updated_at",
+    ],
 }
 FOLLOW_UP_SCHEMA = {
     "type": "object",
@@ -90,6 +104,19 @@ FOLLOW_UP_SCHEMA = {
         "created_at": {"type": "string", "format": "date-time"},
         "updated_at": {"type": "string", "format": "date-time"},
     },
+    "required": [
+        "id",
+        "patient",
+        "encounter",
+        "recommended_date",
+        "interval_value",
+        "interval_unit",
+        "instructions",
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at",
+    ],
 }
 PATIENT_CONTEXT_SCHEMA = {
     "type": "object",
@@ -454,7 +481,9 @@ class TriageResponseSerializer(serializers.Serializer):
 class AllergyStateResponseSerializer(serializers.Serializer):
     patient = serializers.UUIDField(required=False)
     allergy = OpenAPISchemaField(openapi_schema=ACTIVE_ALLERGY_SCHEMA, required=False)
-    allergy_status = serializers.CharField()
+    allergy_status = serializers.ChoiceField(
+        choices=["NOT_RECORDED", "NKA", "UNKNOWN", "RECORDED"],
+    )
     active_allergies = serializers.ListField(child=OpenAPISchemaField(openapi_schema=ACTIVE_ALLERGY_SCHEMA))
     allergy_revision = serializers.IntegerField()
     allergy_state_etag = serializers.CharField()
@@ -469,16 +498,16 @@ class DiagnosisStateResponseSerializer(serializers.Serializer):
 
 
 class DispositionResponseSerializer(serializers.Serializer):
-    disposition = serializers.CharField(allow_null=True)
+    disposition = serializers.ChoiceField(choices=Encounter.DISPOSITION_CHOICES, allow_null=True)
     disposition_note = serializers.CharField()
     consultation_etag = serializers.CharField()
-    encounter_status = serializers.CharField()
+    encounter_status = serializers.ChoiceField(choices=Encounter.STATUS_CHOICES)
 
 
 class FollowUpStateResponseSerializer(serializers.Serializer):
     follow_up = OpenAPISchemaField(openapi_schema={**FOLLOW_UP_SCHEMA, "nullable": True}, allow_null=True)
     consultation_etag = serializers.CharField()
-    encounter_status = serializers.CharField()
+    encounter_status = serializers.ChoiceField(choices=Encounter.STATUS_CHOICES)
 
 
 class NoteResponseSerializer(serializers.Serializer):

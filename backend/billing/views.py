@@ -117,6 +117,7 @@ class InvoicePaymentView(TenantAPIView):
 class InvoiceReceiptView(TenantAPIView):
     capability = "billing.receipt.print"
     response_serializer_class = ReceiptSerializer
+    response_is_list = False
 
     def get(self, request, pk):
         invoice = get_object_or_404(

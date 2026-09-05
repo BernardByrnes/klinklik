@@ -938,18 +938,20 @@ def visit_context(*, organisation, facility, actor, visit_id, include_clinical=F
         else None
     )
     encounters = clinical_projection.encounters if clinical_projection is not None else tuple()
-    if encounters:
+    values_returned = clinical_projection.has_protected_values if clinical_projection is not None else False
+    if values_returned:
         audit_clinical_projection(
             organisation=organisation,
             actor=actor,
             facility=facility,
             visit=projection.visit,
             encounters=encounters,
+            values_returned=values_returned,
         )
     return VisitContextOutcome(
         visit=projection.visit,
         queue_entries=projection.queue_entries,
         invoice=projection.invoice,
         encounters=encounters,
-        clinical_values_returned=bool(encounters),
+        clinical_values_returned=values_returned,
     )

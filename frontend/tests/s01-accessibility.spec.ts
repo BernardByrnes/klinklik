@@ -102,4 +102,10 @@ test("S-01 registration and check-in workflow controls are accessible", async ({
   await expect(page.getByLabel("Last name", { exact: true })).toBeFocused();
   await checkInButton.focus();
   await expect(checkInButton).toBeFocused();
+
+  await checkInButton.click();
+  await expect(page.getByRole("status").filter({ hasText: "checked in." })).toBeVisible();
+  await expect(page.getByText("Open visit already exists today", { exact: true })).toBeVisible();
+  await expect(checkInButton).toBeDisabled();
+  await expect(page.getByRole("status").filter({ hasText: "Open visit already exists today" })).toBeVisible();
 });

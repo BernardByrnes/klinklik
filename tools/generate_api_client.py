@@ -109,7 +109,7 @@ def _resolve_schema(schema, components):
     return current
 
 
-def _ts_type(schema, *, components):
+def _ts_type(schema, *, components, all_properties_required=False):
     schema = schema or {}
     ref_name = _ref_name(schema)
     if ref_name:
@@ -121,18 +121,26 @@ def _ts_type(schema, *, components):
     elif "enum" in schema:
         result = " | ".join(json.dumps(value, ensure_ascii=True) for value in schema["enum"]) or "never"
     elif schema.get("type") == "array":
-        item_type = _ts_type(schema.get("items", {}), components=components)
+        item_type = _ts_type(
+            schema.get("items", {}),
+            components=components,
+            all_properties_required=all_properties_required,
+        )
         result = f"Array<{item_type}>"
     elif schema.get("type") == "object" or "properties" in schema:
         properties = schema.get("properties") or {}
         required = set(schema.get("required") or []) | {
             name for name, field in properties.items() if field.get("readOnly")
         }
+        if all_properties_required and schema.get("additionalProperties") is not True:
+            required.update(properties)
         members = []
         for name, field in properties.items():
             safe_name = name if name.isidentifier() else json.dumps(name, ensure_ascii=True)
             optional = "" if name in required else "?"
-            members.append(f"{safe_name}{optional}: {_ts_type(field, components=components)};")
+            members.append(
+                f"{safe_name}{optional}: {_ts_type(field, components=components, all_properties_required=all_properties_required)};"
+            )
         if schema.get("additionalProperties") is True and properties:
             members.append("[key: string]: unknown;")
         if schema.get("additionalProperties") and not properties:
@@ -153,10 +161,12 @@ def _ts_type(schema, *, components):
     return result
 
 
-def _component_types(schema):
+def _component_types(schema, *, exclude_names=()):
     components = ((schema or {}).get("components") or {}).get("schemas") or {}
     rendered = []
     for name, definition in sorted(components.items(), key=lambda pair: str(pair[0])):
+        if name in exclude_names:
+            continue
         rendered.append(f"export type {name} = {_ts_type(definition, components=components)};")
     return rendered
 
@@ -282,7 +292,7 @@ def _type_aliases(schema):
         elif "/billing/services/" in path and resolved_response.get("type") == "array":
             put_alias("Service", resolved_response.get("items", {}))
         elif "receipt" in path:
-            put_alias("Receipt", resolved_response)
+            put_alias("Receipt", resolved_response.get("items", resolved_response))
         elif "/clinic/encounters/" in path:
             put_alias("Encounter", resolved_response.get("items", resolved_response))
         elif "/tenancy/departments/" in path:
@@ -340,15 +350,16 @@ def render(schema):
     ]
     operations_json = json.dumps(operations, ensure_ascii=True, indent=2)
     fingerprint = contract_fingerprint(schema)
-    generated_types = _component_types(schema)
+    aliases = _type_aliases(schema)
+    generated_types = _component_types(schema, exclude_names=aliases)
     existing_names = {
         line.split("export type ", 1)[1].split(" =", 1)[0]
         for line in generated_types
         if line.startswith("export type ")
     }
     generated_types.extend(
-        f"export type {name} = {_ts_type(definition, components={})};"
-        for name, definition in sorted(_type_aliases(schema).items())
+        f"export type {name} = {_ts_type(definition, components={}, all_properties_required=True)};"
+        for name, definition in sorted(aliases.items())
         if name not in existing_names
     )
     generated_types += _operation_types(schema)

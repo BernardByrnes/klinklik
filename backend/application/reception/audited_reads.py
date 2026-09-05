@@ -5,10 +5,14 @@ from core.errors import CanonicalError
 from core.services import assert_transaction_active
 
 
-def audit_clinical_projection(*, organisation, actor, facility, visit, encounters):
+def audit_clinical_projection(*, organisation, actor, facility, visit, encounters, values_returned=None):
     """Commit one redacted PHI_READ fact before returning clinical values."""
 
     assert_transaction_active()
+    if values_returned is None:
+        values_returned = bool(encounters)
+    if not values_returned:
+        return
     try:
         record_fact(
             organisation=organisation,
@@ -22,7 +26,7 @@ def audit_clinical_projection(*, organisation, actor, facility, visit, encounter
                 "visit_id": visit.id,
                 "encounter_ids": [encounter.id for encounter in encounters],
             },
-            after={"values_returned": bool(encounters), "encounter_count": len(encounters)},
+            after={"values_returned": True, "encounter_count": len(encounters)},
         )
     except Exception as exc:
         raise CanonicalError(

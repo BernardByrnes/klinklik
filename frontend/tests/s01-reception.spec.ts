@@ -33,8 +33,18 @@ test("S-01 reception supports enquiry conversion, cancellation, and accessible w
   // REC-013: an operational enquiry is recorded without creating a patient.
   await page.getByLabel("Reason", { exact: true }).selectOption("SERVICE_UNAVAILABLE");
   await steadyFill(page, "Safe notes (optional)", "No clinician available at the desk");
+  const enquiryResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/reception/arrival-enquiries/") &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Record enquiry", exact: true }).click();
-  await expect(page.getByText("Enquiry recorded and ready to link to the next check-in.", { exact: true })).toBeVisible();
+  const enquiryResponse = await enquiryResponsePromise;
+  expect(enquiryResponse.ok()).toBeTruthy();
+  const enquiryBody = await enquiryResponse.json() as { enquiry_id: string };
+  await expect(page.getByTestId("arrival-enquiry-status")).toContainText(
+    "Enquiry recorded and ready to link to the next check-in.",
+  );
 
   const suffix = Date.now().toString().slice(-7);
   await steadyFill(page, "First name", "S01");
@@ -52,8 +62,23 @@ test("S-01 reception supports enquiry conversion, cancellation, and accessible w
   await expect(page.getByRole("radiogroup", { name: "Payer", exact: true })).toBeVisible();
   await expect(page.getByText("This check-in will convert the recorded arrival enquiry atomically.", { exact: true })).toBeVisible();
 
+  const checkInResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/reception/visits/check-in/") &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Check in patient", exact: true }).click();
-  await expect(page.getByText(/checked in\./)).toBeVisible();
+  const checkInResponse = await checkInResponsePromise;
+  expect(checkInResponse.ok()).toBeTruthy();
+  const checkInBody = await checkInResponse.json() as {
+    arrival_enquiry_id: string | null;
+    arrival_enquiry_state: string | null;
+  };
+  expect(checkInBody.arrival_enquiry_id).toBe(enquiryBody.enquiry_id);
+  expect(checkInBody.arrival_enquiry_state).toBe("CONVERTED");
+  await expect(page.getByRole("status").filter({ hasText: "checked in." })).toContainText(
+    "Arrival enquiry converted and linked.",
+  );
   await expect(page.getByText("Open visit already exists today", { exact: true })).toBeVisible();
 
   // REC-010: disabled until a reason exists, then leaves a retained context.

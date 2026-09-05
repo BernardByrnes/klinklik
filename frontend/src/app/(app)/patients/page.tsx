@@ -223,8 +223,9 @@ function PatientsWorkspace() {
 
   const activeVisit = patientSummary.data?.active_visit ?? null;
   const openVisit = activeVisit && activeVisit.id !== cancelledVisit ? activeVisit : null;
+  const openVisitId = openVisit?.id;
   useEffect(() => {
-    if (!openVisit) {
+    if (!openVisitId) {
       setClockMs(null);
       return;
     }
@@ -232,7 +233,7 @@ function PatientsWorkspace() {
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [openVisit?.id, openVisit?.opened_at]);
+  }, [openVisitId]);
   const openedAtMs = openVisit ? new Date(openVisit.opened_at).getTime() : Number.NaN;
   const remainingGraceSeconds =
     openVisit && clockMs !== null && Number.isFinite(openedAtMs)
@@ -335,7 +336,11 @@ function PatientsWorkspace() {
       setContextVisitId(result.visit_id);
       setArrivalEnquiryId(null);
       setArrivalEnquiryVersion(null);
-      setNotice(`${selected?.display_name ?? "Patient"} checked in.`);
+      setNotice(
+        `${selected?.display_name ?? "Patient"} checked in.${
+          result.arrival_enquiry_state === "CONVERTED" ? " Arrival enquiry converted and linked." : ""
+        }`,
+      );
       setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patient-check-in-summary", selected?.id) });
@@ -768,7 +773,11 @@ function PatientsWorkspace() {
                   />
                 </Field>
                 {arrivalEnquiryId ? (
-                  <div className="rounded-[12px] bg-accent-teal-soft px-3 py-2 text-[12px] font-medium text-ink" role="status">
+                  <div
+                    className="rounded-[12px] bg-accent-teal-soft px-3 py-2 text-[12px] font-medium text-ink"
+                    role="status"
+                    data-testid="arrival-enquiry-status"
+                  >
                     Enquiry recorded and ready to link to the next check-in.
                     <button
                       type="button"

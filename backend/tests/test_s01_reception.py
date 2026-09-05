@@ -95,7 +95,6 @@ def assert_phi_minimal_result(tenant, operation, key, expected):
                 "patient",
                 "queue",
                 "invoice",
-                "enquiry",
                 "safe_notes",
                 "source_event_id",
             )
@@ -184,11 +183,15 @@ def test_check_in_opens_visit_queue_and_issued_consultation_invoice(tenant, auth
     )
     assert response.status_code == 201, response.data
     assert response.data["next_action"] == "CHECK_IN_COMPLETE"
+    assert response.data["arrival_enquiry_id"] is None
+    assert response.data["arrival_enquiry_state"] is None
     assert set(response.data) == {
         "visit_id",
         "queue_id",
         "invoice_id",
         "patient_id",
+        "arrival_enquiry_id",
+        "arrival_enquiry_state",
         "next_action",
     }
 
@@ -627,6 +630,7 @@ def test_visit_context_filters_clinical_values_by_role_and_audits_clinical_read(
         HTTP_AUTHORIZATION="Bearer " + login.data["access_token"],
         HTTP_X_FACILITY_ID=str(tenant.facility.id),
     )
+    phi_reads_before_admin = AuditEvent.objects.filter(event_code="PHI_READ").count()
     admin_context = receptionist_client.get(
         f"/api/v1/reception/visits/{checked_in.data['visit_id']}/context/"
     )
@@ -642,7 +646,9 @@ def test_visit_context_filters_clinical_values_by_role_and_audits_clinical_read(
     assert "diagnoses" not in str(admin_context.data)
     assert "vitals" not in str(admin_context.data)
     assert "medicines" not in str(admin_context.data)
+    assert AuditEvent.objects.filter(event_code="PHI_READ").count() == phi_reads_before_admin
 
+    phi_reads_before_clinician = AuditEvent.objects.filter(event_code="PHI_READ").count()
     clinician_context = authed_client.get(
         f"/api/v1/reception/visits/{checked_in.data['visit_id']}/context/"
     )
@@ -663,7 +669,45 @@ def test_visit_context_filters_clinical_values_by_role_and_audits_clinical_read(
     assert clinician_context.data["laboratory"] == []
     assert clinician_context.data["prescriptions"] == []
     assert clinician_context.data["dispenses"] == []
-    assert AuditEvent.objects.filter(event_code="PHI_READ").count() == 1
+    assert AuditEvent.objects.filter(event_code="PHI_READ").count() == phi_reads_before_clinician + 1
+    read_event = AuditEvent.objects.filter(event_code="PHI_READ").latest("occurred_at")
+    assert read_event.after == {"values_returned": True, "encounter_count": 1}
+
+
+def test_visit_context_empty_clinical_state_audits_once_for_returned_owner_projections(tenant, authed_client):
+    patient = register(
+        authed_client,
+        {**registration_payload(), "first_name": "Empty", "last_name": "Clinical"},
+        key="s01-register-empty-clinical",
+    ).data
+    checked_in = check_in(
+        authed_client,
+        patient["patient_id"],
+        key="s01-checkin-empty-clinical",
+        department_id=str(tenant.department.id),
+    )
+    before = AuditEvent.objects.filter(event_code="PHI_READ").count()
+
+    response = authed_client.get(
+        f"/api/v1/reception/visits/{checked_in.data['visit_id']}/context/"
+    )
+    assert response.status_code == 200, response.data
+    assert response.data["clinical"] is None
+    assert response.data["patient"]["id"] == patient["patient_id"]
+    assert response.data["allergy"]["status"] == "NOT_RECORDED"
+    assert len(response.data["visit_history"]) == 1
+    assert response.data["laboratory"] == []
+    assert response.data["prescriptions"] == []
+    assert response.data["dispenses"] == []
+    assert AuditEvent.objects.filter(event_code="PHI_READ").count() == before + 1
+    read_event = AuditEvent.objects.filter(event_code="PHI_READ").latest("occurred_at")
+    assert read_event.after == {"values_returned": True, "encounter_count": 0}
+
+    repeated = authed_client.get(
+        f"/api/v1/reception/visits/{checked_in.data['visit_id']}/context/"
+    )
+    assert repeated.status_code == 200, repeated.data
+    assert AuditEvent.objects.filter(event_code="PHI_READ").count() == before + 2
 
 
 def test_clinical_context_serialization_has_no_lazy_owner_queries(tenant, authed_client):
@@ -793,6 +837,8 @@ def test_arrival_enquiry_has_no_patient_and_converts_atomically(tenant, authed_c
     enquiry.refresh_from_db()
     assert enquiry.state == "CONVERTED"
     assert str(enquiry.converted_visit_id) == converted.data["visit_id"]
+    assert converted.data["arrival_enquiry_id"] == str(enquiry.id)
+    assert converted.data["arrival_enquiry_state"] == "CONVERTED"
     assert AuditEvent.objects.filter(
         entity_id=str(enquiry.id), event_code="ARRIVAL_ENQUIRY_CONVERTED"
     ).exists()

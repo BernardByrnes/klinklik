@@ -184,6 +184,12 @@ class VisitCheckInResponseSerializer(serializers.Serializer):
     queue_id = serializers.UUIDField(required=True, allow_null=True)
     invoice_id = serializers.UUIDField(required=True, allow_null=True)
     patient_id = serializers.UUIDField(required=True)
+    arrival_enquiry_id = serializers.UUIDField(required=True, allow_null=True)
+    arrival_enquiry_state = serializers.ChoiceField(
+        choices=ArrivalEnquiry.STATE_CHOICES,
+        required=True,
+        allow_null=True,
+    )
     next_action = serializers.ChoiceField(
         choices=[
             ("CHECK_IN_COMPLETE", "Check-in complete"),
