@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from threading import Barrier, Event, Lock
+from threading import Barrier, Event, Lock, get_ident
 from uuid import uuid4
 
 import pytest
@@ -219,7 +219,12 @@ def test_pg_competing_enquiry_conversions_have_one_winner_and_no_orphan_visit(te
         assert Visit.objects.filter(patient_id__in=(first_patient.id, second_patient.id)).count() == 1
 
 
-def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenant, enabled_mig001_target):
+@pytest.mark.parametrize("first_operation", ["cancel", "clinical"])
+def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(
+    tenant,
+    enabled_mig001_target,
+    first_operation,
+):
     patient = _new_patient(tenant, "CancelClinicalRace")
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -236,6 +241,7 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenan
         )
         visit_id = checkin.visit.id
         queue_id = checkin.queue.id
+        invoice_id = checkin.invoice.id
 
     def cancel_operation():
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -262,13 +268,24 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenan
         )
         return "encounter", str(encounter.id)
 
-    barrier = Barrier(2)
+    first_lock_acquired = Event()
+    second_lock_requested = Event()
+    release_first = Event()
 
-    def attempt(operation):
+    def attempt(operation, *, lock_acquired=None, lock_requested=None, release=None):
         connections.close_all()
         try:
             def callback():
-                barrier.wait(timeout=20)
+                if lock_requested is not None:
+                    lock_requested.set()
+                Visit.objects.select_for_update().get(
+                    id=visit_id,
+                    organisation_id=tenant.organisation.id,
+                )
+                if lock_acquired is not None:
+                    lock_acquired.set()
+                if release is not None and not release.wait(timeout=20):
+                    raise RuntimeError("cancellation test release was not signalled")
                 return operation()
 
             try:
@@ -278,27 +295,83 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(tenan
         finally:
             connections.close_all()
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        cancel_future = executor.submit(attempt, cancel_operation)
-        clinical_future = executor.submit(attempt, clinical_operation)
-        cancel_result = cancel_future.result()
-        clinical_result = clinical_future.result()
-
-    assert (cancel_result[0], clinical_result[0]) in {
-        ("cancelled", "error"),
-        ("error", "encounter"),
+    operations = {
+        "cancel": cancel_operation,
+        "clinical": clinical_operation,
     }
+    losing_operation = "clinical" if first_operation == "cancel" else "cancel"
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            attempt,
+            operations[first_operation],
+            lock_acquired=first_lock_acquired,
+            release=release_first,
+        )
+        assert first_lock_acquired.wait(timeout=20)
+        second_future = executor.submit(
+            attempt,
+            operations[losing_operation],
+            lock_requested=second_lock_requested,
+        )
+        assert second_lock_requested.wait(timeout=20)
+        release_first.set()
+        worker_results = {
+            first_operation: first_future.result(timeout=20),
+            losing_operation: second_future.result(timeout=20),
+        }
+
+    cancel_result = worker_results["cancel"]
+    clinical_result = worker_results["clinical"]
+    if first_operation == "cancel":
+        assert cancel_result == ("cancelled", str(visit_id))
+        assert clinical_result == ("error", "This Visit is no longer available for clinical work.")
+    else:
+        assert clinical_result[0] == "encounter"
+        assert cancel_result == ("error", "INVALID_STATE")
+
     with tenant_atomic(tenant.organisation.id):
         visit = Visit.objects.get(id=visit_id)
-        encounters = Encounter.objects.filter(visit=visit)
-        if visit.state == "CANCELLED_ERROR":
-            assert not encounters.exists()
-            assert Invoice.objects.get(visit=visit).status == "VOIDED"
-            assert clinical_result[0] == "error"
+        queues = list(QueueEntry.objects.filter(visit=visit))
+        encounters = list(Encounter.objects.filter(visit=visit))
+        invoices = list(Invoice.objects.filter(visit=visit))
+        assert Visit.objects.filter(patient_id=patient.id).count() == 1
+        assert QueueEntry.objects.filter(patient_id=patient.id).count() == 1
+        assert Invoice.objects.filter(patient_id=patient.id).count() == 1
+        assert len(queues) == 1
+        assert len(invoices) == 1
+        assert invoices[0].id == invoice_id
+        assert queues[0].patient_id == patient.id
+        assert queues[0].visit_id == visit.id
+        assert invoices[0].patient_id == patient.id
+        assert invoices[0].visit_id == visit.id
+        assert Encounter.objects.filter(patient_id=patient.id).count() == len(encounters)
+        assert InvoiceItem.objects.filter(
+            invoice=invoices[0],
+            source_type="CONSULTATION",
+        ).count() == 1
+        if first_operation == "cancel":
+            assert visit.state == "CANCELLED_ERROR"
+            assert queues[0].status == "CANCELLED"
+            assert not encounters
+            assert invoices[0].status == "VOIDED"
+            assert InvoiceItem.objects.filter(
+                invoice=invoices[0],
+                source_type="CONSULTATION",
+                state="VOIDED",
+            ).count() == 1
         else:
             assert visit.state == "IN_PROGRESS"
-            assert encounters.count() == 1
-            assert cancel_result[0] == "error"
+            assert queues[0].status == "IN_CONSULTATION"
+            assert len(encounters) == 1
+            assert clinical_result == ("encounter", str(encounters[0].id))
+            assert encounters[0].queue_entry_id == queues[0].id
+            assert encounters[0].visit_id == visit.id
+            assert invoices[0].status == "ISSUED"
+            assert InvoiceItem.objects.filter(
+                invoice=invoices[0],
+                source_type="CONSULTATION",
+                state="ACTIVE",
+            ).count() == 1
 
 
 @pytest.mark.parametrize("payment_timing", ["PAY_AFTER", "PAY_BEFORE_TRIAGE"])
@@ -895,32 +968,71 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         )
         pre_cutover_fence = switch.write_fence
 
-    cutover_lock_acquired = Event()
+    writer_labels = {}
+    writer_labels_lock = Lock()
+    cutover_fence_acquired = Event()
     release_cutover = Event()
+    legacy_fence_requested = Event()
+    legacy_fence_acquired = Event()
+    target_fence_acquired = Event()
+    rollback_fence_requested = Event()
+    rollback_fence_acquired = Event()
+    release_target = Event()
     original_cutover_switch = migration_reconciliation._cutover_switch
 
+    def set_writer_label(label):
+        with writer_labels_lock:
+            writer_labels[get_ident()] = label
+
+    def clear_writer_label():
+        with writer_labels_lock:
+            writer_labels.pop(get_ident(), None)
+
+    def current_writer_label():
+        with writer_labels_lock:
+            return writer_labels.get(get_ident())
+
     def instrumented_cutover_switch(*args, **kwargs):
-        switch = original_cutover_switch(*args, **kwargs)
-        if not cutover_lock_acquired.is_set():
-            cutover_lock_acquired.set()
+        label = current_writer_label()
+        if label == "cutover" and not cutover_fence_acquired.is_set():
+            switch = original_cutover_switch(*args, **kwargs)
+            cutover_fence_acquired.set()
             if not release_cutover.wait(timeout=20):
                 raise RuntimeError("cutover test release was not signalled")
-        return switch
+            return switch
+        if label == "legacy":
+            legacy_fence_requested.set()
+            switch = original_cutover_switch(*args, **kwargs)
+            legacy_fence_acquired.set()
+            return switch
+        if label == "target" and not target_fence_acquired.is_set():
+            switch = original_cutover_switch(*args, **kwargs)
+            target_fence_acquired.set()
+            return switch
+        if label == "rollback":
+            rollback_fence_requested.set()
+            switch = original_cutover_switch(*args, **kwargs)
+            rollback_fence_acquired.set()
+            return switch
+        return original_cutover_switch(*args, **kwargs)
 
     monkeypatch.setattr(migration_reconciliation, "_cutover_switch", instrumented_cutover_switch)
 
     def cutover_writer():
         connections.close_all()
+        set_writer_label("cutover")
         try:
             with tenant_atomic(tenant.organisation.id):
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
                 result = cutover_mig001(organisation=organisation)
                 return (result.phase, result.parity_passes, result.stable_full_scan_count)
         finally:
+            clear_writer_label()
             connections.close_all()
 
     def legacy_writer():
         connections.close_all()
+        set_writer_label("legacy")
         try:
             try:
                 with tenant_atomic(tenant.organisation.id):
@@ -938,15 +1050,20 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
                 return ("blocked", exc.code)
             return ("committed",)
         finally:
+            clear_writer_label()
             connections.close_all()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         cutover_future = executor.submit(cutover_writer)
-        assert cutover_lock_acquired.wait(timeout=20)
+        assert cutover_fence_acquired.wait(timeout=20)
         legacy_future = executor.submit(legacy_writer)
+        assert legacy_fence_requested.wait(timeout=20)
         release_cutover.set()
-        assert cutover_future.result() == ("CUTOVER", 2, 2)
-        assert legacy_future.result() == ("blocked", "LEGACY_WRITER_DISABLED")
+        cutover_result = cutover_future.result(timeout=20)
+        legacy_result = legacy_future.result(timeout=20)
+        assert cutover_result == ("CUTOVER", 2, 2)
+        assert legacy_result == ("blocked", "LEGACY_WRITER_DISABLED")
+        assert legacy_fence_acquired.is_set()
 
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -959,7 +1076,11 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         assert switch.target_writes_enabled is True
         cutover_fence = switch.write_fence
         assert cutover_fence == pre_cutover_fence + 1
+        assert Visit.objects.filter(patient_id=legacy_patient.id).count() == 1
         assert QueueEntry.objects.filter(id=legacy_queue.id, visit_id=migrated_visit.id).exists()
+        assert QueueEntry.objects.filter(patient_id=legacy_patient.id).count() == 1
+        assert Encounter.objects.filter(patient_id=legacy_patient.id).count() == 0
+        assert Invoice.objects.filter(patient_id=legacy_patient.id).count() == 0
         assert not QueueEntry.objects.filter(
             organisation=organisation,
             facility_id=facility.id,
@@ -967,12 +1088,9 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
             visit_id__isnull=True,
         ).exists()
 
-    target_lock_acquired = Event()
-    release_target = Event()
-    rollback_attempted = Event()
-
     def target_writer():
         connections.close_all()
+        set_writer_label("target")
         try:
             with tenant_atomic(tenant.organisation.id):
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -980,7 +1098,6 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
                 actor = User.objects.get(id=tenant.user.id)
                 patient = Patient.objects.get(id=target_patient.id)
                 assert target_writes_enabled(organisation) is True
-                target_lock_acquired.set()
                 if not release_target.wait(timeout=20):
                     raise RuntimeError("target test release was not signalled")
                 outcome = visit_check_in(
@@ -994,15 +1111,16 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
                 )
                 return (str(outcome.visit.id), str(outcome.queue.id), str(outcome.invoice.id))
         finally:
+            clear_writer_label()
             connections.close_all()
 
     def rollback_writer():
         connections.close_all()
+        set_writer_label("rollback")
         try:
             with tenant_atomic(tenant.organisation.id):
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
                 actor = User.objects.get(id=tenant.user.id)
-                rollback_attempted.set()
                 switch = rollback_mig001(
                     organisation=organisation,
                     actor=actor,
@@ -1010,16 +1128,18 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
                 )
                 return (switch.phase, switch.write_fence)
         finally:
+            clear_writer_label()
             connections.close_all()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         target_future = executor.submit(target_writer)
-        assert target_lock_acquired.wait(timeout=20)
+        assert target_fence_acquired.wait(timeout=20)
         rollback_future = executor.submit(rollback_writer)
-        assert rollback_attempted.wait(timeout=20)
+        assert rollback_fence_requested.wait(timeout=20)
         release_target.set()
-        target_result = target_future.result()
-        rollback_result = rollback_future.result()
+        target_result = target_future.result(timeout=20)
+        rollback_result = rollback_future.result(timeout=20)
+        assert rollback_fence_acquired.is_set()
 
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -1029,6 +1149,15 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         assert Visit.objects.filter(id=target_visit_id, patient_id=target_patient.id, state="OPEN").exists()
         assert QueueEntry.objects.filter(id=target_queue_id, visit_id=target_visit_id).exists()
         assert Invoice.objects.filter(id=target_invoice_id, visit_id=target_visit_id, status="ISSUED").exists()
+        assert Visit.objects.filter(patient_id=target_patient.id).count() == 1
+        assert QueueEntry.objects.filter(patient_id=target_patient.id, visit_id=target_visit_id).count() == 1
+        assert Invoice.objects.filter(patient_id=target_patient.id, visit_id=target_visit_id).count() == 1
+        assert InvoiceItem.objects.filter(
+            invoice_id=target_invoice_id,
+            source_type="CONSULTATION",
+            state="ACTIVE",
+        ).count() == 1
+        assert Encounter.objects.filter(patient_id=target_patient.id).count() == 0
         switch = MigrationCutover.objects.get(
             organisation=organisation,
             migration_id="MIG-001",
@@ -1060,6 +1189,8 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
             )
         assert target_disabled.value.code == "MIGRATION_TARGET_DISABLED"
         assert Visit.objects.filter(patient_id=blocked_patient.id).count() == 0
+        assert QueueEntry.objects.filter(patient_id=blocked_patient.id).count() == 0
+        assert Invoice.objects.filter(patient_id=blocked_patient.id).count() == 0
 
 
 def test_pg_audited_clinical_read_failure_returns_no_payload_and_no_audit(monkeypatch, tenant, enabled_mig001_target, authed_client):
