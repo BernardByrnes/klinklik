@@ -79,7 +79,11 @@ class TenantAPIView(APIView):
     def _invoke_handler(self, request, *args, **kwargs):
         self.check_permissions(request)
         self.check_throttles(request)
-        if self.requires_idempotency and request.method in {"POST", "PUT", "PATCH"} and not self._idempotency_key:
+        if (
+            self.requires_idempotency_for_request(request)
+            and request.method in {"POST", "PUT", "PATCH"}
+            and not self._idempotency_key
+        ):
             raise CanonicalError(
                 "IDEMPOTENCY_KEY_REQUIRED",
                 "This command requires an Idempotency-Key.",
@@ -109,6 +113,11 @@ class TenantAPIView(APIView):
             response["Idempotent-Replay"] = "true"
             return response
         return outcome.value
+
+    def requires_idempotency_for_request(self, request):
+        """Allow a command to enable strict replay semantics at cutover."""
+
+        return self.requires_idempotency
 
     def dispatch(self, request, *args, **kwargs):
         drf_request = self.initialize_request(request, *args, **kwargs)

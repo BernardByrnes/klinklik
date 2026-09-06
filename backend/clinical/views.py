@@ -20,7 +20,8 @@ from clinical.diagnoses import DiagnosisDomainError, DiagnosisRevisionConflict, 
 from clinical.diagnosis_state import active_diagnosis_snapshot
 from clinical.dispositions import DispositionDomainError, DispositionRevisionConflict, set_disposition
 from clinical.followups import FollowUpDomainError, FollowUpRevisionConflict, save_follow_up
-from clinical.models import Allergy, Diagnosis, Encounter
+from clinical.models import Allergy, Diagnosis, Encounter, TriageAssessment
+from application.clinical.commands import encounter_open, triage_complete
 from patients.models import Patient
 from clinical.serializers import (
     AllergyCreateSerializer,
@@ -46,42 +47,117 @@ from clinical.serializers import (
 from clinical.services import (
     PresentingComplaintRequired,
     amend_note,
-    record_triage,
     save_note,
     sign_note,
-    start_encounter,
 )
 from core.tenant_api import TenantAPIView
+from core.errors import CanonicalError
+from core.idempotency import json_safe
 from scheduling.models import QueueEntry
 from scheduling.serializers import QueueEntrySerializer
 
 
+def _mig002_command_mode(organisation):
+    from core.models import MigrationCutover
+
+    return MigrationCutover.objects.filter(
+        organisation=organisation,
+        migration_id="MIG-002",
+        phase__in={"CONSTRAINED", "CUTOVER"},
+        target_writes_enabled=True,
+    ).exists()
+
+
 class TriageView(TenantAPIView):
     capability = "triage.record"
+    idempotency_operation = "CMD-027"
+    requires_idempotency = True
     serializer_class = TriageSerializer
     response_serializer_class = TriageResponseSerializer
+
+    def requires_idempotency_for_request(self, request):
+        return _mig002_command_mode(request.organisation)
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference or {}
+        assessment_id = reference.get("entity_id") if isinstance(reference, dict) else None
+        assessment = TriageAssessment.objects.filter(
+            id=assessment_id,
+            organisation=self.request.organisation,
+            facility=self.request.facility,
+        ).first()
+        if assessment is None:
+            return record.response_body
+        queue_entry = QueueEntry.objects.select_related("patient", "department").filter(
+            id=assessment.queue_entry_id,
+            organisation=self.request.organisation,
+            facility=self.request.facility,
+        ).first()
+        if queue_entry is None:
+            return record.response_body
+        return self._response_body(assessment, queue_entry)
+
+    @staticmethod
+    def _response_body(assessment, queue_entry):
+        return json_safe({
+            "id": assessment.id,
+            "queue_entry": QueueEntrySerializer(queue_entry).data,
+            "acuity": assessment.acuity,
+            "chief_complaint": assessment.chief_complaint,
+            "observations": assessment.observations,
+        })
 
     def post(self, request, queue_id):
         serializer = TriageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        expected_version = _clinical_expected_version(request, values)
+        values.pop("expected_version", None)
         try:
-            assessment = record_triage(
+            outcome = triage_complete(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
                 queue_entry_id=queue_id,
-                data=serializer.validated_data,
-                request=request,
+                data=values,
+                expected_version=expected_version,
             )
+        except CanonicalError:
+            raise
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({
-            "id": assessment.id,
-            "queue_entry": QueueEntrySerializer(assessment.queue_entry).data,
-            "acuity": assessment.acuity,
-            "chief_complaint": assessment.chief_complaint,
-            "observations": assessment.observations,
-        }, status=status.HTTP_201_CREATED)
+        assessment = outcome.assessment
+        body = self._response_body(assessment, outcome.source)
+        response = Response(body, status=status.HTTP_201_CREATED)
+        response.idempotency_body = {
+            "id": str(assessment.id),
+            "queue_entry_id": str(outcome.source.id),
+            "state": outcome.source.state,
+        }
+        response.result_reference = {
+            "entity_type": "TriageAssessment",
+            "entity_id": str(assessment.id),
+        }
+        return response
+
+
+def _clinical_expected_version(request, values):
+    body_version = values.get("expected_version")
+    header = request.headers.get("If-Match")
+    if not header:
+        return body_version
+    value = str(header).strip()
+    if value.startswith("W/"):
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must be a strong queue version.", status_code=400)
+    try:
+        header_version = int(value.strip('"'))
+    except (TypeError, ValueError) as exc:
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain the queue version.", status_code=400) from exc
+    if header_version < 1:
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain a positive queue version.", status_code=400)
+    if body_version is not None and int(body_version) != header_version:
+        raise CanonicalError("VERSION_CONFLICT", "The body version and If-Match value do not agree.", status_code=412)
+    return header_version
 
 
 def _required_if_match(request, detail="If-Match is required for clinical note mutations."):
@@ -402,26 +478,54 @@ class EncounterAllergyReviewView(TenantAPIView):
 
 class EncounterListCreateView(TenantAPIView):
     capability = "clinical.note.create"
+    idempotency_operation = "CMD-030"
+    requires_idempotency = True
     serializer_class = EncounterCreateSerializer
     response_serializer_class = EncounterSerializer
 
+    def requires_idempotency_for_request(self, request):
+        return _mig002_command_mode(request.organisation)
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference or {}
+        encounter_id = reference.get("entity_id") if isinstance(reference, dict) else None
+        encounter = Encounter.objects.select_related("patient", "visit", "queue_entry").filter(
+            id=encounter_id,
+            organisation=self.request.organisation,
+            facility=self.request.facility,
+        ).first()
+        if encounter is None:
+            return record.response_body
+        return json_safe(EncounterSerializer(encounter).data)
+
     def post(self, request):
-        queue_entry_id = request.data.get("queue_entry_id")
+        serializer = EncounterCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        queue_entry_id = values["queue_entry_id"]
         if not queue_entry_id:
             return Response({"detail": "queue_entry_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            encounter = start_encounter(
+            outcome = encounter_open(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
                 queue_entry_id=queue_entry_id,
-                request=request,
+                expected_version=_clinical_expected_version(request, values),
             )
+            encounter = outcome.encounter
+        except CanonicalError:
+            raise
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        data = EncounterSerializer(encounter).data
+        data = json_safe(EncounterSerializer(encounter).data)
         response = Response(data, status=status.HTTP_201_CREATED)
         response["ETag"] = data["consultation_etag"]
+        response.idempotency_body = {"id": str(encounter.id)}
+        response.result_reference = {
+            "entity_type": "Encounter",
+            "entity_id": str(encounter.id),
+        }
         return response
 
 

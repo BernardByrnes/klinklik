@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 
+from core.clock import now
 from core.models import FacilityScopedModel, OrganisationScopedModel
 
 
@@ -61,6 +62,40 @@ class Encounter(FacilityScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["organisation", "encounter_no"], name="uniq_encounter_org_no")
+        ]
+
+
+class EncounterCoAuthor(FacilityScopedModel):
+    """Durable authorship continuity for a queue takeover.
+
+    The primary Encounter clinician is immutable here.  A takeover adds the
+    acting clinician as an explicit co-author so later clinical work can be
+    attributed without rewriting signed or historical authorship.
+    """
+
+    encounter = models.ForeignKey(Encounter, on_delete=models.PROTECT, related_name="co_authors")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="co_authored_encounters",
+    )
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="added_encounter_co_authors",
+    )
+    reason_hash = models.CharField(max_length=64)
+    added_at = models.DateTimeField(default=now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "facility", "encounter", "user"],
+                name="uniq_encounter_co_author_scope",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["organisation", "facility", "encounter", "added_at"]),
         ]
 
 

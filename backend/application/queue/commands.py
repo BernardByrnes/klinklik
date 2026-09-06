@@ -98,7 +98,7 @@ CMD_023_SPEC = CommandSpec(
     rank1_id="QUE-013",
     capability="queue.takeover",
     owner_service="scheduling.queue.takeover",
-    lock_plan=("QueueEntry",),
+    lock_plan=("QueueEntry", "Encounter"),
 )
 CMD_024_SPEC = CommandSpec(
     operation_id="CMD-024",

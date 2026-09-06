@@ -96,10 +96,6 @@ class QueueCapability(BasePermission):
                 return True
             if normalized_type and f"{normalized_capability}:{normalized_type}" in normalized_codes:
                 return True
-            if not normalized_type and any(
-                code.startswith(f"{normalized_capability}:") for code in normalized_codes
-            ):
-                return True
         return False
 
     def _has_permission(self, request, view, capabilities=None):
@@ -111,18 +107,19 @@ class QueueCapability(BasePermission):
         requested_type = request.query_params.get("queue_type")
         requested_department = request.query_params.get("department_id")
         if not requested_type and request.method in {"POST", "PUT", "PATCH"}:
-            requested_type = request.data.get("queue_type") or request.data.get("target_queue_type")
-            requested_department = (
-                request.data.get("department_id")
-                or request.data.get("target_department_id")
-                or requested_department
-            )
+            requested_type = request.data.get("queue_type")
+            # ``target_department_id`` is never allowed to define the source
+            # permission scope for a transfer.  The source row below is the
+            # authority for that half of the command.
+            requested_department = request.data.get("department_id") or requested_department
 
         target_department = None
         target_type = None
         if request.method in {"POST", "PUT", "PATCH"}:
             target_department = request.data.get("target_department_id")
-            target_type = request.data.get("target_queue_type") or requested_type
+            target_type = request.data.get("target_queue_type")
+            if not target_department:
+                target_type = target_type or requested_type
 
         source_identifier = (
             request.parser_context.get("kwargs", {}).get("pk")
@@ -134,21 +131,25 @@ class QueueCapability(BasePermission):
             source_identifier = request.data.get("queue_entry_id") or request.data.get("source_queue_entry_id")
         source_department = requested_department
         source_type = requested_type
-        if source_identifier and (not source_department or not source_type):
+        if source_identifier:
             source = QueueEntry.objects.filter(
                 organisation_id=request.organisation.id,
                 facility_id=request.facility.id,
                 id=source_identifier,
             ).values("department_id", "queue_type").first()
             if source is not None:
-                source_department = source_department or source["department_id"]
-                source_type = source_type or source["queue_type"]
+                # A caller may narrow a source request, but may not relabel
+                # the authoritative entry to obtain another department/type
+                # grant.  A transfer's target is checked separately below.
+                if source_department and str(source_department) != str(source["department_id"]):
+                    return False
+                if source_type and str(source_type).upper() != str(source["queue_type"]).upper():
+                    return False
+                source_department = source["department_id"]
+                source_type = source["queue_type"]
 
         scope_requests = [(source_department, source_type)]
-        if target_department and (
-            target_department != source_department
-            or (target_type and str(target_type).upper() != str(source_type or "").upper())
-        ):
+        if target_department:
             scope_requests.append((target_department, target_type))
         return all(
             self._allows(
@@ -460,7 +461,7 @@ class QueueRequeueView(QueueTenantAPIView):
 
 
 class QueueCancelView(QueueTenantAPIView):
-    queue_capabilities = ("queue.remove", "queue.cancel")
+    queue_capabilities = ("queue.remove",)
     idempotency_operation = "CMD-022"
     requires_idempotency = True
     request_serializer_class = QueueCancelSerializer
@@ -474,6 +475,12 @@ class QueueCancelView(QueueTenantAPIView):
         serializer = QueueCancelSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        if values.get("lwbs") or str(values.get("reason", "")).upper() == "LEFT_WITHOUT_BEING_SEEN":
+            raise CanonicalError(
+                "WRONG_COMMAND_OWNER",
+                "LWBS must be completed by the reception Visit close command.",
+                status_code=409,
+            )
         expected_version = _expected_version(request, values)
         entry = queue_cancel(
             organisation=request.organisation,

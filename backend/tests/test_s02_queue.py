@@ -8,20 +8,23 @@ from accounts.models import Permission, Role, RolePermission, User, UserFacility
 from audit.models import AuditEvent
 from core.clock import local_service_date
 from core.errors import CanonicalError
-from core.idempotency import key_hash
+from core.idempotency import fingerprint_for_request, key_hash
 from core.migration_reconciliation import (
     backfill_mig002,
     constrain_mig002,
     cutover_mig002,
     inventory_mig002,
     legacy_writes_enabled_mig002,
+    mig002_rollback_active,
     resolve_mig002_reconciliation,
+    rollback_mig001,
     rollback_mig002,
+    target_writes_enabled_mig002,
     verify_mig002,
 )
 from core.models import IdempotencyRecord, MigrationCutover, MigrationReconciliation
 from core.services import tenant_atomic
-from clinical.models import Encounter, TriageAssessment
+from clinical.models import Encounter, EncounterCoAuthor, TriageAssessment
 from patients.models import Patient
 from scheduling.models import QueueEntry, Visit
 from scheduling.queue import (
@@ -105,6 +108,142 @@ def test_mig002_maps_proven_triage_and_creates_one_consultation_target(tenant, e
         visit_id=visit.id,
         work_identity=f"MIG-002:CONSULTATION:{source.id}",
     ).count() == 1
+
+
+def test_mig002_reuses_only_the_authoritative_consultation_destination(tenant, enabled_mig001_target):
+    _, visit, source = make_entry(tenant, label="Existing Consultation")
+    with tenant_atomic(tenant.organisation.id):
+        QueueEntry.objects.filter(id=source.id).update(
+            status="TRIAGED",
+            state="COMPLETED",
+            current_stage="CONSULTATION",
+        )
+        TriageAssessment.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            queue_entry_id=source.id,
+            patient_id=source.patient_id,
+            assessed_by=tenant.user,
+            acuity="ROUTINE",
+        )
+        _, created = create_or_reuse_destination(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            visit=visit,
+            department=tenant.department,
+            queue_type="CONSULTATION",
+            source_stage="TRIAGE",
+        )
+        assert created
+        existing = QueueEntry.objects.get(
+            visit=visit,
+            queue_type="CONSULTATION",
+        )
+        # The destination may predate MIG-002's nullable canonical fields.
+        QueueEntry.objects.filter(id=existing.id).update(state=None)
+        QueueEntry.objects.filter(id=source.id).update(state="WAITING")
+
+        inventory = inventory_mig002(organisation=tenant.organisation)
+        assert inventory.exceptions == 0
+        backfill_mig002(organisation=tenant.organisation)
+
+        assert not QueueEntry.objects.filter(
+            work_identity=f"MIG-002:CONSULTATION:{source.id}"
+        ).exists()
+        evidence = MigrationReconciliation.objects.get(
+            organisation=tenant.organisation,
+            migration_id="MIG-002",
+            legacy_pk=str(source.id),
+        ) if MigrationReconciliation.objects.filter(
+            organisation=tenant.organisation,
+            migration_id="MIG-002",
+            legacy_pk=str(source.id),
+        ).exists() else None
+        assert evidence is None
+        verification = verify_mig002(organisation=tenant.organisation)
+        assert verification.unresolved == 0, verification.as_dict()
+        assert verification.blocker_checks_passed is True
+        target_refs = (MigrationCutover.objects.get(
+            organisation=tenant.organisation,
+            migration_id="MIG-002",
+        ).deterministic_row_evidence or {})[
+            f"scheduling_queueentry:{source.id}"
+        ]["target_refs"]
+        assert target_refs["consultation_queue_id"] == str(existing.id)
+        assert QueueEntry.objects.get(id=existing.id).state == "WAITING"
+
+
+def test_mig002_source_hash_excludes_added_target_stage_fields(tenant, enabled_mig001_target):
+    _, _, source = make_entry(tenant, label="Legacy Source Fields")
+    with tenant_atomic(tenant.organisation.id):
+        QueueEntry.objects.filter(id=source.id).update(
+            state=None,
+            work_identity="",
+            source_event_id="",
+            source_stage="",
+        )
+        inventory = inventory_mig002(organisation=tenant.organisation)
+        backfill = backfill_mig002(organisation=tenant.organisation)
+        assert inventory.exceptions == 0
+        assert backfill.exceptions == 0
+        verification = verify_mig002(organisation=tenant.organisation)
+        assert verification.unresolved == 0, verification.as_dict()
+        assert verification.shadow_read_equal is True
+        cutover = cutover_mig002(organisation=tenant.organisation)
+        assert cutover.phase == "CUTOVER"
+
+
+def test_mig002_quarantines_cross_department_consultation_destination(tenant, enabled_mig001_target):
+    _, visit, source = make_entry(tenant, label="Wrong Consultation Scope")
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Other Consultation",
+            code="OTHER_CONSULTATION",
+        )
+        QueueEntry.objects.filter(id=source.id).update(
+            status="TRIAGED",
+            state="WAITING",
+            current_stage="CONSULTATION",
+        )
+        TriageAssessment.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            queue_entry_id=source.id,
+            patient_id=source.patient_id,
+            assessed_by=tenant.user,
+            acuity="ROUTINE",
+        )
+        QueueEntry.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            visit=visit,
+            patient=source.patient,
+            department=other_department,
+            queue_date=visit.local_service_date,
+            sequence=999,
+            queue_type="CONSULTATION",
+            work_identity=f"OTHER-CONSULTATION:{source.id}",
+            status="WAITING",
+            state="WAITING",
+            current_stage="CONSULTATION",
+            source_stage="TRIAGE",
+        )
+        inventory = inventory_mig002(organisation=tenant.organisation)
+        assert inventory.exceptions == 1
+        evidence = MigrationReconciliation.objects.get(
+            organisation=tenant.organisation,
+            migration_id="MIG-002",
+            legacy_pk=str(source.id),
+        )
+        assert evidence.evidence_codes == ["UNKNOWN_DEPARTMENT_WORK_IDENTITY"]
+        backfill = backfill_mig002(organisation=tenant.organisation)
+        assert backfill.exceptions == 1
+        assert not QueueEntry.objects.filter(
+            work_identity=f"MIG-002:CONSULTATION:{source.id}"
+        ).exists()
 
 
 def test_mig002_quarantines_ambiguous_triage_without_inference(tenant, enabled_mig001_target):
@@ -271,6 +410,63 @@ def test_mig002_rollback_reenables_the_legacy_writer_without_down_mapping(tenant
         )
     assert legacy_entry.status == "WAITING"
     assert legacy_entry.state == "WAITING"
+    assert legacy_entry.visit_id is not None
+    assert Visit.objects.filter(
+        id=legacy_entry.visit_id,
+        organisation=tenant.organisation,
+        facility=tenant.facility,
+        patient=patient,
+        state="OPEN",
+    ).exists()
+
+
+def test_mig001_rollback_reopens_only_the_s01_writer_after_mig002_rollback(
+    tenant, enabled_mig002_target
+):
+    with tenant_atomic(tenant.organisation.id):
+        patient = Patient.objects.create(
+            organisation=tenant.organisation,
+            patient_no="P-S02-MIG001-ROLLBACK",
+            first_name="S01",
+            last_name="Rollback",
+            sex="UNKNOWN",
+        )
+        rollback_mig002(organisation=tenant.organisation, actor=tenant.user, reason="S02 rollback proof")
+        rollback_mig001(organisation=tenant.organisation, reason="S01 rollback proof", actor=tenant.user)
+        assert legacy_writes_enabled_mig002(tenant.organisation)
+        assert not mig002_rollback_active(tenant.organisation)
+        assert not target_writes_enabled_mig002(tenant.organisation)
+        entry = check_in_patient(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            patient_id=patient.id,
+        )
+    assert entry.visit_id is None
+
+
+def test_mig001_cutover_keeps_the_pre_visit_writer_fenced(tenant, enabled_mig001_target):
+    with tenant_atomic(tenant.organisation.id):
+        patient = Patient.objects.create(
+            organisation=tenant.organisation,
+            patient_no="P-S02-FENCE",
+            first_name="Fenced",
+            last_name="Legacy",
+            sex="UNKNOWN",
+        )
+        assert legacy_writes_enabled_mig002(tenant.organisation) is False
+        with pytest.raises(CanonicalError) as refused:
+            check_in_patient(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=tenant.user,
+                patient_id=patient.id,
+            )
+        assert refused.value.code == "LEGACY_WRITER_DISABLED"
+    assert not QueueEntry.objects.filter(
+        organisation=tenant.organisation,
+        patient=patient,
+    ).exists()
 
 
 def test_call_next_is_idempotent_and_persists_a_safe_audit(tenant, authed_client, enabled_mig002_target):
@@ -431,6 +627,7 @@ def test_queue_state_guards_priority_hold_resume_and_transfer(tenant, enabled_mi
     assert AuditEvent.objects.filter(entity_id=str(entry.id), event_code="QUEUE_HELD").exists()
     assert AuditEvent.objects.filter(entity_id=str(entry.id), event_code="QUEUE_RESUMED").exists()
     assert AuditEvent.objects.filter(entity_id=str(entry.id), event_code="QUEUE_TRANSFERRED").exists()
+    assert AuditEvent.objects.filter(entity_id=str(entry.id), event_code="QUEUE_HANDOFF").exists()
 
 
 def test_takeover_preserves_encounter_primary_authorship(tenant, enabled_mig002_target):
@@ -477,7 +674,11 @@ def test_takeover_preserves_encounter_primary_authorship(tenant, enabled_mig002_
         encounter.refresh_from_db()
     assert taken.assigned_user_id == takeover_user.id
     assert encounter.clinician_id == tenant.user.id
+    co_author = EncounterCoAuthor.objects.get(encounter=encounter, user=takeover_user)
+    assert co_author.added_by_id == tenant.user.id
+    assert len(co_author.reason_hash) == 64
     assert AuditEvent.objects.filter(entity_id=str(entry.id), event_code="QUEUE_TAKEOVER").exists()
+    assert AuditEvent.objects.filter(entity_id=str(co_author.id), event_code="ENCOUNTER_CO_AUTHOR_ADDED").exists()
 
 
 def test_lwbs_is_atomic_with_visit_and_clinical_guards(tenant, enabled_mig002_target):
@@ -897,3 +1098,286 @@ def test_expiry_sweep_persists_review_for_record_bearing_visit(tenant, enabled_m
     assert visit.state == "OPEN"
     assert visit.stale_review_required is True
     assert visit.stale_review_reason == "STALE_OPEN"
+
+
+def test_command_fingerprint_binds_strong_if_match():
+    common = {
+        "operation": "CMD-013",
+        "organisation_id": "org-s02",
+        "actor_id": "actor-s02",
+        "facility_id": "facility-s02",
+        "path": "/api/v1/clinic/queue/call/",
+        "payload": {"queue_entry_id": "entry-s02"},
+        "target_identifiers": {"pk": "entry-s02"},
+    }
+    first = fingerprint_for_request(**common, if_match='"1"')
+    same = fingerprint_for_request(**common, if_match='"1"')
+    newer = fingerprint_for_request(**common, if_match='"2"')
+    assert first == same
+    assert first != newer
+
+
+def test_canonical_triage_api_owns_handoff_and_replays(tenant, authed_client, enabled_mig002_target):
+    _, visit, entry = make_entry(tenant, label="API Triage")
+    headers = {
+        "HTTP_IF_MATCH": f'"{entry.version}"',
+        "HTTP_IDEMPOTENCY_KEY": "s02-cmd027-replay",
+    }
+    payload = {
+        "expected_version": entry.version,
+        "acuity": "URGENT",
+        "chief_complaint": "Synthetic API triage",
+    }
+    first = authed_client.post(
+        f"/api/v1/clinic/triage/{entry.id}/",
+        payload,
+        format="json",
+        **headers,
+    )
+    assert first.status_code == 201, first.data
+    assert first.data["queue_entry"]["state"] == "COMPLETED"
+    replay = authed_client.post(
+        f"/api/v1/clinic/triage/{entry.id}/",
+        payload,
+        format="json",
+        **headers,
+    )
+    assert replay.status_code == 201, replay.data
+    assert replay.data == first.data
+    assert replay["Idempotent-Replay"] == "true"
+    source = QueueEntry.objects.get(id=entry.id)
+    destination = QueueEntry.objects.get(
+        organisation=tenant.organisation,
+        facility=tenant.facility,
+        visit=visit,
+        work_identity=f"QUEUE-HANDOFF:{entry.id}:{tenant.department.id}:CONSULTATION",
+    )
+    assert source.state == "COMPLETED"
+    assert source.status == "TRIAGED"
+    assert source.version == entry.version + 3
+    assert destination.state == "WAITING"
+    assert AuditEvent.objects.filter(
+        entity_id=str(entry.id), event_code="TRIAGE_COMPLETED"
+    ).count() == 1
+    with tenant_atomic(tenant.organisation.id):
+        record = IdempotencyRecord.objects.get(
+            organisation=tenant.organisation,
+            operation="CMD-027",
+            key_hash=key_hash("s02-cmd027-replay"),
+        )
+        assert record.response_body == {
+            "id": str(TriageAssessment.objects.get(queue_entry=entry).id),
+            "queue_entry_id": str(entry.id),
+            "state": "COMPLETED",
+        }
+        assert "chief_complaint" not in str(record.response_body)
+    assert AuditEvent.objects.filter(
+        entity_id=str(entry.id), event_code="QUEUE_HANDOFF"
+    ).count() == 1
+
+
+def test_canonical_encounter_open_requires_consultation_queue_and_strong_version(
+    tenant, authed_client, enabled_mig002_target
+):
+    _, visit, entry = make_entry(tenant, label="API Encounter")
+    with tenant_atomic(tenant.organisation.id):
+        start_service(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            queue_entry_id=entry.id,
+        )
+        _, consultation = transfer(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            source_queue_entry_id=entry.id,
+            target_department_id=tenant.department.id,
+            target_queue_type="CONSULTATION",
+            reason="TRIAGE_COMPLETED",
+        )
+    headers = {
+        "HTTP_IF_MATCH": f'"{consultation.version}"',
+        "HTTP_IDEMPOTENCY_KEY": "s02-cmd030-replay",
+    }
+    payload = {"queue_entry_id": str(consultation.id), "expected_version": consultation.version}
+    first = authed_client.post(
+        "/api/v1/clinic/encounters/",
+        payload,
+        format="json",
+        **headers,
+    )
+    assert first.status_code == 201, first.data
+    encounter_id = first.data["id"]
+    replay = authed_client.post(
+        "/api/v1/clinic/encounters/",
+        payload,
+        format="json",
+        **headers,
+    )
+    assert replay.status_code == 201, replay.data
+    assert replay.data["id"] == encounter_id
+    assert replay["Idempotent-Replay"] == "true"
+    encounter = Encounter.objects.get(id=encounter_id)
+    consultation.refresh_from_db()
+    assert encounter.queue_entry_id == consultation.id
+    assert consultation.state == "IN_SERVICE"
+    with tenant_atomic(tenant.organisation.id):
+        record = IdempotencyRecord.objects.get(
+            organisation=tenant.organisation,
+            operation="CMD-030",
+            key_hash=key_hash("s02-cmd030-replay"),
+        )
+        assert record.response_body == {"id": str(encounter.id)}
+    assert AuditEvent.objects.filter(entity_id=str(encounter.id), event_code="ENCOUNTER_OPENED").exists()
+
+
+def test_triage_illegal_queue_type_does_not_mutate_state(tenant, authed_client, enabled_mig002_target):
+    _, _, entry = make_entry(tenant, label="Wrong Triage Queue", queue_type="PHARMACY")
+    response = authed_client.post(
+        f"/api/v1/clinic/triage/{entry.id}/",
+        {"acuity": "ROUTINE", "expected_version": entry.version},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-illegal-triage",
+        HTTP_IF_MATCH=f'"{entry.version}"',
+    )
+    assert response.status_code == 409, response.data
+    assert response.data["code"] == "INVALID_STATE"
+    entry.refresh_from_db()
+    assert entry.state == "WAITING"
+    assert entry.version == 1
+    assert not TriageAssessment.objects.filter(queue_entry=entry).exists()
+
+
+def test_lwbs_api_is_reception_owned_and_idempotent(tenant, authed_client, enabled_mig002_target):
+    _, visit, entry = make_entry(tenant, label="API LWBS")
+    payload = {
+        "queue_entry_id": str(entry.id),
+        "reason": "WAIT_TOO_LONG",
+        "expected_version": visit.version,
+        "expected_queue_version": entry.version,
+    }
+    headers = {
+        "HTTP_IF_MATCH": f'"{visit.version}"',
+        "HTTP_IDEMPOTENCY_KEY": "s02-cmd007-replay",
+    }
+    first = authed_client.post(
+        f"/api/v1/reception/visits/{visit.id}/close-lwbs/",
+        payload,
+        format="json",
+        **headers,
+    )
+    assert first.status_code == 200, first.data
+    assert first.data["state"] == "LWBS"
+    assert first.data["visit_version"] == 2
+    replay = authed_client.post(
+        f"/api/v1/reception/visits/{visit.id}/close-lwbs/",
+        payload,
+        format="json",
+        **headers,
+    )
+    assert replay.status_code == 200, replay.data
+    assert replay.data == first.data
+    assert replay["Idempotent-Replay"] == "true"
+    assert Visit.objects.get(id=visit.id).state == "CLOSED"
+    assert QueueEntry.objects.get(id=entry.id).state == "LWBS"
+
+
+def test_lwbs_reason_contract_rejects_invalid_text_atomically(tenant, authed_client, enabled_mig002_target):
+    _, visit, entry = make_entry(tenant, label="LWBS Reason Contract")
+    base = {
+        "queue_entry_id": str(entry.id),
+        "expected_version": visit.version,
+        "expected_queue_version": entry.version,
+    }
+    missing_text = authed_client.post(
+        f"/api/v1/reception/visits/{visit.id}/close-lwbs/",
+        {**base, "reason": "OTHER"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-lwbs-other-missing",
+        HTTP_IF_MATCH=f'"{visit.version}"',
+    )
+    assert missing_text.status_code == 400, missing_text.data
+    invalid_text = authed_client.post(
+        f"/api/v1/reception/visits/{visit.id}/close-lwbs/",
+        {**base, "reason": "WAIT_TOO_LONG", "reason_text": "not allowed here"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-lwbs-text-not-allowed",
+        HTTP_IF_MATCH=f'"{visit.version}"',
+    )
+    assert invalid_text.status_code == 400, invalid_text.data
+    entry.refresh_from_db()
+    visit.refresh_from_db()
+    assert entry.state == "WAITING"
+    assert entry.version == 1
+    assert visit.state == "OPEN"
+    assert visit.version == 1
+
+
+def test_queue_cancel_cannot_own_lwbs(tenant, authed_client, enabled_mig002_target):
+    _, _, entry = make_entry(tenant, label="Wrong LWBS Owner")
+    response = authed_client.post(
+        f"/api/v1/clinic/queue/{entry.id}/cancel/",
+        {"reason": "LEFT_WITHOUT_BEING_SEEN", "expected_version": entry.version},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-wrong-lwbs-owner",
+        HTTP_IF_MATCH=f'"{entry.version}"',
+    )
+    assert response.status_code == 409, response.data
+    assert response.data["code"] == "WRONG_COMMAND_OWNER"
+    assert QueueEntry.objects.get(id=entry.id).state == "WAITING"
+
+
+def test_audit_failure_rolls_back_queue_transition(tenant, enabled_mig002_target, monkeypatch):
+    _, _, entry = make_entry(tenant, label="Audit Failure")
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("synthetic audit failure")
+
+    monkeypatch.setattr("scheduling.queue.record_fact", fail_audit)
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        with tenant_atomic(tenant.organisation.id):
+            start_service(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=tenant.user,
+                queue_entry_id=entry.id,
+            )
+    entry.refresh_from_db()
+    assert entry.state == "WAITING"
+    assert entry.version == 1
+    assert not AuditEvent.objects.filter(entity_id=str(entry.id), event_code="QUEUE_CALLED").exists()
+
+
+def test_history_and_location_hide_out_of_scope_handoff(tenant, authed_client, enabled_mig002_target):
+    _, visit, entry = make_entry(tenant, label="Scoped Handoff")
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Other Scope",
+            code="OTHER_SCOPE",
+        )
+        start_service(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            queue_entry_id=entry.id,
+        )
+        _, destination = transfer(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            source_queue_entry_id=entry.id,
+            target_department_id=other_department.id,
+            target_queue_type="CONSULTATION",
+            reason="ROUTED_IN_ERROR",
+        )
+    history = authed_client.get(f"/api/v1/clinic/queue/history/{visit.id}/")
+    assert history.status_code == 200, history.data
+    assert str(entry.id) in {row["id"] for row in history.data}
+    assert str(destination.id) not in {row["id"] for row in history.data}
+    location = authed_client.get(f"/api/v1/clinic/queue/location/{visit.id}/")
+    assert location.status_code == 200, location.data
+    assert str(destination.id) not in str(location.data)
+    assert location.data["state"] == "IN_FACILITY_NO_ACTIVE_QUEUE"

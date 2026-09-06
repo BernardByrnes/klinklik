@@ -307,6 +307,7 @@ def operational_queue_projection(
     queryset = QueueEntry.objects.filter(
         organisation_id=_organisation_id(organisation),
         facility_id=_facility_id(facility),
+        visit_id__isnull=False,
     ).select_related(
         "patient",
         "department",
@@ -514,6 +515,15 @@ def queue_history_projection(*, organisation, facility, visit_id, actor=None):
     ).select_related("department", "called_by", "claimed_by", "served_by", "completed_by", "removed_by").order_by(
         "queue_time", "sequence", "id"
     )
+    scoped_departments, scoped_queue_types = _queue_scope(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+    )
+    if scoped_departments is not None:
+        entries = entries.filter(department_id__in=scoped_departments)
+    if scoped_queue_types is not None:
+        entries = entries.filter(queue_type__in=scoped_queue_types)
     return [
         {
             "id": str(entry.id),

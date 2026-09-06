@@ -232,6 +232,13 @@ class QueueEntry(FacilityScopedModel):
         ("NO_SHOW", "No show"),
         ("EXPIRED", "Expired"),
     ]
+    LWBS_REASON_CHOICES = [
+        ("LEFT_WITHOUT_BEING_SEEN", "Left without being seen"),
+        ("WENT_ELSEWHERE", "Went elsewhere"),
+        ("COST", "Cost"),
+        ("WAIT_TOO_LONG", "Wait too long"),
+        ("OTHER", "Other"),
+    ]
 
     LEGACY_STATE_MAP = {
         "WAITING": "WAITING",

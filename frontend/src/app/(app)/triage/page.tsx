@@ -4,10 +4,10 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiRequest } from "../../../lib/api";
+import { apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
-import { LegacyQueueEntry } from "../../../features/clinic";
+import { OperationalQueueEnvelope, canonicalQueueState } from "../../../features/clinic";
 import { IconCheckCircle, IconTriage } from "../../../components/icons";
 import {
   Button,
@@ -58,20 +58,21 @@ function TriageWorkspace() {
 
   const queue = useQuery({
     queryKey: queueKey,
-    queryFn: () => apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/?status=WAITING,CALLED"),
+    queryFn: () =>
+      apiRequest<OperationalQueueEnvelope>("/api/v1/clinic/queue/operational/?state=WAITING,CALLED&queue_type=TRIAGE"),
     enabled: can("triage.record"),
   });
 
   const selected = useMemo(
-    () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
-    [queue.data, selectedId],
+    () => (queue.data?.entries ?? []).find((entry) => entry.id === selectedId) ?? null,
+    [queue.data?.entries, selectedId],
   );
 
   useEffect(() => {
-    if (!selectedId && queue.data && queue.data.length > 0) {
+    if (!selectedId && queue.data?.entries && queue.data.entries.length > 0) {
       setSelectedId(preselectedId ?? null);
     }
-  }, [queue.data, selectedId, preselectedId]);
+  }, [queue.data?.entries, selectedId, preselectedId]);
 
   const triage = useMutation({
     mutationFn: () => {
@@ -84,7 +85,12 @@ function TriageWorkspace() {
       }
       return apiRequest(`/api/v1/clinic/triage/${selected?.id}/`, {
         method: "POST",
+        headers: {
+          "Idempotency-Key": newIdempotencyKey(`cmd-027-${selected?.id}`),
+          ...(selected?.version ? { "If-Match": `"${selected.version}"` } : {}),
+        },
         body: JSON.stringify({
+          ...(selected?.version ? { expected_version: selected.version } : {}),
           acuity,
           chief_complaint: chiefComplaint,
           ...(Object.keys(vitals).length > 0 ? { vitals } : {}),
@@ -129,7 +135,7 @@ function TriageWorkspace() {
 
       <section className="grid grid-cols-1 xl:grid-cols-[1fr_1.35fr] gap-5 items-start">
         <Card>
-          <CardTitleBar title={`Awaiting triage (${queue.data?.length ?? 0})`} />
+          <CardTitleBar title={`Awaiting triage (${queue.data?.count ?? 0})`} />
           {queue.isLoading ? (
             <div className="px-5 py-6 space-y-5" aria-busy="true" aria-label="Loading triage queue">
               {Array.from({ length: 4 }).map((_, index) => (
@@ -142,7 +148,7 @@ function TriageWorkspace() {
               title="The triage queue could not be loaded."
               action={<Button variant="secondary" onClick={() => queue.refetch()}>Retry</Button>}
             />
-          ) : (queue.data ?? []).length === 0 ? (
+          ) : (queue.data?.entries ?? []).length === 0 ? (
             <EmptyState
               icon={<IconTriage className="h-5 w-5" />}
               title="No patients are currently waiting for triage."
@@ -150,8 +156,8 @@ function TriageWorkspace() {
             />
           ) : (
             <ul className="px-5 pt-2 pb-4 divide-y divide-line-soft">
-              {(queue.data ?? []).map((entry, index) => {
-                const badge = queueStatusBadge(entry.status);
+              {(queue.data?.entries ?? []).map((entry, index) => {
+                const badge = queueStatusBadge(canonicalQueueState(entry));
                 const active = entry.id === selectedId;
                 return (
                   <li key={entry.id}>
@@ -167,7 +173,7 @@ function TriageWorkspace() {
                       }`}
                     >
                       <span className="pl-2 flex items-center gap-3 flex-1 min-w-0">
-                        <SequenceCircle value={entry.sequence || index + 1} index={index} />
+                        <SequenceCircle value={entry.token || index + 1} index={index} />
                         <span className="flex-1 min-w-0 leading-tight">
                           <span className="block text-[13px] font-semibold text-ink">{entry.patient_name}</span>
                           <span className="mt-0.5 block text-[11.5px] font-medium text-muted">
@@ -179,7 +185,7 @@ function TriageWorkspace() {
                       </span>
                       <span className="pr-2 text-right leading-tight">
                         <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-                        <span className="mt-1 block text-[10.5px] font-medium text-muted">{formatTime(entry.arrival_at)}</span>
+                        <span className="mt-1 block text-[10.5px] font-medium text-muted">{formatTime(entry.queue_time)}</span>
                       </span>
                     </button>
                   </li>
@@ -194,7 +200,7 @@ function TriageWorkspace() {
           {selected ? (
             <div className="px-5 py-5 space-y-5">
               <div className="flex items-start gap-3 rounded-[14px] bg-surface-muted border border-line-soft p-4">
-                <SequenceCircle value={selected.sequence || "•"} index={0} />
+                <SequenceCircle value={selected.token || "•"} index={0} />
                 <div className="leading-tight">
                   <p className="text-[14px] font-bold text-ink">{selected.patient_name}</p>
                   <p className="mt-1 text-[11.5px] font-medium text-muted">
@@ -202,7 +208,7 @@ function TriageWorkspace() {
                     <span className="mx-0.5">•</span>
                     {selected.department_name}
                     <span className="mx-0.5">•</span>
-                    Arrived {formatTime(selected.arrival_at)}
+                    Arrived {formatTime(selected.queue_time)}
                   </p>
                 </div>
               </div>
@@ -262,7 +268,7 @@ function TriageWorkspace() {
 
 export default function TriagePage() {
   return (
-    <Suspense fallback={<Card/>}>
+    <Suspense fallback={<div role="status" aria-busy="true" className="rounded-[14px] border border-line-soft bg-white px-5 py-6 text-[13px] font-medium text-secondary">Loading triage workspace…</div>}>
       <TriageWorkspace />
     </Suspense>
   );

@@ -87,22 +87,33 @@ def fingerprint_for_request(
     operation,
     organisation_id=None,
     actor=None,
+    actor_id=None,
     facility_id=None,
     method=None,
     path=None,
     payload=None,
     target_identifiers=None,
+    if_match=None,
 ):
+    resolved_actor_id = (
+        actor_id
+        if actor_id is not None
+        else (str(getattr(actor, "id", actor)) if actor is not None else None)
+    )
     material = {
         "operation": str(operation),
         "organisation_id": str(organisation_id) if organisation_id is not None else None,
-        "actor_id": str(getattr(actor, "id", actor)) if actor is not None else None,
+        "actor_id": str(resolved_actor_id) if resolved_actor_id is not None else None,
         "authority_epoch": getattr(actor, "authority_epoch", 0) if actor is not None else 0,
         "facility_id": str(facility_id) if facility_id is not None else None,
         "method": method or None,
         "path": path or None,
         "target_identifiers": target_identifiers or {},
         "payload": payload if payload is not None else {},
+        # A replay key is bound to the optimistic-concurrency precondition as
+        # well as to the command body.  Reusing a key against a newer (or
+        # older) queue version must never replay the first command result.
+        "if_match": str(if_match).strip() if if_match is not None else None,
     }
     return hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
 
@@ -128,6 +139,7 @@ def request_fingerprint(request, *, operation=None):
         path=request.path,
         payload=payload,
         target_identifiers=(getattr(request, "parser_context", None) or {}).get("kwargs", {}),
+        if_match=request.headers.get("If-Match"),
     )
 
 

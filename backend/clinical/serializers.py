@@ -166,6 +166,7 @@ class OpenAPISchemaField(serializers.JSONField):
 
 
 class TriageSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1, write_only=True)
     acuity = serializers.ChoiceField(choices=TriageAssessment.ACUITY_CHOICES, default="ROUTINE")
     chief_complaint = serializers.CharField(required=False, allow_blank=True)
     observations = serializers.JSONField(required=False, default=dict)
@@ -468,6 +469,7 @@ class EncounterSerializer(serializers.ModelSerializer):
 
 class EncounterCreateSerializer(serializers.Serializer):
     queue_entry_id = serializers.UUIDField()
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1, write_only=True)
 
 
 class TriageResponseSerializer(serializers.Serializer):

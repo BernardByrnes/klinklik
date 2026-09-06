@@ -72,18 +72,36 @@ export function StatusBadge({ tone = "neutral", children }: { tone?: BadgeTone; 
 
 export function queueStatusBadge(status: string): { tone: BadgeTone; label: string } {
   switch (status) {
+    case "WAITING_PAYMENT":
+      return { tone: "amber", label: "Waiting for payment" };
     case "WAITING":
       return { tone: "amber", label: "Waiting" };
     case "CALLED":
       return { tone: "blue", label: "Called" };
-    case "IN_TRIAGE":
-      return { tone: "blue", label: "In triage" };
-    case "TRIAGED":
-      return { tone: "purple", label: "Ready for consultation" };
-    case "IN_CONSULTATION":
-      return { tone: "purple", label: "In consultation" };
+    case "IN_SERVICE":
+      return { tone: "blue", label: "In service" };
+    case "ON_HOLD":
+      return { tone: "amber", label: "On hold" };
+    case "READY_TO_RESUME":
+      return { tone: "blue", label: "Ready to resume" };
     case "COMPLETED":
       return { tone: "teal", label: "Completed" };
+    case "TRANSFERRED":
+      return { tone: "purple", label: "Transferred" };
+    case "CANCELLED":
+      return { tone: "neutral", label: "Cancelled" };
+    case "LWBS":
+      return { tone: "neutral", label: "Left without being seen" };
+    case "NO_SHOW":
+      return { tone: "amber", label: "No show" };
+    case "EXPIRED":
+      return { tone: "neutral", label: "Expired" };
+    case "TRIAGED":
+      return { tone: "purple", label: "Ready for consultation" };
+    case "IN_TRIAGE":
+      return { tone: "blue", label: "In triage" };
+    case "IN_CONSULTATION":
+      return { tone: "purple", label: "In consultation" };
     default:
       return { tone: "neutral", label: status ? status.charAt(0) + status.slice(1).toLowerCase() : "—" };
   }
