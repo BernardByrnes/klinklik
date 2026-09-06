@@ -1,3 +1,4 @@
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from threading import Barrier, Event, Lock, get_ident
@@ -61,6 +62,90 @@ def _sqlstate(error):
             return state
         cause = getattr(cause, "__cause__", None) or getattr(cause, "__context__", None)
     return None
+
+
+_LOCK_CONTENTION_SQL = """
+SELECT
+    blocked.pid AS blocked_pid,
+    blocker.pid AS blocking_pid,
+    blocked.state AS blocked_state,
+    blocked.wait_event_type AS blocked_wait_event_type,
+    blocked.wait_event AS blocked_wait_event,
+    blocked.query AS blocked_query,
+    blocker.query AS blocking_query,
+    blocked_lock.locktype AS blocked_locktype,
+    blocker_lock.locktype AS blocking_locktype,
+    blocked_lock.granted AS blocked_granted,
+    blocker_lock.granted AS blocking_granted,
+    blocked_lock.relation::regclass::text AS blocked_relation,
+    blocker_lock.relation::regclass::text AS blocking_relation
+FROM pg_stat_activity AS blocked
+JOIN LATERAL unnest(pg_blocking_pids(blocked.pid)) AS blocker_pid(pid) ON TRUE
+JOIN pg_stat_activity AS blocker ON blocker.pid = blocker_pid.pid
+JOIN pg_locks AS blocked_lock
+  ON blocked_lock.pid = blocked.pid
+ AND blocked_lock.granted = FALSE
+JOIN pg_locks AS blocker_lock
+  ON blocker_lock.pid = blocker.pid
+ AND blocker_lock.granted = TRUE
+ AND blocker_lock.locktype = blocked_lock.locktype
+ AND blocker_lock.database IS NOT DISTINCT FROM blocked_lock.database
+ AND blocker_lock.relation IS NOT DISTINCT FROM blocked_lock.relation
+ AND blocker_lock.page IS NOT DISTINCT FROM blocked_lock.page
+ AND blocker_lock.tuple IS NOT DISTINCT FROM blocked_lock.tuple
+ AND blocker_lock.virtualxid IS NOT DISTINCT FROM blocked_lock.virtualxid
+ AND blocker_lock.transactionid IS NOT DISTINCT FROM blocked_lock.transactionid
+ AND blocker_lock.classid IS NOT DISTINCT FROM blocked_lock.classid
+ AND blocker_lock.objid IS NOT DISTINCT FROM blocked_lock.objid
+ AND blocker_lock.objsubid IS NOT DISTINCT FROM blocked_lock.objsubid
+WHERE blocked.pid = %s
+  AND blocker.pid = %s
+  AND blocked.wait_event_type = 'Lock'
+  AND blocked_lock.locktype = 'transactionid'
+  AND blocked.query ILIKE %s
+  AND blocker.query ILIKE %s
+"""
+
+
+def _capture_backend_pid(*, key, backend_pids, backend_pids_lock, ready):
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_backend_pid()")
+        backend_pid = cursor.fetchone()[0]
+    with backend_pids_lock:
+        backend_pids[key] = backend_pid
+    ready.set()
+    return backend_pid
+
+
+def _wait_for_lock_contention(*, blocked_pid, blocking_pid, query_fragment, timeout=20):
+    """Observe a real PostgreSQL wait before allowing the owning worker to proceed."""
+
+    observer = connections["default"].copy()
+    deadline = time.monotonic() + timeout
+    try:
+        observer.connect()
+        while time.monotonic() < deadline:
+            with observer.cursor() as cursor:
+                cursor.execute(
+                    _LOCK_CONTENTION_SQL,
+                    [
+                        blocked_pid,
+                        blocking_pid,
+                        f"%{query_fragment}%",
+                        f"%{query_fragment}%",
+                    ],
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    columns = [column.name for column in cursor.description]
+                    return dict(zip(columns, row))
+            time.sleep(0.02)
+    finally:
+        observer.close()
+    raise AssertionError(
+        f"PostgreSQL did not expose the expected {query_fragment} lock wait "
+        f"(blocked pid {blocked_pid}, blocking pid {blocking_pid})."
+    )
 
 
 def _new_patient(tenant, label):
@@ -268,16 +353,23 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(
         )
         return "encounter", str(encounter.id)
 
+    first_backend_pid_ready = Event()
     first_lock_acquired = Event()
-    second_lock_requested = Event()
+    second_backend_pid_ready = Event()
     release_first = Event()
+    backend_pids = {}
+    backend_pids_lock = Lock()
 
-    def attempt(operation, *, lock_acquired=None, lock_requested=None, release=None):
+    def attempt(operation, *, label, lock_acquired=None, backend_pid_ready=None, release=None):
         connections.close_all()
         try:
             def callback():
-                if lock_requested is not None:
-                    lock_requested.set()
+                _capture_backend_pid(
+                    key=label,
+                    backend_pids=backend_pids,
+                    backend_pids_lock=backend_pids_lock,
+                    ready=backend_pid_ready,
+                )
                 Visit.objects.select_for_update().get(
                     id=visit_id,
                     organisation_id=tenant.organisation.id,
@@ -304,6 +396,8 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(
         first_future = executor.submit(
             attempt,
             operations[first_operation],
+            label="first",
+            backend_pid_ready=first_backend_pid_ready,
             lock_acquired=first_lock_acquired,
             release=release_first,
         )
@@ -311,10 +405,30 @@ def test_pg_cancellation_and_clinical_creation_have_one_serialized_outcome(
         second_future = executor.submit(
             attempt,
             operations[losing_operation],
-            lock_requested=second_lock_requested,
+            label="second",
+            backend_pid_ready=second_backend_pid_ready,
         )
-        assert second_lock_requested.wait(timeout=20)
-        release_first.set()
+        try:
+            assert second_backend_pid_ready.wait(timeout=20)
+            with backend_pids_lock:
+                first_backend_pid = backend_pids["first"]
+                second_backend_pid = backend_pids["second"]
+            observation = _wait_for_lock_contention(
+                blocked_pid=second_backend_pid,
+                blocking_pid=first_backend_pid,
+                query_fragment="scheduling_visit",
+            )
+            assert observation["blocked_pid"] == second_backend_pid
+            assert observation["blocking_pid"] == first_backend_pid
+            assert observation["blocked_wait_event_type"] == "Lock"
+            assert observation["blocked_locktype"] == "transactionid"
+            assert observation["blocking_locktype"] == "transactionid"
+            assert observation["blocked_granted"] is False
+            assert observation["blocking_granted"] is True
+            assert "scheduling_visit" in observation["blocked_query"].lower()
+            assert "scheduling_visit" in observation["blocking_query"].lower()
+        finally:
+            release_first.set()
         worker_results = {
             first_operation: first_future.result(timeout=20),
             losing_operation: second_future.result(timeout=20),
@@ -970,13 +1084,14 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
 
     writer_labels = {}
     writer_labels_lock = Lock()
+    backend_pids = {}
+    backend_pids_lock = Lock()
+    backend_pid_ready = {
+        label: Event() for label in ("cutover", "legacy", "target", "rollback")
+    }
     cutover_fence_acquired = Event()
     release_cutover = Event()
-    legacy_fence_requested = Event()
-    legacy_fence_acquired = Event()
     target_fence_acquired = Event()
-    rollback_fence_requested = Event()
-    rollback_fence_acquired = Event()
     release_target = Event()
     original_cutover_switch = migration_reconciliation._cutover_switch
 
@@ -1000,19 +1115,9 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
             if not release_cutover.wait(timeout=20):
                 raise RuntimeError("cutover test release was not signalled")
             return switch
-        if label == "legacy":
-            legacy_fence_requested.set()
-            switch = original_cutover_switch(*args, **kwargs)
-            legacy_fence_acquired.set()
-            return switch
         if label == "target" and not target_fence_acquired.is_set():
             switch = original_cutover_switch(*args, **kwargs)
             target_fence_acquired.set()
-            return switch
-        if label == "rollback":
-            rollback_fence_requested.set()
-            switch = original_cutover_switch(*args, **kwargs)
-            rollback_fence_acquired.set()
             return switch
         return original_cutover_switch(*args, **kwargs)
 
@@ -1023,6 +1128,12 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         set_writer_label("cutover")
         try:
             with tenant_atomic(tenant.organisation.id):
+                _capture_backend_pid(
+                    key="cutover",
+                    backend_pids=backend_pids,
+                    backend_pids_lock=backend_pids_lock,
+                    ready=backend_pid_ready["cutover"],
+                )
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
                 result = cutover_mig001(organisation=organisation)
                 return (result.phase, result.parity_passes, result.stable_full_scan_count)
@@ -1036,6 +1147,12 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         try:
             try:
                 with tenant_atomic(tenant.organisation.id):
+                    _capture_backend_pid(
+                        key="legacy",
+                        backend_pids=backend_pids,
+                        backend_pids_lock=backend_pids_lock,
+                        ready=backend_pid_ready["legacy"],
+                    )
                     organisation = Organisation.objects.get(id=tenant.organisation.id)
                     facility = Facility.objects.get(id=tenant.facility.id)
                     actor = User.objects.get(id=tenant.user.id)
@@ -1056,14 +1173,34 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
     with ThreadPoolExecutor(max_workers=2) as executor:
         cutover_future = executor.submit(cutover_writer)
         assert cutover_fence_acquired.wait(timeout=20)
+        assert backend_pid_ready["cutover"].is_set()
+        with backend_pids_lock:
+            cutover_backend_pid = backend_pids["cutover"]
         legacy_future = executor.submit(legacy_writer)
-        assert legacy_fence_requested.wait(timeout=20)
-        release_cutover.set()
+        try:
+            assert backend_pid_ready["legacy"].wait(timeout=20)
+            with backend_pids_lock:
+                legacy_backend_pid = backend_pids["legacy"]
+            observation = _wait_for_lock_contention(
+                blocked_pid=legacy_backend_pid,
+                blocking_pid=cutover_backend_pid,
+                query_fragment="core_migrationcutover",
+            )
+            assert observation["blocked_pid"] == legacy_backend_pid
+            assert observation["blocking_pid"] == cutover_backend_pid
+            assert observation["blocked_wait_event_type"] == "Lock"
+            assert observation["blocked_locktype"] == "transactionid"
+            assert observation["blocking_locktype"] == "transactionid"
+            assert observation["blocked_granted"] is False
+            assert observation["blocking_granted"] is True
+            assert "core_migrationcutover" in observation["blocked_query"].lower()
+            assert "core_migrationcutover" in observation["blocking_query"].lower()
+        finally:
+            release_cutover.set()
         cutover_result = cutover_future.result(timeout=20)
         legacy_result = legacy_future.result(timeout=20)
         assert cutover_result == ("CUTOVER", 2, 2)
         assert legacy_result == ("blocked", "LEGACY_WRITER_DISABLED")
-        assert legacy_fence_acquired.is_set()
 
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
@@ -1093,6 +1230,12 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         set_writer_label("target")
         try:
             with tenant_atomic(tenant.organisation.id):
+                _capture_backend_pid(
+                    key="target",
+                    backend_pids=backend_pids,
+                    backend_pids_lock=backend_pids_lock,
+                    ready=backend_pid_ready["target"],
+                )
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
                 facility = Facility.objects.get(id=tenant.facility.id)
                 actor = User.objects.get(id=tenant.user.id)
@@ -1119,6 +1262,12 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
         set_writer_label("rollback")
         try:
             with tenant_atomic(tenant.organisation.id):
+                _capture_backend_pid(
+                    key="rollback",
+                    backend_pids=backend_pids,
+                    backend_pids_lock=backend_pids_lock,
+                    ready=backend_pid_ready["rollback"],
+                )
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
                 actor = User.objects.get(id=tenant.user.id)
                 switch = rollback_mig001(
@@ -1134,12 +1283,32 @@ def test_pg_mig001_cutover_and_rollback_fences_real_writers(tenant, monkeypatch)
     with ThreadPoolExecutor(max_workers=2) as executor:
         target_future = executor.submit(target_writer)
         assert target_fence_acquired.wait(timeout=20)
+        assert backend_pid_ready["target"].is_set()
+        with backend_pids_lock:
+            target_backend_pid = backend_pids["target"]
         rollback_future = executor.submit(rollback_writer)
-        assert rollback_fence_requested.wait(timeout=20)
-        release_target.set()
+        try:
+            assert backend_pid_ready["rollback"].wait(timeout=20)
+            with backend_pids_lock:
+                rollback_backend_pid = backend_pids["rollback"]
+            observation = _wait_for_lock_contention(
+                blocked_pid=rollback_backend_pid,
+                blocking_pid=target_backend_pid,
+                query_fragment="core_migrationcutover",
+            )
+            assert observation["blocked_pid"] == rollback_backend_pid
+            assert observation["blocking_pid"] == target_backend_pid
+            assert observation["blocked_wait_event_type"] == "Lock"
+            assert observation["blocked_locktype"] == "transactionid"
+            assert observation["blocking_locktype"] == "transactionid"
+            assert observation["blocked_granted"] is False
+            assert observation["blocking_granted"] is True
+            assert "core_migrationcutover" in observation["blocked_query"].lower()
+            assert "core_migrationcutover" in observation["blocking_query"].lower()
+        finally:
+            release_target.set()
         target_result = target_future.result(timeout=20)
         rollback_result = rollback_future.result(timeout=20)
-        assert rollback_fence_acquired.is_set()
 
     with tenant_atomic(tenant.organisation.id):
         organisation = Organisation.objects.get(id=tenant.organisation.id)
