@@ -22,6 +22,8 @@ export type {
   Payment,
   PresentingComplaint,
   QueueEntry,
+  LegacyQueueEntry,
+  OperationalQueueRow,
   Receipt,
   Service,
   Visit,

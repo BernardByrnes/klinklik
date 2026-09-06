@@ -8,7 +8,7 @@ import { apiRequest } from "../../../lib/api";
 import { useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { uiRole } from "../../../lib/roles";
-import { Invoice, QueueEntry } from "../../../features/clinic";
+import { Invoice, LegacyQueueEntry } from "../../../features/clinic";
 import {
   IconArrowRight,
   IconBilling,
@@ -89,7 +89,7 @@ export default function OverviewPage() {
 
   const queue = useQuery({
     queryKey: queueKey,
-    queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/"),
+    queryFn: () => apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/"),
     enabled: can("queue.view"),
   });
   const unpaidInvoices = useQuery({

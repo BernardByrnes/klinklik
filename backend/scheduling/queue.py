@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import math
 
-from django.db import IntegrityError, models
+from django.db import IntegrityError, models, transaction
 from django.db.models import Case, IntegerField, Value, When
 from django.utils import timezone
 
@@ -19,7 +19,8 @@ from core.clock import now
 from core.errors import CanonicalError
 from core.services import allocate_sequence, assert_transaction_active
 from clinical.models import Encounter
-from billing.models import Invoice
+from billing.models import Invoice, Payment, PaymentAllocation
+from billing.services import void_unpaid_visit_invoice
 from scheduling.models import QueueEntry, Visit
 from tenancy.models import Department, FacilityWorkflowPolicy
 
@@ -164,6 +165,41 @@ def _lock_entry_after_visit(*, organisation, facility, queue_entry_id):
     return visit, entry
 
 
+def _lock_lwbs_context(*, organisation, facility, queue_entry_id):
+    """Lock the REC-009 aggregate in Visit -> QueueEntry order."""
+
+    identity = QueueEntry.objects.filter(
+        organisation_id=_organisation_id(organisation),
+        facility_id=_facility_id(facility),
+        id=queue_entry_id,
+    ).values("visit_id").first()
+    if identity is None:
+        raise _error("NOT_FOUND", "The queue entry was not found in this facility.", status_code=404)
+    if not identity["visit_id"]:
+        raise _error("PREREQUISITE_MISSING", "LWBS requires a linked Visit.", status_code=422)
+    visit = Visit.objects.select_for_update().filter(
+        id=identity["visit_id"],
+        organisation_id=_organisation_id(organisation),
+        facility_id=_facility_id(facility),
+    ).first()
+    if visit is None:
+        raise _error("NOT_FOUND", "The queue entry Visit is not available in this facility.", status_code=404)
+    entries = list(
+        QueueEntry.objects.select_for_update().filter(
+            organisation_id=_organisation_id(organisation),
+            facility_id=_facility_id(facility),
+            visit_id=visit.id,
+        ).select_related("department", "patient").order_by("id")
+    )
+    entry = next(
+        (candidate for candidate in entries if str(candidate.id) == str(queue_entry_id)),
+        None,
+    )
+    if entry is None:
+        raise _error("NOT_FOUND", "The queue entry was not found in this facility.", status_code=404)
+    return visit, entry, entries
+
+
 def _lock_department(*, organisation, facility, department=None, department_id=None, required=False):
     identifier = department_id or _identifier(department)
     queryset = Department.objects.select_for_update().filter(
@@ -190,6 +226,7 @@ def _version_guard(entry, expected_version):
         raise _error(
             "VERSION_CONFLICT",
             "The queue entry changed; refresh before retrying.",
+            status_code=412,
             metadata={"current_version": entry.version},
         )
 
@@ -239,13 +276,25 @@ def _state_snapshot(entry):
     }
 
 
+def _legacy_status_for_state(entry, state):
+    """Dual-write the legacy status without putting workflow inference in save()."""
+
+    if state != "IN_SERVICE":
+        return state
+    if entry.status in {"IN_TRIAGE", "IN_CONSULTATION"}:
+        return entry.status
+    if str(entry.current_stage or "").upper() == "TRIAGE" or entry.queue_type.upper() == "TRIAGE":
+        return "IN_TRIAGE"
+    return "IN_CONSULTATION"
+
+
 def _persist(entry, *, state=None, actor_fields=None, extra_fields=None, increment=True):
     actor_fields = actor_fields or {}
     extra_fields = extra_fields or {}
     before = _state_snapshot(entry)
     if state is not None:
         entry.state = state
-        entry.status = state
+        entry.status = _legacy_status_for_state(entry, state)
     for field, value in {**actor_fields, **extra_fields}.items():
         setattr(entry, field, value)
     if increment:
@@ -493,7 +542,10 @@ def start_service(
     callback = stage_callback or stage_record_callback
     if callback is not None:
         try:
-            callback(entry=entry, visit=visit)
+            # A caught stage refusal must roll back every partial child write
+            # while retaining the already-committed CALLED transition.
+            with transaction.atomic():
+                callback(entry=entry, visit=visit)
         except QueueStageRefusal:
             return QueueEntry.objects.get(id=entry.id)
     entry.refresh_from_db()
@@ -654,29 +706,32 @@ def _create_destination_locked(
     )
     queued_at = now()
     try:
-        entry = QueueEntry.objects.create(
-            organisation=organisation,
-            facility=facility,
-            visit=visit,
-            patient=visit.patient,
-            department=department,
-            queue_date=visit.local_service_date,
-            sequence=sequence,
-            queue_type=queue_type,
-            work_identity=work_identity,
-            hold_reason="",
-            hold_ref=None,
-            priority=priority,
-            visit_type=visit.visit_type,
-            status="WAITING",
-            state="WAITING",
-            current_stage=department.code,
-            source_stage=source_stage or department.code,
-            queue_time=queued_at,
-            notes=handoff_note or "",
-            source_event_id=source_event_id,
-            last_activity_at=queued_at,
-        )
+        # PostgreSQL uniqueness races leave the outer transaction unusable
+        # unless the losing insert is isolated in a recoverable savepoint.
+        with transaction.atomic():
+            entry = QueueEntry.objects.create(
+                organisation=organisation,
+                facility=facility,
+                visit=visit,
+                patient=visit.patient,
+                department=department,
+                queue_date=visit.local_service_date,
+                sequence=sequence,
+                queue_type=queue_type,
+                work_identity=work_identity,
+                hold_reason="",
+                hold_ref=None,
+                priority=priority,
+                visit_type=visit.visit_type,
+                status="WAITING",
+                state="WAITING",
+                current_stage=department.code,
+                source_stage=source_stage or department.code,
+                queue_time=queued_at,
+                notes=handoff_note or "",
+                source_event_id=source_event_id,
+                last_activity_at=queued_at,
+            )
     except IntegrityError:
         entry = QueueEntry.objects.select_for_update().filter(
             organisation_id=visit.organisation_id,
@@ -737,6 +792,15 @@ def create_or_reuse_destination(
 
     _require_transaction()
     _require_target_write(organisation)
+    # Facility/Department are rank-1 configuration rows and must be locked
+    # before the Visit/QueueEntry aggregate under LOCK-01.
+    department = _lock_department(
+        organisation=organisation,
+        facility=facility,
+        department=department,
+        department_id=department_id,
+        required=True,
+    )
     visit = Visit.objects.select_for_update().filter(
         id=_identifier(visit),
         organisation_id=_organisation_id(organisation),
@@ -745,13 +809,6 @@ def create_or_reuse_destination(
     if visit is None:
         raise _error("NOT_FOUND", "The Visit was not found in this facility.", status_code=404)
     _assert_active_visit(visit)
-    department = _lock_department(
-        organisation=organisation,
-        facility=facility,
-        department=department,
-        department_id=department_id,
-        required=True,
-    )
     selected_priority = priority or "ROUTINE"
     if priority is None:
         source = QueueEntry.objects.filter(
@@ -795,6 +852,13 @@ def transfer(
     _require_transaction()
     _require_target_write(organisation)
     source_id = source_queue_entry_id or queue_entry_id
+    department = _lock_department(
+        organisation=organisation,
+        facility=facility,
+        department=target_department,
+        department_id=target_department_id,
+        required=True,
+    )
     identity = QueueEntry.objects.filter(
         organisation_id=_organisation_id(organisation),
         facility_id=_facility_id(facility),
@@ -810,86 +874,85 @@ def transfer(
     if visit is None:
         raise _error("PREREQUISITE_MISSING", "A transfer requires a linked Visit.", status_code=422)
     _assert_active_visit(visit)
-    source = QueueEntry.objects.select_for_update().filter(
+    source_probe = QueueEntry.objects.filter(
         id=source_id,
         organisation_id=_organisation_id(organisation),
         facility_id=_facility_id(facility),
     ).first()
+    if source_probe is None:
+        raise _error("NOT_FOUND", "The source queue entry was not found in this facility.", status_code=404)
+    source_stage = source_probe.current_stage or source_probe.source_stage
+    normalized_target_type = str(target_queue_type or department.code).upper()
+    handoff_identity = f"QUEUE-HANDOFF:{source_probe.id}:{department.id}:{normalized_target_type}"
+    candidate_ids = set(
+        QueueEntry.objects.filter(
+            organisation_id=visit.organisation_id,
+            facility_id=facility.id,
+            visit_id=visit.id,
+            work_identity=handoff_identity,
+        ).values_list("id", flat=True)
+    )
+    if source_probe.state == "TRANSFERRED":
+        candidate_ids.update(
+            QueueEntry.objects.filter(
+                organisation_id=visit.organisation_id,
+                facility_id=facility.id,
+                visit_id=visit.id,
+                department_id=department.id,
+                source_stage=source_stage,
+                state="WAITING",
+            ).values_list("id", flat=True)
+        )
+    locked_ids = candidate_ids | {source_probe.id}
+    locked_entries = list(
+        QueueEntry.objects.select_for_update().filter(
+            organisation_id=_organisation_id(organisation),
+            facility_id=_facility_id(facility),
+            id__in=locked_ids,
+        ).order_by("id")
+    )
+    locked_by_id = {entry.id: entry for entry in locked_entries}
+    source = locked_by_id.get(source_probe.id)
     if source is None:
         raise _error("NOT_FOUND", "The source queue entry was not found in this facility.", status_code=404)
+    if source.version != source_probe.version or source.state != source_probe.state:
+        raise _error(
+            "VERSION_CONFLICT",
+            "The source queue entry changed; refresh before transferring it.",
+            status_code=412,
+            metadata={"current_version": source.version},
+        )
     _version_guard(source, expected_version)
     redirect = str(reason or "").strip().upper() in {"WRONG_QUEUE", "ROUTED_IN_ERROR"}
+    # A transfer owns completion of the source stage. Waiting/called rows
+    # cannot be redirected around mandatory stage-completion guards.
     allowed_states = {"IN_SERVICE", "COMPLETED", "TRANSFERRED"}
-    if redirect:
-        allowed_states.update({"WAITING", "CALLED"})
     _state_guard(
         source,
         allowed_states,
         detail="Only an in-service or completed stage can be handed off; wrong-queue redirects may leave waiting work.",
     )
-    department = _lock_department(
-        organisation=organisation,
-        facility=facility,
-        department=target_department,
-        department_id=target_department_id,
-        required=True,
+    existing = next(
+        (entry for entry in locked_entries if entry.work_identity == handoff_identity),
+        None,
     )
-    source_stage = source.current_stage or source.source_stage
-    normalized_target_type = str(target_queue_type or department.code).upper()
-    handoff_identity = f"QUEUE-HANDOFF:{source.id}:{department.id}:{normalized_target_type}"
-    existing = QueueEntry.objects.filter(
-        organisation_id=visit.organisation_id,
-        facility_id=facility.id,
-        visit_id=visit.id,
-        work_identity=handoff_identity,
-    ).order_by("id").first()
     if existing is None and source.state == "TRANSFERRED":
-        existing = QueueEntry.objects.filter(
-            organisation_id=visit.organisation_id,
-            facility_id=facility.id,
-            visit_id=visit.id,
-            department_id=department.id,
-            source_stage=source_stage,
-            state="WAITING",
-        ).order_by("id").first()
+        existing = next(
+            (
+                entry
+                for entry in locked_entries
+                if entry.department_id == department.id
+                and entry.source_stage == source_stage
+                and entry.state == "WAITING"
+            ),
+            None,
+        )
     if source.state in {"COMPLETED", "TRANSFERRED"}:
-        destination_created = False
         if existing is None:
-            existing, destination_created = _create_destination_locked(
-                organisation=organisation,
-                facility=facility,
-                actor=actor,
-                visit=visit,
-                department=department,
-                queue_type=normalized_target_type,
-                priority=source.priority,
-                source_stage=source_stage,
-                handoff_note=handoff_note,
-                work_identity=handoff_identity,
-                source_event_id=handoff_identity,
-            )
-        if destination_created:
-            record_fact(
-                organisation=organisation,
-                actor=actor,
-                facility=facility,
-                event_code="QUEUE_HANDOFF",
-                action="UPDATE",
-                entity_type="QueueEntry",
-                entity_id=source.id,
-                source_ids={
-                    "source_queue_entry_id": source.id,
-                    "destination_queue_entry_id": existing.id,
-                    "visit_id": visit.id,
-                },
-                before={"state": source.state, "version": source.version},
-                after={
-                    "state": source.state,
-                    "version": source.version,
-                    "destination_queue_entry_id": existing.id,
-                    "reason_hash": _reason_hash(reason),
-                },
-                reason_code="QUEUE_HANDOFF",
+            raise _error(
+                "INVALID_STATE",
+                "The source stage is already terminal and has no matching handoff to replay.",
+                metadata={"state": source.state},
             )
         return source, existing
 
@@ -1047,12 +1110,13 @@ def change_priority(
         raise _error("INVALID_PRIORITY", "The queue priority is not supported.", status_code=400)
     if len(reason) < 3:
         raise _error("PRIORITY_REASON_REQUIRED", "A reason is required for a priority change.", status_code=400)
-    entry = _lock_entry(
+    visit, entry = _lock_entry_after_visit(
         organisation=organisation,
         facility=facility,
         queue_entry_id=queue_entry_id or entry_id,
     )
     _version_guard(entry, expected_version)
+    _assert_active_visit(visit)
     _state_guard(entry, {"WAITING", "CALLED"}, detail="Priority can only change before service starts.")
     if priority == entry.priority:
         return entry
@@ -1261,6 +1325,7 @@ def no_response(
         facility_id=_facility_id(facility),
     ).first()
     expiry_minutes = policy.queue_call_expiry_minutes if policy else 10
+    final_attempts = policy.queue_no_show_final_attempts if policy else 3
     entry = _lock_entry(
         organisation=organisation,
         facility=facility,
@@ -1281,6 +1346,14 @@ def no_response(
         )
     attempts = entry.call_attempts + 1
     no_shows = entry.no_show_count + 1
+    final_attempt = attempts >= max(1, int(final_attempts))
+    emergency_escalation = entry.priority == "EMERGENCY" and (
+        outcome == "NO_SHOW"
+        or (
+            entry.called_at is not None
+            and observed_at >= entry.called_at + timedelta(minutes=10)
+        )
+    )
     if outcome == "REQUEUE":
         new_state = "WAITING"
         extra = {"call_attempts": attempts, "no_show_count": no_shows}
@@ -1307,8 +1380,198 @@ def no_response(
             "call_attempts": entry.call_attempts,
             "no_show_count": entry.no_show_count,
             "priority": entry.priority,
+            "follow_up_required": no_shows >= 2 or entry.state == "NO_SHOW",
+            "final_attempt": final_attempt,
+            "lwbs_action_available": final_attempt and entry.state in {"WAITING", "NO_SHOW"},
+            "emergency_escalation": emergency_escalation,
         },
         reason_code="CALL_EXPIRED" if system else "NO_RESPONSE",
+    )
+    return entry
+
+
+def _mark_lwbs_locked(
+    *, organisation, facility, actor, visit, entry, queue_entries, reason, expected_version
+):
+    """Apply REC-009/CMD-007's atomic pre-service closure guards."""
+
+    _version_guard(entry, expected_version)
+    if entry.state == "LWBS":
+        return entry
+    if visit is None:
+        raise _error("PREREQUISITE_MISSING", "LWBS requires a linked Visit.", status_code=422)
+    _assert_active_visit(visit)
+    _state_guard(
+        entry,
+        {"WAITING", "WAITING_PAYMENT", "CALLED", "NO_SHOW"},
+        detail="Only pre-service queue work can be marked left without being seen.",
+    )
+    other_active_entries = [
+        candidate
+        for candidate in queue_entries
+        if candidate.id != entry.id and candidate.state in ACTIVE_STATES
+    ]
+    if other_active_entries:
+        raise _error(
+            "INVALID_STATE",
+            "Resolve the other active queue stage before closing this Visit as LWBS.",
+            metadata={"active_queue_entry_id": str(other_active_entries[0].id)},
+        )
+
+    encounters = list(
+        Encounter.objects.select_for_update().filter(
+            organisation_id=entry.organisation_id,
+            facility_id=entry.facility_id,
+            visit_id=visit.id,
+        ).order_by("id")
+    )
+    for encounter in encounters:
+        if encounter.status in {"OPEN", "AWAITING_RESULTS", "RESULTS_READY"}:
+            raise _error(
+                "ENCOUNTER_UNRESOLVED",
+                "Resolve the linked clinical record before recording LWBS.",
+                status_code=409,
+                metadata={"encounter_id": str(encounter.id), "encounter_state": encounter.status},
+            )
+        if encounter.status == "SIGNED":
+            raise _error(
+                "INVALID_STATE",
+                "A signed Encounter must follow the ordinary Visit closure workflow.",
+                status_code=409,
+                metadata={"encounter_id": str(encounter.id), "encounter_state": encounter.status},
+            )
+
+    invoice_id = Invoice.objects.filter(
+        organisation_id=entry.organisation_id,
+        facility_id=entry.facility_id,
+        visit_id=visit.id,
+    ).exclude(status__in={"VOID", "VOIDED"}).order_by("created_at", "id").values_list("id", flat=True).first()
+    payments = []
+    if invoice_id is not None:
+        # Payment is rank 22 and Invoice rank 23 in LOCK-01. Resolve the
+        # candidate ID without a lock, then acquire those records in order.
+        payments = list(
+            Payment.objects.select_for_update().filter(
+                organisation_id=entry.organisation_id,
+                facility_id=entry.facility_id,
+                invoice_id=invoice_id,
+            ).order_by("id")
+        )
+    invoice = Invoice.objects.select_for_update().filter(
+        id=invoice_id,
+        organisation_id=entry.organisation_id,
+        facility_id=entry.facility_id,
+        visit_id=visit.id,
+    ).exclude(status__in={"VOID", "VOIDED"}).first() if invoice_id is not None else None
+    paid_value = invoice.amount_paid if invoice is not None else 0
+    has_effective_payment = bool(
+        invoice is not None
+        and (
+            paid_value > 0
+            or invoice.status in {"PAID", "PARTIALLY_PAID"}
+            or PaymentAllocation.objects.filter(invoice_id=invoice.id).exists()
+            or any(payment.status == "POSTED" for payment in payments)
+        )
+    )
+    if invoice is not None and invoice.status == "PARTIALLY_PAID":
+        raise _error(
+            "PREREQUISITE_MISSING",
+            "Resolve the partially paid Invoice through its authorised financial workflow before LWBS.",
+            status_code=422,
+            metadata={
+                "invoice_id": str(invoice.id),
+                "current_authoritative_amount_due": str(invoice.total),
+                "current_effective_applied_value": str(paid_value),
+                "remaining_balance": str(invoice.balance),
+                "financial_owner_action": "PAY-008/BIL-010",
+            },
+        )
+
+    reason_hash = _reason_hash(reason)
+    if invoice is not None and not has_effective_payment:
+        try:
+            invoice, invoice_voided = void_unpaid_visit_invoice(
+                organisation=organisation,
+                facility=facility,
+                actor=actor,
+                invoice=invoice,
+                reason_hash=reason_hash,
+            )
+        except ValueError as exc:
+            raise _error(
+                "PREREQUISITE_MISSING",
+                "The Invoice is not in an eligible unpaid state for LWBS.",
+                status_code=422,
+                metadata={"invoice_id": str(invoice.id)},
+            ) from exc
+        if invoice_voided:
+            record_fact(
+                organisation=organisation,
+                actor=actor,
+                facility=facility,
+                event_code="INVOICE_VOIDED",
+                action="UPDATE",
+                entity_type="Invoice",
+                entity_id=invoice.id,
+                source_ids={"visit_id": visit.id, "invoice_id": invoice.id},
+                after={"state": invoice.status, "reason_hash": reason_hash},
+            )
+    if invoice is not None and has_effective_payment:
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            event_code="LWBS_PAID_REFUND_REVIEW_REQUIRED",
+            action="UPDATE",
+            entity_type="Invoice",
+            entity_id=invoice.id,
+            source_ids={"visit_id": visit.id, "invoice_id": invoice.id},
+            after={
+                "state": invoice.status,
+                "refund_review_required": True,
+                "amount_paid": str(invoice.amount_paid),
+            },
+            reason_code="PAY-008",
+        )
+
+    closed_at = now()
+    before = _persist(
+        entry,
+        state="LWBS",
+        actor_fields={"completed_by": actor, "removed_by": actor},
+        extra_fields={
+            "terminal_reason": reason,
+            "completed_at": closed_at,
+            "removed_at": closed_at,
+        },
+    )
+    _safe_transition_event(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        event_code="QUEUE_ENTRY_REMOVED",
+        entry=entry,
+        before=before,
+        after={"state": entry.state, "version": entry.version, "reason": reason},
+        reason_code="QUEUE_REMOVAL",
+    )
+    visit.state = "CLOSED"
+    visit.closure_reason = "LWBS_PAID" if invoice is not None and has_effective_payment else "LWBS"
+    visit.closed_at = closed_at
+    visit.closed_by = actor
+    visit.version += 1
+    visit.save(update_fields=["state", "closure_reason", "closed_at", "closed_by", "version", "updated_at"])
+    record_fact(
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        event_code="VISIT_CLOSED_LWBS",
+        action="UPDATE",
+        entity_type="Visit",
+        entity_id=visit.id,
+        source_ids={"visit_id": visit.id, "queue_entry_id": entry.id},
+        after={"state": visit.state, "closure_reason": visit.closure_reason, "version": visit.version},
+        reason_code="LWBS",
     )
     return entry
 
@@ -1329,6 +1592,23 @@ def cancel(
     reason = str(reason or "").upper()
     if reason not in REMOVAL_REASONS:
         raise _error("CANCEL_REASON_REQUIRED", "A supported queue removal reason is required.", status_code=400)
+    is_lwbs = lwbs or reason == "LEFT_WITHOUT_BEING_SEEN"
+    if is_lwbs:
+        visit, entry, queue_entries = _lock_lwbs_context(
+            organisation=organisation,
+            facility=facility,
+            queue_entry_id=queue_entry_id or entry_id,
+        )
+        return _mark_lwbs_locked(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            visit=visit,
+            entry=entry,
+            queue_entries=queue_entries,
+            reason=reason,
+            expected_version=expected_version,
+        )
     entry = _lock_entry(
         organisation=organisation,
         facility=facility,
@@ -1340,7 +1620,7 @@ def cancel(
         {"WAITING", "WAITING_PAYMENT", "CALLED", "NO_SHOW"},
         detail="An in-service queue entry must be completed through its owning workflow.",
     )
-    terminal_state = "LWBS" if lwbs or reason == "LEFT_WITHOUT_BEING_SEEN" else "CANCELLED"
+    terminal_state = "CANCELLED"
     removed_at = now()
     before = _persist(
         entry,
@@ -1419,6 +1699,14 @@ def takeover(
     if not in_scope:
         raise _error("OUT_OF_SCOPE", "The takeover user is not granted this queue scope.", status_code=422)
     old_user_id = entry.assigned_user_id or entry.served_by_id or entry.called_by_id or entry.claimed_by_id
+    # Lock the existing Encounter after QueueEntry (LOCK-01 order) only to
+    # prove that takeover never rewrites its primary clinician. Subsequent
+    # notes carry the acting user as their own author/co-author.
+    encounter = Encounter.objects.select_for_update().filter(
+        organisation_id=entry.organisation_id,
+        facility_id=entry.facility_id,
+        queue_entry_id=entry.id,
+    ).first()
     before = _persist(entry, extra_fields={"assigned_user": target})
     _safe_transition_event(
         organisation=organisation,
@@ -1431,6 +1719,8 @@ def takeover(
             "old_user_id": str(old_user_id) if old_user_id else None,
             "new_user_id": str(target.id),
             "version": entry.version,
+            "encounter_id": str(encounter.id) if encounter else None,
+            "encounter_primary_author_id": str(encounter.clinician_id) if encounter else None,
             "reason_hash": _reason_hash(reason),
         },
         reason_code="TAKEOVER",
@@ -1450,7 +1740,13 @@ def expire_sweep(
 
     _require_transaction()
     _require_target_write(organisation)
-    if local_service_day is None and cutoff is None:
+    if cutoff is not None:
+        raise _error(
+            "INVALID_CUTOFF",
+            "Queue expiry accepts only the facility local service day.",
+            status_code=400,
+        )
+    if local_service_day is None:
         local_service_day = timezone.localdate()
     candidates = QueueEntry.objects.filter(
         organisation_id=_organisation_id(organisation),
@@ -1461,8 +1757,6 @@ def expire_sweep(
         if isinstance(local_service_day, str):
             local_service_day = date.fromisoformat(local_service_day)
         candidates = candidates.filter(queue_date__lt=local_service_day)
-    else:
-        candidates = candidates.filter(queue_time__lt=cutoff)
     candidate_ids = list(candidates.order_by("visit_id", "queue_time", "id").values_list("id", flat=True))
     visit_ids = sorted({str(value) for value in candidates.exclude(visit_id__isnull=True).values_list("visit_id", flat=True)})
     locked_visits = {
@@ -1474,7 +1768,7 @@ def expire_sweep(
         ).order_by("id")
     }
     entries = list(
-        QueueEntry.objects.select_for_update().filter(id__in=candidate_ids).order_by("visit_id", "queue_time", "id")
+        QueueEntry.objects.select_for_update().filter(id__in=candidate_ids).order_by("id")
     )
     expired_ids = []
     review_visit_ids = []
@@ -1509,7 +1803,7 @@ def expire_sweep(
             facility_id=_facility_id(facility),
             state="IN_SERVICE",
         ).filter(
-            models.Q(queue_date__lt=local_service_day) if local_service_day is not None else models.Q(queue_time__lt=cutoff)
+            models.Q(queue_date__lt=local_service_day)
         ).order_by("visit_id", "queue_time", "id").values_list("id", flat=True)
     )
     closed_visit_ids = []
@@ -1528,13 +1822,43 @@ def expire_sweep(
             facility_id=visit.facility_id,
             visit_id=visit.id,
         ).exists()
-        has_invoice = Invoice.objects.filter(
+        invoice = Invoice.objects.filter(
             organisation_id=visit.organisation_id,
             facility_id=visit.facility_id,
             visit_id=visit.id,
-        ).exists()
+        ).order_by("-created_at", "id").first()
+        has_invoice = invoice is not None
         if has_encounter or has_invoice:
             review_visit_ids.append(visit.id)
+            review_reason = "REVIEW_REQUIRED" if invoice is not None and invoice.status == "PAID" else "STALE_OPEN"
+            visit.stale_review_required = True
+            visit.stale_review_reason = review_reason
+            visit.stale_review_amount = invoice.amount_paid if review_reason == "REVIEW_REQUIRED" else None
+            visit.version += 1
+            visit.save(
+                update_fields=[
+                    "stale_review_required",
+                    "stale_review_reason",
+                    "stale_review_amount",
+                    "version",
+                    "updated_at",
+                ]
+            )
+            record_fact(
+                organisation=organisation,
+                actor=actor,
+                facility=facility,
+                event_code="VISIT_STALE_REVIEW_REQUIRED",
+                action="UPDATE",
+                entity_type="Visit",
+                entity_id=visit.id,
+                source_ids={"visit_id": visit.id},
+                after={
+                    "review_reason": review_reason,
+                    "amount_present": visit.stale_review_amount is not None,
+                },
+                reason_code="DAY_ROLLOVER",
+            )
         if not has_encounter and not has_invoice and actor is not None:
             closed_at = now()
             visit.state = "CLOSED"

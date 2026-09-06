@@ -10,7 +10,7 @@ from hashlib import sha256
 import json
 from uuid import uuid4
 
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, connection, models, transaction
 from django.utils.timezone import now
 
 from audit.services import record_fact
@@ -1724,7 +1724,7 @@ def _mig002_classify(queue, *, assessment_ids=None, encounter_ids=None):
     target_state = MIG002_LEGACY_STATE_MAP.get(queue.status)
     if target_state is None:
         codes.append("UNKNOWN_LEGACY_STATE")
-        target_state = "WAITING"
+        target_state = None
     if queue.visit_id is None:
         codes.append("MISSING_VISIT")
     else:
@@ -1743,13 +1743,18 @@ def _mig002_classify(queue, *, assessment_ids=None, encounter_ids=None):
         codes.append("DEPARTMENT_SCOPE_MISMATCH")
     if queue.status == "IN_TRIAGE" and queue.current_stage != "TRIAGE":
         codes.append("TRIAGE_STAGE_MISMATCH")
-        target_state = "WAITING"
     if queue.status == "TRIAGED" and len(assessment_ids) != 1:
         codes.append("TRIAGE_ASSESSMENT_MISMATCH")
-        target_state = "WAITING"
     if queue.status == "IN_CONSULTATION" and len(encounter_ids) != 1:
         codes.append("CONSULTATION_ENCOUNTER_MISMATCH")
-        target_state = "WAITING"
+    # A newly added state column may contain NULL/WAITING from an older
+    # expand pass. Any other disagreement is durable drift and must be
+    # reconciled rather than silently repaired by a model save.
+    if (
+        target_state is not None
+        and queue.state not in {None, "WAITING", target_state}
+    ):
+        codes.append("LEGACY_CANONICAL_STATE_MISMATCH")
     return sorted(set(codes)), target_state, assessment_ids, encounter_ids
 
 
@@ -1875,6 +1880,31 @@ def _mig002_target_hash(queue):
     )
 
 
+def expand_mig002(*, organisation):
+    """Record the additive MIG-002 expansion without touching legacy rows."""
+
+    assert_transaction_active()
+    switch = _mig002_switch(organisation, phase="EXPANDED")
+    switch.phase = "EXPANDED"
+    switch.target_reads_enabled = False
+    switch.target_writes_enabled = False
+    switch.blocker_checks_passed = False
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase",
+            "target_reads_enabled",
+            "target_writes_enabled",
+            "blocker_checks_passed",
+            "write_fence",
+            "version",
+            "updated_at",
+        ]
+    )
+    return MigrationSummary(MIG002_ID, "EXPAND", run_id=str(switch.last_run_id or ""))
+
+
 def _mig002_ensure_consultation(queue, *, assessment_ids):
     if not queue.visit_id or len(assessment_ids) != 1:
         return None
@@ -1952,7 +1982,7 @@ def inventory_mig002(*, organisation, facility_id=None, run_id=None):
                 run_id=run_id,
             )
     switch = _mig002_switch(organisation)
-    switch.phase = "EXPANDED"
+    switch.phase = "INVENTORY"
     switch.target_reads_enabled = False
     switch.target_writes_enabled = False
     switch.inventory_completed_at = now()
@@ -2115,7 +2145,7 @@ def backfill_mig002(*, organisation, facility_id=None, batch_size=500, after_id=
     )
     if facility_id:
         unresolved = unresolved.filter(facility_id=facility_id)
-    switch.phase = "EXPANDED"
+    switch.phase = "BACKFILL"
     switch.target_reads_enabled = False
     switch.target_writes_enabled = False
     if complete and not facility_id:
@@ -2301,10 +2331,16 @@ def verify_mig002(*, organisation, facility_id=None):
         and switch.shadow_read_equal == shadow_equal
         else 1
     )
+    gates_passed = bool(
+        unresolved == 0
+        and scope_ok
+        and shadow_equal
+        and source_count == classified + exceptions
+    )
     switch.last_verified_at = now()
     switch.parity_digest = parity_digest
     switch.scope_link_hash_verified = scope_ok
-    switch.blocker_checks_passed = True
+    switch.blocker_checks_passed = gates_passed
     switch.shadow_read_equal = shadow_equal and not unresolved
     switch.shadow_read_digest = parity_digest
     switch.stable_full_scan_count = stable_full_scan_count
@@ -2324,11 +2360,101 @@ def verify_mig002(*, organisation, facility_id=None):
         linked_visit_count=sum(1 for queue in queues if queue.visit_id),
         parity_digest=parity_digest,
         scope_link_hash_verified=scope_ok,
-        blocker_checks_passed=True,
+        blocker_checks_passed=gates_passed,
         shadow_read_equal=shadow_equal and not unresolved,
         shadow_read_digest=parity_digest,
         stable_full_scan_count=stable_full_scan_count,
         run_id=str(switch.last_run_id) if switch.last_run_id else "",
+    )
+
+
+def constrain_mig002(*, organisation):
+    """Activate semantic database constraints only after E=0 is proven."""
+
+    assert_transaction_active()
+    summary = verify_mig002(organisation=organisation)
+    switch = _mig002_switch(organisation)
+    unresolved_targets = QueueEntry.objects.filter(
+        organisation=organisation,
+        state__isnull=True,
+    ).exists()
+    if (
+        summary.unresolved
+        or switch.inventory_completed_at is None
+        or not switch.inventory_digest
+        or switch.backfill_completed_at is None
+        or not switch.backfill_digest
+        or unresolved_targets
+        or not summary.blocker_checks_passed
+        or not summary.scope_link_hash_verified
+        or not summary.shadow_read_equal
+        or summary.stable_full_scan_count < 2
+    ):
+        raise ValueError("MIG-002 constrain requires E=0 and two stable verification scans.")
+
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            cursor.execute("ALTER TABLE scheduling_queueentry ALTER COLUMN state SET NOT NULL")
+            cursor.execute(
+                """
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'queue_entry_state_valid'
+                    ) THEN
+                        ALTER TABLE scheduling_queueentry
+                        ADD CONSTRAINT queue_entry_state_valid
+                        CHECK (state IN ('WAITING_PAYMENT','WAITING','CALLED','IN_SERVICE',
+                                         'ON_HOLD','READY_TO_RESUME','COMPLETED','TRANSFERRED',
+                                         'CANCELLED','LWBS','NO_SHOW','EXPIRED'));
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'queue_entry_attempt_counts_nonnegative'
+                    ) THEN
+                        ALTER TABLE scheduling_queueentry
+                        ADD CONSTRAINT queue_entry_attempt_counts_nonnegative
+                        CHECK (call_attempts >= 0 AND no_show_count >= 0);
+                    END IF;
+                END $$;
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_queue_visit_department
+                ON scheduling_queueentry (organisation_id, visit_id, department_id)
+                WHERE visit_id IS NOT NULL AND state IN
+                ('WAITING_PAYMENT','WAITING','CALLED','IN_SERVICE','ON_HOLD','READY_TO_RESUME')
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uniq_in_service_queue_visit
+                ON scheduling_queueentry (organisation_id, visit_id)
+                WHERE visit_id IS NOT NULL AND state = 'IN_SERVICE'
+                """
+            )
+    switch.phase = "CONSTRAINED"
+    switch.target_reads_enabled = True
+    switch.target_writes_enabled = True
+    switch.blocker_checks_passed = summary.blocker_checks_passed
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase",
+            "target_reads_enabled",
+            "target_writes_enabled",
+            "blocker_checks_passed",
+            "write_fence",
+            "version",
+            "updated_at",
+        ]
+    )
+    return MigrationSummary(
+        **{
+            **summary.as_dict(),
+            "phase": "CONSTRAIN",
+            "blocker_checks_passed": summary.blocker_checks_passed,
+        }
     )
 
 
@@ -2357,7 +2483,12 @@ def cutover_mig002(*, organisation, facility_id=None, parity_passes=2):
     summary = None
     for _ in range(parity_passes):
         summary = verify_mig002(organisation=organisation)
-        if summary.unresolved or not summary.scope_link_hash_verified or not summary.shadow_read_equal:
+        if (
+            summary.unresolved
+            or not summary.scope_link_hash_verified
+            or not summary.shadow_read_equal
+            or not summary.blocker_checks_passed
+        ):
             raise ValueError("MIG-002 cutover is blocked by unresolved state or scope evidence.")
         signature = (
             summary.inspected,
@@ -2456,7 +2587,14 @@ def target_writes_enabled_mig002(organisation):
 
 
 def legacy_writes_enabled_mig002(organisation):
-    return not target_writes_enabled_mig002(organisation)
+    # Before MIG-002 has an explicit cutover row the legacy writer remains
+    # available. Rollback restores that same compatibility path while
+    # retaining canonical rows and reconciliation evidence.
+    switch = MigrationCutover.objects.filter(
+        organisation=organisation,
+        migration_id=MIG002_ID,
+    ).first()
+    return switch is None or not switch.target_writes_enabled
 
 
 def resolve_mig002_reconciliation(*, organisation, reconciliation_id, actor, reason):
@@ -2480,19 +2618,48 @@ def resolve_mig002_reconciliation(*, organisation, reconciliation_id, actor, rea
     if queue is None:
         raise ValueError("The QueueEntry source is unavailable; rerun inventory.")
     assessment_ids, encounter_ids = _mig002_related_ids(queue)
-    codes, _, _, _ = _mig002_classify(
+    codes, target_state, _, _ = _mig002_classify(
         queue,
         assessment_ids=assessment_ids,
         encounter_ids=encounter_ids,
     )
     if codes:
         raise ValueError("Correct the QueueEntry source before resolving this evidence.")
+    work_identity = queue.work_identity or f"MIG-002:QUEUE:{queue.id}"
+    source_event_id = queue.source_event_id or f"MIG-002:QUEUE:{queue.id}"
+    source_stage = queue.source_stage or queue.current_stage or "RECEPTION"
+    # Reconciliation is the explicit owner of the corrected source row. The
+    # model save hook must remain inert, so apply the deterministic target
+    # fields here before marking the exception resolved.
+    QueueEntry.objects.filter(id=queue.id).update(
+        state=target_state,
+        work_identity=work_identity,
+        source_event_id=source_event_id,
+        source_stage=source_stage,
+        last_activity_at=queue.last_activity_at or queue.updated_at or queue.queue_time or now(),
+    )
+    queue.refresh_from_db()
+    if queue.status == "TRIAGED":
+        _mig002_ensure_consultation(queue, assessment_ids=assessment_ids)
     source_hash = _mig002_source_hash(
         queue,
         assessment_ids=assessment_ids,
         encounter_ids=encounter_ids,
     )
     refs = _mig002_target_refs(queue)
+    switch = _mig002_switch(organisation)
+    snapshot = _mig002_snapshot(organisation=organisation)
+    deterministic_evidence = dict(switch.deterministic_row_evidence or {})
+    deterministic_evidence[f"{MIG002_LEGACY_TABLE}:{queue.id}"] = {
+        "legacy_table": MIG002_LEGACY_TABLE,
+        "legacy_pk": str(queue.id),
+        "organisation_id": str(queue.organisation_id),
+        "facility_id": str(queue.facility_id),
+        "source_hash": source_hash,
+        "target_hash": _mig002_target_hash(queue),
+        "backfill_run_id": str(evidence.backfill_run_id or switch.last_run_id or uuid4()),
+        "target_refs": refs,
+    }
     evidence.source_hash = source_hash
     evidence.proposed_target_refs = refs
     evidence.target_hash = _stable_hash({"source_hash": source_hash, "target_refs": refs})
@@ -2504,6 +2671,36 @@ def resolve_mig002_reconciliation(*, organisation, reconciliation_id, actor, rea
         update_fields=[
             "source_hash", "proposed_target_refs", "target_hash", "resolution_state",
             "resolved_by", "resolved_at", "reason", "updated_at",
+        ]
+    )
+    switch.inventory_source_count = snapshot["source_count"]
+    switch.inventory_digest = snapshot["digest"]
+    switch.inventory_organisation_counts = snapshot["organisation_counts"]
+    switch.inventory_facility_counts = snapshot["facility_counts"]
+    if switch.backfill_completed_at is not None:
+        switch.backfill_source_count = snapshot["source_count"]
+        switch.backfill_digest = snapshot["digest"]
+        switch.backfill_organisation_counts = snapshot["organisation_counts"]
+        switch.backfill_facility_counts = snapshot["facility_counts"]
+    switch.deterministic_row_evidence = deterministic_evidence
+    switch.last_verified_at = None
+    switch.parity_digest = ""
+    switch.parity_passes = 0
+    switch.scope_link_hash_verified = False
+    switch.blocker_checks_passed = False
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "inventory_source_count", "inventory_digest", "inventory_organisation_counts",
+            "inventory_facility_counts", "backfill_source_count", "backfill_digest",
+            "backfill_organisation_counts", "backfill_facility_counts",
+            "deterministic_row_evidence", "last_verified_at", "parity_digest",
+            "parity_passes", "scope_link_hash_verified", "blocker_checks_passed",
+            "shadow_read_equal", "shadow_read_digest", "stable_full_scan_count",
+            "version", "updated_at",
         ]
     )
     record_fact(

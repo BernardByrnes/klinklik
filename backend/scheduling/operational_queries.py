@@ -11,7 +11,7 @@ from core.clock import now
 from core.errors import CanonicalError
 from core.services import assert_transaction_active
 from scheduling.models import QueueEntry, Visit
-from tenancy.models import FacilityWorkflowPolicy
+from tenancy.models import Department, FacilityWorkflowPolicy
 
 
 WAITING_SLA_MINUTES = 30
@@ -147,7 +147,7 @@ def _invoice_projection(*, organisation, facility, visit_id):
     }
 
 
-def _row_for_entry(*, entry, organisation, facility, actor, as_of):
+def _row_for_entry(*, entry, organisation, facility, actor, as_of, policy=None):
     patient = entry.patient
     role_templates = _role_templates(
         organisation=organisation,
@@ -156,6 +156,7 @@ def _row_for_entry(*, entry, organisation, facility, actor, as_of):
         department_id=entry.department_id,
     )
     queue_type = entry.queue_type.upper()
+    final_attempts = max(1, int(policy.queue_no_show_final_attempts)) if policy else 3
     row = {
         "id": str(entry.id),
         "visit_id": str(entry.visit_id) if entry.visit_id else None,
@@ -204,8 +205,26 @@ def _row_for_entry(*, entry, organisation, facility, actor, as_of):
         "handoff_note": entry.notes,
         "version": entry.version,
         "stale": False,
+        "stale_review_required": bool(
+            entry.visit_id
+            and Visit.objects.filter(
+                id=entry.visit_id,
+                organisation_id=entry.organisation_id,
+                facility_id=entry.facility_id,
+                stale_review_required=True,
+            ).exists()
+        ),
         "sla_minutes": None,
         "sla_breached": False,
+        "follow_up_required": entry.no_show_count >= 2 or entry.state == "NO_SHOW",
+        "final_attempt": entry.call_attempts >= final_attempts,
+        "lwbs_action_available": entry.call_attempts >= final_attempts
+        and entry.state in {"WAITING", "WAITING_PAYMENT", "NO_SHOW"},
+        "emergency_escalation": entry.priority == "EMERGENCY"
+        and (
+            entry.state == "NO_SHOW"
+            or _wait_seconds(entry, as_of=as_of) >= 10 * 60
+        ),
     }
     if entry.state in {"WAITING", "WAITING_PAYMENT", "CALLED"}:
         row["sla_minutes"] = WAITING_SLA_MINUTES
@@ -281,6 +300,10 @@ def operational_queue_projection(
     _require_target_reads(organisation)
     as_of = as_of or now()
     page, page_size = _parse_page(page, page_size)
+    policy = FacilityWorkflowPolicy.objects.filter(
+        organisation_id=_organisation_id(organisation),
+        facility_id=_facility_id(facility),
+    ).first()
     queryset = QueueEntry.objects.filter(
         organisation_id=_organisation_id(organisation),
         facility_id=_facility_id(facility),
@@ -328,6 +351,12 @@ def operational_queue_projection(
         queryset = queryset.filter(queue_type__in=scoped_queue_types)
     if queue_type:
         queryset = queryset.filter(queue_type=str(queue_type).upper())
+    assignment_rank = models.Case(
+        models.When(assigned_user_id=getattr(actor, "id", None), then=models.Value(0)),
+        models.When(assigned_user__isnull=True, then=models.Value(1)),
+        default=models.Value(2),
+        output_field=models.IntegerField(),
+    )
     queryset = queryset.order_by(
         models.Case(
             models.When(priority="EMERGENCY", then=models.Value(0)),
@@ -335,6 +364,7 @@ def operational_queue_projection(
             default=models.Value(2),
             output_field=models.IntegerField(),
         ),
+        assignment_rank,
         "queue_time",
         "id",
     )
@@ -349,6 +379,7 @@ def operational_queue_projection(
             facility=facility,
             actor=actor,
             as_of=as_of,
+            policy=policy,
         )
         for entry in selected
     ]
@@ -361,7 +392,8 @@ def operational_queue_projection(
         "entries": rows,
         "count": total,
         "row_count": len(rows),
-        "longest_wait_seconds": max((row["wait_seconds"] for row in rows), default=0),
+        # This is a whole-result metric, not a page-local metric.
+        "longest_wait_seconds": longest_wait,
         "page": page,
         "page_size": page_size,
         "has_next": start + len(rows) < total,
@@ -376,7 +408,7 @@ def queue_priority_projection(*, organisation, facility, actor=None, department_
         facility=facility,
         actor=actor,
         department_id=department_id,
-        states=["WAITING", "CALLED"],
+        states=["WAITING_PAYMENT", "WAITING", "CALLED"],
         as_of=as_of,
         envelope=False,
     )
@@ -533,7 +565,30 @@ def supervisor_queue_projection(*, organisation, facility, actor=None, as_of=Non
         if len(page_rows) < MAX_PAGE_SIZE:
             break
         page += 1
-    grouped = {}
+    scoped_departments, _ = _queue_scope(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+    )
+    departments = Department.objects.filter(
+        organisation_id=_organisation_id(organisation),
+        facility_id=_facility_id(facility),
+        is_active=True,
+    ).order_by("name", "id")
+    if scoped_departments is not None:
+        departments = departments.filter(id__in=scoped_departments)
+    grouped = {
+        str(department.id): {
+            "department_id": str(department.id),
+            "department_name": department.name,
+            "waiting_count": 0,
+            "in_service_count": 0,
+            "on_hold_count": 0,
+            "wait_seconds": [],
+            "staff_serving": set(),
+        }
+        for department in departments
+    }
     for row in rows:
         bucket = grouped.setdefault(
             row["department_id"],
@@ -587,24 +642,15 @@ def public_board_projection(*, organisation, facility, as_of=None):
             "The waiting-room display board is not configured for this facility.",
             status_code=422,
         )
-    as_of = as_of or now()
-    entries = operational_queue_projection(
-        organisation=organisation,
-        facility=facility,
-        actor=None,
-        states=["CALLED"],
-        page=1,
-        page_size=MAX_PAGE_SIZE,
-        as_of=as_of,
+    # The public device-token identity branch is not implemented in S-02.
+    # A configured identity mode must not accidentally turn the authenticated
+    # staff route into a public board.
+    raise CanonicalError(
+        "PUBLIC_BOARD_DISABLED",
+        "The waiting-room display board remains disabled until device-token authorization is enabled.",
+        status_code=503,
+        retryable=True,
     )
-    rows = []
-    for entry in entries:
-        identity = entry["patient_no"]
-        if policy.public_board_identity_mode == "FIRST_NAME_INITIAL":
-            initial = (entry["patient_name"] or "?").strip()[:1].upper() or "?"
-            identity = f"{initial}."
-        rows.append({"queue_entry_id": entry["id"], "identity": identity, "queue_label": entry["queue_label"]})
-    return rows
 
 
 # Query naming aliases retained for application adapters.

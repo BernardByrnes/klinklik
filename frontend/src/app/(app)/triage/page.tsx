@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
-import { QueueEntry } from "../../../features/clinic";
+import { LegacyQueueEntry } from "../../../features/clinic";
 import { IconCheckCircle, IconTriage } from "../../../components/icons";
 import {
   Button,
@@ -58,7 +58,7 @@ function TriageWorkspace() {
 
   const queue = useQuery({
     queryKey: queueKey,
-    queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/?status=WAITING,CALLED"),
+    queryFn: () => apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/?status=WAITING,CALLED"),
     enabled: can("triage.record"),
   });
 

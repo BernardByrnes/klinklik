@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
-import { QueueEntry } from "../../../features/clinic";
+import { LegacyQueueEntry } from "../../../features/clinic";
 import { IconQueue, IconSearch } from "../../../components/icons";
 import {
   Button,
@@ -45,12 +45,12 @@ export default function QueuePage() {
   const queue = useQuery({
     queryKey: queueKey,
     queryFn: () =>
-      apiRequest<QueueEntry[]>("/api/v1/clinic/queue/" + (statusParam ? `?status=${statusParam}` : "")),
+      apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/" + (statusParam ? `?status=${statusParam}` : "")),
     enabled: can("queue.view"),
   });
 
   const claim = useMutation({
-    mutationFn: (id: string) => apiRequest<QueueEntry>(`/api/v1/clinic/queue/${id}/claim/`, { method: "POST", body: "{}" }),
+    mutationFn: (id: string) => apiRequest<LegacyQueueEntry>(`/api/v1/clinic/queue/${id}/claim/`, { method: "POST", body: "{}" }),
     onSuccess: () => {
       setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });

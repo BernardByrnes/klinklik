@@ -165,8 +165,8 @@ class QueueSweepSerializer(serializers.Serializer):
     cutoff = serializers.DateTimeField(required=False)
 
     def validate(self, attrs):
-        if attrs.get("local_service_day") is not None and attrs.get("cutoff") is not None:
-            raise serializers.ValidationError("Supply local_service_day or cutoff, not both.")
+        if attrs.get("cutoff") is not None:
+            raise serializers.ValidationError("Arbitrary expiry cutoffs are not supported; use the facility local service day.")
         return attrs
 
 
@@ -210,6 +210,11 @@ class OperationalQueueRowSerializer(serializers.Serializer):
     handoff_note = serializers.CharField()
     version = serializers.IntegerField()
     stale = serializers.BooleanField()
+    stale_review_required = serializers.BooleanField()
+    follow_up_required = serializers.BooleanField()
+    final_attempt = serializers.BooleanField()
+    lwbs_action_available = serializers.BooleanField()
+    emergency_escalation = serializers.BooleanField()
     sla_minutes = serializers.IntegerField(required=False, allow_null=True)
     sla_breached = serializers.BooleanField()
     longest_wait_seconds = serializers.IntegerField(required=False)

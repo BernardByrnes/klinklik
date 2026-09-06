@@ -62,7 +62,7 @@ CMD_018_SPEC = CommandSpec(
     rank1_id="QUE-005",
     capability="queue.transfer",
     owner_service="scheduling.queue.transfer",
-    lock_plan=("Visit", "QueueEntry", "Department", "NumberSequence"),
+    lock_plan=("Department", "Visit", "QueueEntry", "NumberSequence"),
 )
 CMD_019_SPEC = CommandSpec(
     operation_id="CMD-019",

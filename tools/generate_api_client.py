@@ -285,8 +285,13 @@ def _type_aliases(schema):
         resolved_response = _resolve_schema(response_schema, components)
         if "/patients/" in path and resolved_response.get("type") == "array":
             put_alias("Patient", resolved_response.get("items", {}))
-        elif "/clinic/queue/" in path and resolved_response.get("type") == "array":
-            put_alias("QueueEntry", resolved_response.get("items", {}))
+        elif path.rstrip("/") == "/api/v1/clinic/queue" and resolved_response.get("type") == "array":
+            # The legacy list/check-in surface and the operational projections
+            # intentionally have different contracts. Do not let a later
+            # /operational or /priority-projection array overwrite QueueEntry.
+            legacy_definition = resolved_response.get("items", {})
+            put_alias("QueueEntry", legacy_definition)
+            put_alias("LegacyQueueEntry", legacy_definition)
         elif "/billing/invoices/" in path and "receipt" not in path:
             put_alias("Invoice", resolved_response.get("items", resolved_response))
         elif "/billing/services/" in path and resolved_response.get("type") == "array":

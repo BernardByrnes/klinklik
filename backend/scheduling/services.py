@@ -98,9 +98,10 @@ def cancel_error_visit(*, organisation, facility, actor, visit_id, reason, expec
     for entry in queue_entries:
         if entry.status not in {"COMPLETED", "CANCELLED"}:
             entry.status = "CANCELLED"
+            entry.state = "CANCELLED"
             entry.completed_at = cancelled_at
             entry.version += 1
-            entry.save(update_fields=["status", "completed_at", "version", "updated_at"])
+            entry.save(update_fields=["status", "state", "completed_at", "version", "updated_at"])
 
     visit.state = "CANCELLED_ERROR"
     visit.closure_reason = reason
@@ -235,12 +236,12 @@ def set_referral_source(*, organisation, facility, actor, visit, source_type, so
 @transaction.atomic
 def check_in_patient(*, organisation, facility, actor, patient_id, department_id=None, visit_type="WALK_IN", notes="", request=None):
     from core.errors import CanonicalError
-    from core.migration_reconciliation import legacy_writes_enabled
+    from core.migration_reconciliation import legacy_writes_enabled_mig002
 
-    if not legacy_writes_enabled(organisation):
+    if not legacy_writes_enabled_mig002(organisation):
         raise CanonicalError(
             "LEGACY_WRITER_DISABLED",
-            "The legacy queue writer is disabled after MIG-001 cutover; use Visit check-in.",
+            "The legacy queue writer is disabled after MIG-002 cutover; use Visit check-in.",
             status_code=503,
             retryable=True,
         )
@@ -272,6 +273,10 @@ def check_in_patient(*, organisation, facility, actor, patient_id, department_id
         sequence=sequence,
         visit_type=visit_type,
         notes=notes,
+        # A new WAITING check-in is an explicit, deterministic state. Existing
+        # ambiguous historical rows remain untouched for MIG-002 reconciliation.
+        status="WAITING",
+        state="WAITING",
     )
     record_event(
         request=request,

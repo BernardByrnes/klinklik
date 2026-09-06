@@ -1,12 +1,9 @@
-"""MIG-002 expand and deterministic legacy QueueEntry state adaptation.
+"""MIG-002 additive QueueEntry state expansion.
 
-The migration keeps the pre-S-02 ``status`` column as a shadow while adding
-the canonical QueueEntry contract.  Ambiguous stage evidence is retained as
-non-PHI PC-050 evidence and is never converted into a guessed workflow state.
+The schema migration adds the canonical state column and supporting fields
+without classifying legacy rows. Runtime phases own inventory, backfill,
+reconciliation, verification, cutover, and constraint activation.
 """
-
-from hashlib import sha256
-import json
 
 from django.conf import settings
 from django.db import migrations, models
@@ -15,234 +12,9 @@ import django.db.models.deletion
 import core.clock
 
 
-MIGRATION_ID = "MIG-002"
-CANONICAL_STATES = {
-    "WAITING_PAYMENT",
-    "WAITING",
-    "CALLED",
-    "IN_SERVICE",
-    "ON_HOLD",
-    "READY_TO_RESUME",
-    "COMPLETED",
-    "TRANSFERRED",
-    "CANCELLED",
-    "LWBS",
-    "NO_SHOW",
-    "EXPIRED",
-}
-ACTIVE_STATES = {
-    "WAITING_PAYMENT",
-    "WAITING",
-    "CALLED",
-    "IN_SERVICE",
-    "ON_HOLD",
-    "READY_TO_RESUME",
-}
-LEGACY_STATE_MAP = {
-    "WAITING": "WAITING",
-    "WAITING_PAYMENT": "WAITING_PAYMENT",
-    "ON_HOLD": "ON_HOLD",
-    "READY_TO_RESUME": "READY_TO_RESUME",
-    "CALLED": "CALLED",
-    "IN_TRIAGE": "IN_SERVICE",
-    "TRIAGED": "COMPLETED",
-    "IN_CONSULTATION": "IN_SERVICE",
-    "COMPLETED": "COMPLETED",
-    "TRANSFERRED": "TRANSFERRED",
-    "CANCELLED": "CANCELLED",
-    "LWBS": "LWBS",
-    "NO_SHOW": "NO_SHOW",
-    "EXPIRED": "EXPIRED",
-}
-
-
-def _hash(value):
-    return sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest()
-
-
-def _source_evidence(queue, *, assessment_ids=(), encounter_ids=()):
-    return {
-        "legacy_table": "scheduling_queueentry",
-        "legacy_pk": str(queue.id),
-        "organisation_id": str(queue.organisation_id),
-        "facility_id": str(queue.facility_id),
-        "visit_id": str(queue.visit_id) if queue.visit_id else None,
-        "patient_id": str(queue.patient_id),
-        "department_id": str(queue.department_id),
-        "status": queue.status,
-        "current_stage": queue.current_stage,
-        "queue_type": queue.queue_type,
-        "hold_reason": queue.hold_reason,
-        "priority": queue.priority,
-        "priority_reason": queue.priority_reason,
-        "queue_date": queue.queue_date.isoformat(),
-        "queue_time": queue.queue_time.isoformat() if queue.queue_time else None,
-        "called_at": queue.called_at.isoformat() if queue.called_at else None,
-        "claimed_by_id": str(queue.claimed_by_id) if queue.claimed_by_id else None,
-        "assessment_ids": sorted(str(value) for value in assessment_ids),
-        "encounter_ids": sorted(str(value) for value in encounter_ids),
-    }
-
-
-def _record_evidence(
-    reconciliation,
-    *,
-    queue,
-    codes,
-    source_hash,
-    target_refs=None,
-):
-    reconciliation.objects.update_or_create(
-        organisation_id=queue.organisation_id,
-        migration_id=MIGRATION_ID,
-        legacy_table="scheduling_queueentry",
-        legacy_pk=str(queue.id),
-        defaults={
-            "facility_id": queue.facility_id,
-            "evidence_codes": sorted(set(codes)),
-            "proposed_target_refs": target_refs,
-            "source_hash": source_hash,
-            "target_hash": _hash({"source_hash": source_hash, "target_refs": target_refs}),
-        },
-    )
-
-
-def _allocate_sequence(queue_model, queue):
-    last = (
-        queue_model.objects.filter(facility_id=queue.facility_id, queue_date=queue.queue_date)
-        .order_by("-sequence")
-        .values_list("sequence", flat=True)
-        .first()
-    )
-    return (last or 0) + 1
-
-
 def backfill_mig002(apps, schema_editor):
-    organisation_model = apps.get_model("tenancy", "Organisation")
-    queue_model = apps.get_model("scheduling", "QueueEntry")
-    reconciliation = apps.get_model("core", "MigrationReconciliation")
-    assessment_model = apps.get_model("clinical", "TriageAssessment")
-    encounter_model = apps.get_model("clinical", "Encounter")
-
-    for organisation in organisation_model.objects.order_by("id").iterator():
-        queues = queue_model.objects.filter(organisation_id=organisation.id).order_by("id")
-        for queue in queues.iterator():
-            assessment_ids = list(
-                assessment_model.objects.filter(queue_entry_id=queue.id)
-                .order_by("id")
-                .values_list("id", flat=True)
-            )
-            encounter_ids = list(
-                encounter_model.objects.filter(queue_entry_id=queue.id)
-                .order_by("id")
-                .values_list("id", flat=True)
-            )
-            source_hash = _hash(
-                _source_evidence(
-                    queue,
-                    assessment_ids=assessment_ids,
-                    encounter_ids=encounter_ids,
-                )
-            )
-            codes = []
-            state = LEGACY_STATE_MAP.get(queue.status)
-            if state is None:
-                codes.append("UNKNOWN_LEGACY_STATE")
-                state = "WAITING"
-            if queue.visit_id is None:
-                codes.append("MISSING_VISIT")
-                state = "WAITING"
-            else:
-                visit = queue.visit
-                if visit is None or (
-                    visit.organisation_id != queue.organisation_id
-                    or visit.facility_id != queue.facility_id
-                    or visit.patient_id != queue.patient_id
-                ):
-                    codes.append("VISIT_SCOPE_MISMATCH")
-                    state = "WAITING"
-            department = queue.department
-            if department is None or (
-                department.organisation_id != queue.organisation_id
-                or department.facility_id != queue.facility_id
-            ):
-                codes.append("DEPARTMENT_SCOPE_MISMATCH")
-                state = "WAITING"
-            if queue.status == "IN_TRIAGE" and queue.current_stage != "TRIAGE":
-                codes.append("TRIAGE_STAGE_MISMATCH")
-                state = "WAITING"
-            if queue.status == "TRIAGED" and len(assessment_ids) != 1:
-                codes.append("TRIAGE_ASSESSMENT_MISMATCH")
-                state = "WAITING"
-            if queue.status == "IN_CONSULTATION" and len(encounter_ids) != 1:
-                codes.append("CONSULTATION_ENCOUNTER_MISMATCH")
-                state = "WAITING"
-            if codes:
-                state = "WAITING"
-
-            work_identity = queue.work_identity or f"MIG-002:QUEUE:{queue.id}"
-            source_event_id = queue.source_event_id or f"MIG-002:QUEUE:{queue.id}"
-            source_stage = queue.source_stage or queue.current_stage or "RECEPTION"
-            queue_model.objects.filter(id=queue.id).update(
-                state=state if state in CANONICAL_STATES else "WAITING",
-                work_identity=work_identity,
-                source_event_id=source_event_id,
-                source_stage=source_stage,
-                last_activity_at=queue.updated_at or queue.queue_time,
-            )
-
-            target_refs = {"queue_id": str(queue.id)}
-            if queue.visit_id:
-                target_refs["visit_id"] = str(queue.visit_id)
-
-            # A TRIAGED legacy row with exactly one assessment has one
-            # deterministic consultation destination.  The destination is
-            # reused by source identity and receives no invented actor/time.
-            if not codes and queue.status == "TRIAGED" and len(assessment_ids) == 1 and queue.visit_id:
-                consultation_identity = f"MIG-002:CONSULTATION:{queue.id}"
-                destination = queue_model.objects.filter(
-                    organisation_id=queue.organisation_id,
-                    facility_id=queue.facility_id,
-                    visit_id=queue.visit_id,
-                    work_identity=consultation_identity,
-                ).first()
-                assessment = assessment_model.objects.filter(id=assessment_ids[0]).first()
-                priority = getattr(assessment, "acuity", "ROUTINE") if assessment else "ROUTINE"
-                if priority not in {"EMERGENCY", "URGENT", "ROUTINE"}:
-                    priority = "ROUTINE"
-                if destination is None:
-                    destination = queue_model.objects.create(
-                        organisation_id=queue.organisation_id,
-                        facility_id=queue.facility_id,
-                        visit_id=queue.visit_id,
-                        patient_id=queue.patient_id,
-                        department_id=queue.department_id,
-                        queue_date=queue.queue_date,
-                        sequence=_allocate_sequence(queue_model, queue),
-                        queue_type="CONSULTATION",
-                        work_identity=consultation_identity,
-                        priority=priority,
-                        visit_type=queue.visit_type,
-                        status="WAITING",
-                        state="WAITING",
-                        current_stage="CONSULTATION",
-                        source_stage="TRIAGE",
-                        queue_time=queue.queue_time or queue.updated_at,
-                        last_activity_at=queue.updated_at or queue.queue_time,
-                        source_event_id=f"MIG-002:CONSULTATION:{queue.id}",
-                    )
-                target_refs["consultation_queue_id"] = str(destination.id)
-
-            if codes:
-                _record_evidence(
-                    reconciliation,
-                    queue=queue,
-                    codes=codes,
-                    source_hash=source_hash,
-                    target_refs=target_refs,
-                )
+    """Compatibility hook retained for migration importers; never writes rows."""
+    return None
 
 
 def reverse_mig002(apps, schema_editor):
@@ -456,8 +228,9 @@ class Migration(migrations.Migration):
                     ("NO_SHOW", "No show"),
                     ("EXPIRED", "Expired"),
                 ],
-                default="WAITING",
+                blank=True,
                 max_length=30,
+                null=True,
             ),
         ),
         migrations.AddField(
@@ -494,7 +267,6 @@ class Migration(migrations.Migration):
                 max_length=30,
             ),
         ),
-        migrations.RunPython(backfill_mig002, reverse_mig002),
         migrations.AddIndex(
             model_name="queueentry",
             index=models.Index(
@@ -509,60 +281,65 @@ class Migration(migrations.Migration):
                 name="scheduling__organis_be2957_idx",
             ),
         ),
-        migrations.AddConstraint(
-            model_name="queueentry",
-            constraint=models.UniqueConstraint(
-                condition=models.Q(
-                    visit__isnull=False,
-                    state__in=[
-                        "WAITING_PAYMENT",
-                        "WAITING",
-                        "CALLED",
-                        "IN_SERVICE",
-                        "ON_HOLD",
-                        "READY_TO_RESUME",
-                    ],
+        migrations.SeparateDatabaseAndState(
+            database_operations=[],
+            state_operations=[
+                migrations.AddConstraint(
+                    model_name="queueentry",
+                    constraint=models.UniqueConstraint(
+                        condition=models.Q(
+                            visit__isnull=False,
+                            state__in=[
+                                "WAITING_PAYMENT",
+                                "WAITING",
+                                "CALLED",
+                                "IN_SERVICE",
+                                "ON_HOLD",
+                                "READY_TO_RESUME",
+                            ],
+                        ),
+                        fields=("organisation", "visit", "department"),
+                        name="uniq_active_queue_visit_department",
+                    ),
                 ),
-                fields=("organisation", "visit", "department"),
-                name="uniq_active_queue_visit_department",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="queueentry",
-            constraint=models.UniqueConstraint(
-                condition=models.Q(visit__isnull=False, state="IN_SERVICE"),
-                fields=("organisation", "visit"),
-                name="uniq_in_service_queue_visit",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="queueentry",
-            constraint=models.CheckConstraint(
-                condition=models.Q(
-                    state__in=[
-                        "WAITING_PAYMENT",
-                        "WAITING",
-                        "CALLED",
-                        "IN_SERVICE",
-                        "ON_HOLD",
-                        "READY_TO_RESUME",
-                        "COMPLETED",
-                        "TRANSFERRED",
-                        "CANCELLED",
-                        "LWBS",
-                        "NO_SHOW",
-                        "EXPIRED",
-                    ]
+                migrations.AddConstraint(
+                    model_name="queueentry",
+                    constraint=models.UniqueConstraint(
+                        condition=models.Q(visit__isnull=False, state="IN_SERVICE"),
+                        fields=("organisation", "visit"),
+                        name="uniq_in_service_queue_visit",
+                    ),
                 ),
-                name="queue_entry_state_valid",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="queueentry",
-            constraint=models.CheckConstraint(
-                condition=models.Q(call_attempts__gte=0, no_show_count__gte=0),
-                name="queue_entry_attempt_counts_nonnegative",
-            ),
+                migrations.AddConstraint(
+                    model_name="queueentry",
+                    constraint=models.CheckConstraint(
+                        condition=models.Q(
+                            state__in=[
+                                "WAITING_PAYMENT",
+                                "WAITING",
+                                "CALLED",
+                                "IN_SERVICE",
+                                "ON_HOLD",
+                                "READY_TO_RESUME",
+                                "COMPLETED",
+                                "TRANSFERRED",
+                                "CANCELLED",
+                                "LWBS",
+                                "NO_SHOW",
+                                "EXPIRED",
+                            ]
+                        ),
+                        name="queue_entry_state_valid",
+                    ),
+                ),
+                migrations.AddConstraint(
+                    model_name="queueentry",
+                    constraint=models.CheckConstraint(
+                        condition=models.Q(call_attempts__gte=0, no_show_count__gte=0),
+                        name="queue_entry_attempt_counts_nonnegative",
+                    ),
+                ),
+            ],
         ),
         migrations.RunPython(apply_scope_guards, reverse_scope_guards),
     ]

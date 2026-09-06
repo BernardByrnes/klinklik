@@ -71,9 +71,10 @@ def start_encounter(*, organisation, facility, actor, queue_entry_id, request=No
             after={"state": visit.state, "version": visit.version},
         )
     queue.status = "IN_CONSULTATION"
+    queue.state = "IN_SERVICE"
     queue.current_stage = "CONSULTATION"
     queue.claimed_by = queue.claimed_by or actor
-    queue.save(update_fields=["status", "current_stage", "claimed_by", "updated_at"])
+    queue.save(update_fields=["status", "state", "current_stage", "claimed_by", "updated_at"])
     record_event(
         request=request,
         organisation=organisation,
@@ -132,8 +133,9 @@ def record_triage(*, organisation, facility, actor, queue_entry_id, data, reques
             }},
         )
     queue.status = "TRIAGED"
+    queue.state = "COMPLETED"
     queue.current_stage = "CONSULTATION"
-    queue.save(update_fields=["status", "current_stage", "updated_at"])
+    queue.save(update_fields=["status", "state", "current_stage", "updated_at"])
     record_event(
         request=request,
         organisation=organisation,

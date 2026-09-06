@@ -17,7 +17,6 @@ from application.queue.commands import (
     queue_requeue,
     queue_takeover,
     queue_transfer,
-    system_queue_expire_sweep,
 )
 from core.errors import CanonicalError
 from core.idempotency import json_safe
@@ -146,7 +145,10 @@ class QueueCapability(BasePermission):
                 source_type = source_type or source["queue_type"]
 
         scope_requests = [(source_department, source_type)]
-        if target_department and target_department != source_department:
+        if target_department and (
+            target_department != source_department
+            or (target_type and str(target_type).upper() != str(source_type or "").upper())
+        ):
             scope_requests.append((target_department, target_type))
         return all(
             self._allows(
@@ -187,6 +189,8 @@ class QueueTenantAPIView(TenantAPIView):
 def _mutation_response(data, *, status_code=status.HTTP_200_OK, result_reference=None):
     body = json_safe(data)
     response = Response(body, status=status_code)
+    if isinstance(body, dict) and body.get("version") is not None:
+        response["ETag"] = f'"{body["version"]}"'
     # TenantAPIView persists this exact PHI-minimal envelope in PC-048.
     response.idempotency_body = body
     response.result_reference = result_reference
@@ -216,7 +220,38 @@ def _entry_id(data, *, path_id=None):
     return identifier
 
 
+def _expected_version(request, values, *, required=True):
+    """Resolve a body version or strong If-Match precondition consistently."""
+
+    body_version = values.get("expected_version")
+    header = request.headers.get("If-Match")
+    header_version = None
+    if header:
+        value = str(header).strip()
+        if value.startswith("W/"):
+            raise CanonicalError("INVALID_IF_MATCH", "If-Match must be a strong queue version.", status_code=400)
+        value = value.strip('"')
+        try:
+            header_version = int(value)
+        except (TypeError, ValueError) as exc:
+            raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain the queue version.", status_code=400) from exc
+        if header_version < 1:
+            raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain a positive queue version.", status_code=400)
+    if body_version is not None and header_version is not None and int(body_version) != header_version:
+        raise CanonicalError("VERSION_CONFLICT", "The body version and If-Match value do not agree.", status_code=412)
+    resolved = header_version if header_version is not None else body_version
+    if required and resolved is None:
+        raise CanonicalError(
+            "PRECONDITION_REQUIRED",
+            "A current queue version is required in expected_version or If-Match.",
+            status_code=428,
+        )
+    return resolved
+
+
 class QueueCallView(QueueTenantAPIView):
+    # queue.claim is retained only for the legacy-compatible call command;
+    # it is not a substitute grant for assign/transfer/cancel/etc.
     queue_capabilities = ("queue.call", "queue.serve", "queue.claim")
     idempotency_operation = "CMD-013"
     requires_idempotency = True
@@ -233,13 +268,18 @@ class QueueCallView(QueueTenantAPIView):
         values = dict(serializer.validated_data)
         if pk is not None:
             values["queue_entry_id"] = pk
+        expected_version = _expected_version(
+            request,
+            values,
+            required=bool(values.get("queue_entry_id")),
+        )
         entry = queue_call(
             organisation=request.organisation,
             facility=request.facility,
             actor=request.user,
             department_id=values.get("department_id"),
             queue_type=values.get("queue_type"),
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
             ordering_watermark=values.get("ordering_watermark"),
             out_of_order_reason=values.get("out_of_order_reason", ""),
             queue_entry_id=values.get("queue_entry_id"),
@@ -254,7 +294,7 @@ class QueueCallView(QueueTenantAPIView):
 
 
 class QueueAssignView(QueueTenantAPIView):
-    queue_capabilities = ("queue.assign", "queue.claim")
+    queue_capabilities = ("queue.assign",)
     idempotency_operation = "CMD-015"
     requires_idempotency = True
     request_serializer_class = QueueAssignSerializer
@@ -268,13 +308,14 @@ class QueueAssignView(QueueTenantAPIView):
         serializer = QueueAssignSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        expected_version = _expected_version(request, values)
         entry = queue_assign(
             organisation=request.organisation,
             facility=request.facility,
             actor=request.user,
             queue_entry_id=_entry_id(values, path_id=pk),
             target_user_id=values["target_user_id"],
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
         )
         return _mutation_response(
             _entry_result(entry),
@@ -283,7 +324,7 @@ class QueueAssignView(QueueTenantAPIView):
 
 
 class QueueTransferView(QueueTenantAPIView):
-    queue_capabilities = ("queue.transfer", "queue.move", "queue.claim")
+    queue_capabilities = ("queue.transfer", "queue.move")
     idempotency_operation = "CMD-018"
     requires_idempotency = True
     request_serializer_class = QueueTransferSerializer
@@ -298,6 +339,7 @@ class QueueTransferView(QueueTenantAPIView):
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
         source_id = _entry_id(values, path_id=pk)
+        expected_version = _expected_version(request, values)
         source, destination = queue_transfer(
             organisation=request.organisation,
             facility=request.facility,
@@ -307,7 +349,7 @@ class QueueTransferView(QueueTenantAPIView):
             target_queue_type=values.get("target_queue_type"),
             handoff_note=values.get("handoff_note", ""),
             reason=values.get("reason", ""),
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
         )
         body = {
             "source_queue_entry_id": str(source.id),
@@ -323,7 +365,7 @@ class QueueTransferView(QueueTenantAPIView):
 
 
 class QueuePriorityView(QueueTenantAPIView):
-    queue_capabilities = ("queue.priority.set", "queue.priority_change", "queue.claim")
+    queue_capabilities = ("queue.priority.set", "queue.priority_change")
     idempotency_operation = "CMD-127"
     requires_idempotency = True
     request_serializer_class = QueuePrioritySerializer
@@ -337,6 +379,7 @@ class QueuePriorityView(QueueTenantAPIView):
         serializer = QueuePrioritySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        expected_version = _expected_version(request, values)
         entry = queue_priority_change(
             organisation=request.organisation,
             facility=request.facility,
@@ -344,7 +387,7 @@ class QueuePriorityView(QueueTenantAPIView):
             queue_entry_id=_entry_id(values, path_id=pk),
             priority=values["priority"],
             reason=values["reason"],
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
         )
         return _mutation_response(
             _entry_result(entry),
@@ -356,7 +399,7 @@ class QueuePriorityView(QueueTenantAPIView):
 
 
 class QueueNoResponseView(QueueTenantAPIView):
-    queue_capabilities = ("queue.no_response", "queue.serve", "queue.claim")
+    queue_capabilities = ("queue.no_response", "queue.serve")
     idempotency_operation = "CMD-020"
     requires_idempotency = True
     request_serializer_class = QueueNoResponseSerializer
@@ -370,6 +413,7 @@ class QueueNoResponseView(QueueTenantAPIView):
         serializer = QueueNoResponseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        expected_version = _expected_version(request, values)
         entry = queue_no_response(
             organisation=request.organisation,
             facility=request.facility,
@@ -377,7 +421,7 @@ class QueueNoResponseView(QueueTenantAPIView):
             queue_entry_id=_entry_id(values, path_id=pk),
             outcome=values.get("outcome", "REQUEUE"),
             emergency_acknowledged=values.get("emergency_acknowledged", False),
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
         )
         return _mutation_response(
             _entry_result(entry),
@@ -386,7 +430,7 @@ class QueueNoResponseView(QueueTenantAPIView):
 
 
 class QueueRequeueView(QueueTenantAPIView):
-    queue_capabilities = ("queue.requeue", "queue.claim")
+    queue_capabilities = ("queue.requeue",)
     idempotency_operation = "CMD-021"
     requires_idempotency = True
     request_serializer_class = QueueRequeueSerializer
@@ -400,13 +444,14 @@ class QueueRequeueView(QueueTenantAPIView):
         serializer = QueueRequeueSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        expected_version = _expected_version(request, values)
         entry = queue_requeue(
             organisation=request.organisation,
             facility=request.facility,
             actor=request.user,
             queue_entry_id=_entry_id(values, path_id=pk),
             reason=values["reason"],
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
         )
         return _mutation_response(
             _entry_result(entry),
@@ -415,7 +460,7 @@ class QueueRequeueView(QueueTenantAPIView):
 
 
 class QueueCancelView(QueueTenantAPIView):
-    queue_capabilities = ("queue.remove", "queue.cancel", "queue.claim")
+    queue_capabilities = ("queue.remove", "queue.cancel")
     idempotency_operation = "CMD-022"
     requires_idempotency = True
     request_serializer_class = QueueCancelSerializer
@@ -429,6 +474,7 @@ class QueueCancelView(QueueTenantAPIView):
         serializer = QueueCancelSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        expected_version = _expected_version(request, values)
         entry = queue_cancel(
             organisation=request.organisation,
             facility=request.facility,
@@ -436,7 +482,7 @@ class QueueCancelView(QueueTenantAPIView):
             queue_entry_id=_entry_id(values, path_id=pk),
             reason=values["reason"],
             lwbs=values.get("lwbs", False),
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
         )
         return _mutation_response(
             _entry_result(entry),
@@ -445,7 +491,7 @@ class QueueCancelView(QueueTenantAPIView):
 
 
 class QueueTakeoverView(QueueTenantAPIView):
-    queue_capabilities = ("queue.takeover", "queue.claim")
+    queue_capabilities = ("queue.takeover",)
     idempotency_operation = "CMD-023"
     requires_idempotency = True
     request_serializer_class = QueueTakeoverSerializer
@@ -459,6 +505,7 @@ class QueueTakeoverView(QueueTenantAPIView):
         serializer = QueueTakeoverSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
+        expected_version = _expected_version(request, values)
         entry = queue_takeover(
             organisation=request.organisation,
             facility=request.facility,
@@ -466,7 +513,7 @@ class QueueTakeoverView(QueueTenantAPIView):
             queue_entry_id=_entry_id(values, path_id=pk),
             new_user_id=values.get("new_user_id"),
             reason=values["reason"],
-            expected_version=values.get("expected_version"),
+            expected_version=expected_version,
             observed_at=values.get("observed_at"),
         )
         return _mutation_response(
@@ -487,15 +534,12 @@ class QueueExpireSweepView(QueueTenantAPIView):
         return record.response_body
 
     def post(self, request):
-        serializer = QueueSweepSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        result = system_queue_expire_sweep(
-            organisation=request.organisation,
-            facility=request.facility,
-            actor=request.user,
-            **serializer.validated_data,
+        raise CanonicalError(
+            "FEATURE_DISABLED",
+            "The OD-22 expiry sweep is disabled until its application.operations owner is enabled.",
+            status_code=503,
+            retryable=True,
         )
-        return _mutation_response(result.as_dict())
 
 
 class OperationalQueueProjectionView(QueueTenantAPIView):

@@ -18,7 +18,7 @@ import {
   EncounterDisposition,
   FollowUpRecommendation,
   PresentingComplaint,
-  QueueEntry,
+  LegacyQueueEntry,
 } from "../../../features/clinic";
 import type {
   AllergyStateResponse,
@@ -2003,7 +2003,7 @@ function ConsultationsWorkspace() {
 
   const queue = useQuery({
     queryKey: queueKey,
-    queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/?status=TRIAGED,IN_CONSULTATION"),
+    queryFn: () => apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/?status=TRIAGED,IN_CONSULTATION"),
     enabled: can("clinical.note.create"),
   });
 
@@ -2490,7 +2490,7 @@ function ConsultationsWorkspace() {
     }]);
   }
 
-  function selectEntry(entry: QueueEntry) {
+  function selectEntry(entry: LegacyQueueEntry) {
     if (
       entry.id !== selectedId &&
       hasUnsavedContent() &&

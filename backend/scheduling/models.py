@@ -67,6 +67,11 @@ class Visit(FacilityScopedModel):
     )
     referral_source_name = models.CharField(max_length=100, blank=True)
     results_review = models.BooleanField(default=False)
+    # Persist the operational obligation created by a record-bearing stale
+    # queue sweep; it is a flag, never a substitute Visit state.
+    stale_review_required = models.BooleanField(default=False)
+    stale_review_reason = models.CharField(max_length=40, blank=True)
+    stale_review_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     version = models.PositiveBigIntegerField(default=1)
 
     ACTIVE_STATES = ("OPEN", "IN_PROGRESS")
@@ -267,7 +272,9 @@ class QueueEntry(FacilityScopedModel):
     priority_reason = models.CharField(max_length=240, blank=True)
     visit_type = models.CharField(max_length=40, default="WALK_IN")
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="WAITING")
-    state = models.CharField(max_length=30, choices=STATE_CHOICES, default="WAITING")
+    # MIG-002 leaves unresolved legacy rows unclassified until explicit
+    # reconciliation. Canonical writers set this field deliberately.
+    state = models.CharField(max_length=30, choices=STATE_CHOICES, null=True, blank=True)
     current_stage = models.CharField(max_length=40, default="RECEPTION")
     source_stage = models.CharField(max_length=40, blank=True)
     arrival_at = models.DateTimeField(auto_now_add=True)
@@ -394,45 +401,24 @@ class QueueEntry(FacilityScopedModel):
         ]
 
     def save(self, *args, **kwargs):
-        """Keep old readers useful while making ``state`` authoritative.
+        """Persist exactly what the caller supplied; reconciliation owns drift."""
 
-        Existing S-01/S-00 services still assign ``status``.  The legacy
-        TRIAGED and IN_* values have one deterministic MIG-002 meaning; no
-        timing, caller, or clinical facts are manufactured here.
-        """
-
-        synchronized_fields = set()
-        if self.status == "WAITING" and self.state != "WAITING":
-            # A caller supplying only the new canonical field should not be
-            # overwritten by the legacy field's default value.
-            self.status = self.state
-            synchronized_fields.add("status")
-        else:
-            status_state = self.LEGACY_STATE_MAP.get(self.status)
-            if status_state is not None and self.state != status_state:
-                self.state = status_state
-                synchronized_fields.add("state")
-            elif status_state is None and self.state in self.CANONICAL_STATES:
-                self.status = self.state
-                synchronized_fields.add("status")
-        if self.started_at is None and self.service_started_at is not None:
-            self.started_at = self.service_started_at
-            synchronized_fields.add("started_at")
-        elif self.service_started_at is None and self.started_at is not None:
-            self.service_started_at = self.started_at
-            synchronized_fields.add("service_started_at")
-        if self.called_by_id is None and self.claimed_by_id is not None:
-            self.called_by_id = self.claimed_by_id
-            synchronized_fields.add("called_by")
-        elif self.claimed_by_id is None and self.called_by_id is not None:
-            self.claimed_by_id = self.called_by_id
-            synchronized_fields.add("claimed_by")
-        if self.last_activity_at is None:
-            self.last_activity_at = now()
-            synchronized_fields.add("last_activity_at")
-        if kwargs.get("update_fields") is not None:
-            kwargs["update_fields"] = set(kwargs["update_fields"]) | synchronized_fields
+        # Workflow and compatibility synchronization belongs to explicit
+        # service modules. A model save must preserve drift for MIG-002.
         return super().save(*args, **kwargs)
+
+    @property
+    def legacy_state_drift(self):
+        """Return a stable drift marker without changing either projection."""
+
+        expected = self.LEGACY_STATE_MAP.get(self.status)
+        if expected is None:
+            return "UNKNOWN_LEGACY_STATE"
+        if self.state is None:
+            return "UNCLASSIFIED_CANONICAL_STATE"
+        if self.state != expected:
+            return "LEGACY_CANONICAL_STATE_MISMATCH"
+        return None
 
     def delete(self, *args, **kwargs):
         raise ValueError("Queue entries are retained; use a terminal transition instead.")
