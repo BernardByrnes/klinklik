@@ -123,10 +123,10 @@ def create_initial_queue_entry(
     notes="",
 ):
     assert_transaction_active()
-    from core.migration_reconciliation import target_writes_enabled
+    from core.migration_reconciliation import target_writes_enabled_mig002
 
-    if not target_writes_enabled(organisation):
-        raise ValueError("The canonical QueueEntry writer is disabled by the MIG-001 cutover fence.")
+    if not target_writes_enabled_mig002(organisation):
+        raise ValueError("The canonical QueueEntry writer is disabled by the queue migration cutover fence.")
     if (
         visit.organisation_id != organisation.id
         or visit.facility_id != facility.id
@@ -156,10 +156,13 @@ def create_initial_queue_entry(
         priority="ROUTINE",
         visit_type=visit.visit_type,
         status=status,
+        state=QueueEntry.LEGACY_STATE_MAP.get(status, status),
         current_stage="PAYMENT" if status == "WAITING_PAYMENT" else "RECEPTION",
+        source_stage="RECEPTION",
         queue_time=now(),
         notes=notes,
         source_event_id=f"VISIT:{visit.id}:{queue_type}",
+        last_activity_at=now(),
     )
 
 
@@ -284,8 +287,28 @@ def check_in_patient(*, organisation, facility, actor, patient_id, department_id
 
 
 @transaction.atomic
-def claim_queue_entry(*, organisation, actor, queue_id, request=None):
-    entry = QueueEntry.objects.select_for_update().filter(id=queue_id, organisation=organisation).first()
+def claim_queue_entry(*, organisation, actor, queue_id, facility=None, request=None):
+    from core.models import MigrationCutover
+
+    # The legacy claim route remains available for pre-MIG-002 clients, but
+    # once the canonical reader/writer switch is on it must not write the
+    # shadow status independently of the QueueEntry transition owner.
+    canonical_switch = MigrationCutover.objects.filter(
+        organisation=organisation,
+        migration_id="MIG-002",
+        target_writes_enabled=True,
+    ).first()
+    if canonical_switch is not None:
+        return call_next_or_exact(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            queue_entry_id=queue_id,
+        )
+    queryset = QueueEntry.objects.select_for_update().filter(id=queue_id, organisation=organisation)
+    if facility is not None:
+        queryset = queryset.filter(facility=facility)
+    entry = queryset.first()
     if entry is None:
         raise ValueError("Queue entry was not found in this organisation.")
     if entry.status not in {"WAITING", "CALLED"}:
@@ -307,3 +330,41 @@ def claim_queue_entry(*, organisation, actor, queue_id, request=None):
         after={"status": entry.status, "current_stage": entry.current_stage},
     )
     return entry
+
+
+# S-02 keeps the historical scheduling.services import surface stable while
+# the canonical QueueEntry transition owner lives in scheduling.queue.
+from scheduling.queue import (  # noqa: E402  (deliberate compatibility exports)
+    QueueDomainError,
+    QueueStageRefusal,
+    QueueSweepResult,
+    assign,
+    call_next_or_exact,
+    cancel,
+    change_priority,
+    complete,
+    create_or_reuse_destination,
+    expire_sweep,
+    hold,
+    mark_ready_to_resume,
+    no_response,
+    requeue_same_entry,
+    resume,
+    start_service,
+    takeover,
+    transfer,
+)
+
+queue_call = call_next_or_exact
+queue_start_service = start_service
+queue_complete = complete
+queue_transfer = transfer
+queue_assign = assign
+queue_priority_change = change_priority
+queue_hold = hold
+queue_resume = resume
+queue_requeue = requeue_same_entry
+queue_no_response = no_response
+queue_cancel = cancel
+queue_takeover = takeover
+queue_expire_sweep = expire_sweep

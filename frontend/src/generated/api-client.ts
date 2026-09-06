@@ -28,6 +28,8 @@ export type MeResponse = { user: { id: string; username: string; email?: string;
 export type NoteAmend = { content: {  }; reason: string; };
 export type NoteResponse = { note: string; status: string; content: { consultation?: string; presenting_complaint?: string; hpi?: string; past_medical_history?: string; past_surgical_history?: string; family_history?: string; social_history?: string; general_examination?: string; cardiovascular_examination?: string; respiratory_examination?: string; abdominal_examination?: string; neurological_examination?: string; genitourinary_examination?: string; musculoskeletal_examination?: string; treatment_plan?: string; [key: string]: unknown; }; complaints: Array<{ text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; }>; etag: string; saved_at: string; current_version?: number; };
 export type NoteWrite = { content: {  }; complaints?: {  }; };
+export type OperationalQueueEnvelope = { entries: Array<{ id: string; visit_id?: string | null; patient_id?: string; patient_no: string; patient_name: string; sex: string; age?: string | null; queue_label: string; token: string; department_id: string; department_name: string; queue_type: string; state: string; status: string; current_stage: string; source_stage: string; priority: string; priority_reason: string; queue_time: string; called_at?: string | null; started_at?: string | null; service_started_at?: string | null; completed_at?: string | null; wait_seconds: number; service_seconds?: number | null; hold_reason: string; hold_ref?: string | null; hold_age_seconds?: number | null; call_attempts: number; no_show_count: number; assigned_user_id?: string | null; assigned_user_name?: string | null; called_by_id?: string | null; called_by_name?: string | null; served_by_id?: string | null; served_by_name?: string | null; handoff_note: string; version: number; stale: boolean; sla_minutes?: number | null; sla_breached: boolean; longest_wait_seconds?: number; triage_acuity?: string; test_names?: Array<string>; invoice_no?: string; amount_due?: string; currency?: string; invoice_status?: string; }>; count: number; row_count: number; longest_wait_seconds: number; page: number; page_size: number; has_next: boolean; server_time: string; refresh_after_seconds: number; };
+export type OperationalQueueRow = { id: string; visit_id?: string | null; patient_id?: string; patient_no: string; patient_name: string; sex: string; age?: string | null; queue_label: string; token: string; department_id: string; department_name: string; queue_type: string; state: string; status: string; current_stage: string; source_stage: string; priority: string; priority_reason: string; queue_time: string; called_at?: string | null; started_at?: string | null; service_started_at?: string | null; completed_at?: string | null; wait_seconds: number; service_seconds?: number | null; hold_reason: string; hold_ref?: string | null; hold_age_seconds?: number | null; call_attempts: number; no_show_count: number; assigned_user_id?: string | null; assigned_user_name?: string | null; called_by_id?: string | null; called_by_name?: string | null; served_by_id?: string | null; served_by_name?: string | null; handoff_note: string; version: number; stale: boolean; sla_minutes?: number | null; sla_breached: boolean; longest_wait_seconds?: number; triage_acuity?: string; test_names?: Array<string>; invoice_no?: string; amount_due?: string; currency?: string; invoice_status?: string; };
 export type PatientCheckInSummary = { patient: { id: string; patient_no: string; display_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth: string | null; version: number; }; outstanding_balance: string; outstanding_invoice_no: string | null; outstanding_visit_id: string | null; active_visit: { id: string; local_service_date: string; visit_type: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; state: "OPEN" | "IN_PROGRESS" | "CLOSED" | "CANCELLED_ERROR"; opened_at: string; version: number; } | null; active_queue_label: string | null; };
 export type PatientCreate = { first_name: string; middle_name?: string; last_name: string; sex?: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth?: string | null; phone?: string; email?: string; address?: string; village?: string; parish?: string; sub_county?: string; district?: string; next_of_kin_name?: string; next_of_kin_phone?: string; estimated_age_years?: number | null; estimated_age_months?: number | null; dob_estimated?: boolean; identifier?: {  }; next_of_kin?: {  }; };
 export type PatientDuplicateResponse = { duplicate_candidates: Array<{ id: string; patient_no: string; display_name: string; match_score: number; last_visit_date: string | null; last_seen_at: string | null; }>; next_action: "RESOLVE_DUPLICATE"; };
@@ -36,12 +38,26 @@ export type PatientLinkResponse = { id: string; status: string; };
 export type PatientRegister = { first_name: string; middle_name?: string; last_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth?: string | null; phone?: string; email?: string; address?: string; village?: string; parish?: string; sub_county?: string; district?: string; next_of_kin_name?: string; next_of_kin_phone?: string; estimated_age_years?: number | null; estimated_age_months?: number | null; dob_estimated?: boolean; identifier?: {  }; next_of_kin?: {  }; duplicate_resolution?: {  }; duplicate_override?: {  }; duplicate_override_reason?: string; };
 export type PatientRegisterResponse = { patient_id: string; next_action: "CHECK_IN"; };
 export type PaymentCreate = { amount: string; method: "CASH" | "MOBILE_MONEY" | "CARD" | "BANK"; reference?: string; };
+export type PublicBoardRow = { queue_entry_id: string; identity: string; queue_label: string; };
+export type QueueAssign = { queue_entry_id?: string; target_user_id: string; expected_version?: number; };
+export type QueueCall = { queue_entry_id?: string; department_id?: string; queue_type?: string; expected_version?: number; ordering_watermark?: string; out_of_order_reason?: string; };
+export type QueueCancel = { queue_entry_id?: string; reason: "LEFT_WITHOUT_BEING_SEEN" | "WRONG_QUEUE" | "DUPLICATE" | "SENT_HOME" | "SENT_ELSEWHERE" | "ROUTED_IN_ERROR" | "OTHER"; lwbs?: boolean; expected_version?: number; };
+export type QueueHistoryItem = { id: string; queue_label: string; department_id: string; department_name: string; queue_type: string; state: string; status: string; source_stage: string; queue_time: string; called_at?: string | null; called_by?: string | null; started_at?: string | null; served_by?: string | null; completed_at?: string | null; completed_by?: string | null; wait_seconds?: number | null; service_seconds?: number | null; priority: string; priority_reason: string; hold_reason: string; hold_ref?: string | null; terminal_reason?: string | null; removed_by?: string | null; removed_at?: string | null; version: number; };
+export type QueueLocation = { visit_id: string; state: string; label: string; current: {  } | null; return_obligations: Array<{  }>; };
+export type QueueMutationResponse = { queue_entry_id?: string | null; state?: string | null; version?: number; call_attempts?: number; no_show_count?: number; called_by_id?: string | null; served_by_id?: string | null; assigned_user_id?: string | null; source_queue_entry_id?: string | null; destination_queue_entry_id?: string | null; source_state?: string | null; destination_state?: string | null; priority?: string | null; expired_entry_ids?: Array<string>; exceptions?: Array<string>; closed_visit_ids?: Array<string>; review_visit_ids?: Array<string>; expired_count?: number; exception_count?: number; };
+export type QueueNoResponse = { queue_entry_id?: string; outcome?: "REQUEUE" | "NO_SHOW"; emergency_acknowledged?: boolean; expected_version?: number; };
+export type QueuePriority = { queue_entry_id?: string; priority: "EMERGENCY" | "URGENT" | "ROUTINE"; reason: string; expected_version?: number; };
+export type QueueRequeue = { queue_entry_id?: string; reason: string; expected_version?: number; };
+export type QueueSupervisorRow = { department_id: string; department_name: string; waiting_count: number; in_service_count: number; on_hold_count: number; longest_wait_seconds: number; median_wait_seconds: number; staff_serving: Array<string>; sla_breached: boolean; };
+export type QueueSweep = { local_service_day?: string; cutoff?: string; };
+export type QueueTakeover = { queue_entry_id?: string; new_user_id?: string; reason: string; expected_version?: number; observed_at?: string; };
+export type QueueTransfer = { source_queue_entry_id?: string; target_department_id: string; target_queue_type?: string; handoff_note?: string; reason?: string; expected_version?: number; };
 export type ReferralSource = { source_type: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; source_name?: string; expected_version?: number | null; };
 export type ReferralSourceResponse = { visit_id: string; version: number; };
 export type ServiceCatalog = { id: string; code: string; name: string; category?: string; description?: string; is_active?: boolean; prices: Array<{ id: string; price_list: string; amount: string; currency?: string; effective_from: string; effective_to?: string | null; is_active?: boolean; active?: boolean; source_version?: string; }>; };
 export type SessionResponse = { access_token: string; access_expires_at: string; user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Triage = { acuity?: "ROUTINE" | "URGENT" | "EMERGENCY"; chief_complaint?: string; observations?: {  }; vitals?: {  }; };
-export type TriageResponse = { id: string; queue_entry: { id: string; visit?: string | null; queue_label: string; patient: string; patient_name: string; department: string; department_name: string; queue_date: string; sequence: number; queue_type?: string; work_identity?: string; hold_reason?: string; priority?: string; priority_changed_at?: string | null; priority_reason?: string; visit_type?: string; status?: "WAITING" | "WAITING_PAYMENT" | "ON_HOLD" | "READY_TO_RESUME" | "CALLED" | "IN_TRIAGE" | "TRIAGED" | "IN_CONSULTATION" | "COMPLETED" | "CANCELLED"; current_stage?: string; arrival_at: string; queue_time?: string; called_at?: string | null; claimed_by?: string | null; claimed_at?: string | null; completed_at?: string | null; notes?: string; source_event_id?: string; version?: number; }; acuity: "ROUTINE" | "URGENT" | "EMERGENCY"; chief_complaint: string; observations: {  }; };
+export type TriageResponse = { id: string; queue_entry: { id: string; visit?: string | null; queue_label: string; patient: string; patient_name: string; department: string; department_name: string; queue_date: string; sequence: number; queue_type?: string; work_identity?: string; hold_reason?: string; hold_ref?: string | null; held_at?: string | null; terminal_reason?: string | null; priority?: string; priority_changed_at?: string | null; priority_reason?: string; visit_type?: string; status?: "WAITING" | "WAITING_PAYMENT" | "ON_HOLD" | "READY_TO_RESUME" | "CALLED" | "IN_TRIAGE" | "TRIAGED" | "IN_CONSULTATION" | "COMPLETED" | "CANCELLED" | "TRANSFERRED" | "LWBS" | "NO_SHOW" | "EXPIRED"; state?: "WAITING_PAYMENT" | "WAITING" | "CALLED" | "IN_SERVICE" | "ON_HOLD" | "READY_TO_RESUME" | "COMPLETED" | "TRANSFERRED" | "CANCELLED" | "LWBS" | "NO_SHOW" | "EXPIRED"; current_stage?: string; source_stage?: string; arrival_at: string; queue_time?: string; called_at?: string | null; called_by?: string | null; claimed_by?: string | null; claimed_at?: string | null; assigned_user?: string | null; served_by?: string | null; started_at?: string | null; service_started_at?: string | null; completed_at?: string | null; completed_by?: string | null; removed_at?: string | null; removed_by?: string | null; wait_seconds?: number | null; service_seconds?: number | null; call_attempts?: number; no_show_count?: number; last_activity_at?: string; notes?: string; source_event_id?: string; version?: number; }; acuity: "ROUTINE" | "URGENT" | "EMERGENCY"; chief_complaint: string; observations: {  }; };
 export type VisitCancelError = { reason: string; expected_version?: number | null; };
 export type VisitCancelErrorResponse = { visit_id: string; state: string; };
 export type VisitCheckIn = { patient_id: string; department_id?: string | null; visit_type?: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; payer_type?: "CASH" | "SELF_PAY_MOMO"; reason_for_visit?: string; referral_source_type?: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; referral_source_name?: string; price_list_id?: string | null; arrival_enquiry_id?: string | null; arrival_enquiry_version?: number | null; notes?: string; };
@@ -65,7 +81,7 @@ export type Patient = { id: string; patient_no: string; display_name: string; fi
 export type PatientDuplicateCandidate = { id: string; patient_no: string; display_name: string; match_score: number; last_visit_date: string | null; last_seen_at: string | null; };
 export type Payment = { id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "CARD" | "BANK"; reference: string; status: "POSTED" | "REVERSED"; received_by: string; received_at: string; };
 export type PresentingComplaint = { text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; };
-export type QueueEntry = { id: string; visit: string | null; queue_label: string; patient: string; patient_name: string; department: string; department_name: string; queue_date: string; sequence: number; queue_type: string; work_identity: string; hold_reason: string; priority: string; priority_changed_at: string | null; priority_reason: string; visit_type: string; status: "WAITING" | "WAITING_PAYMENT" | "ON_HOLD" | "READY_TO_RESUME" | "CALLED" | "IN_TRIAGE" | "TRIAGED" | "IN_CONSULTATION" | "COMPLETED" | "CANCELLED"; current_stage: string; arrival_at: string; queue_time: string; called_at: string | null; claimed_by: string | null; claimed_at: string | null; completed_at: string | null; notes: string; source_event_id: string; version: number; };
+export type QueueEntry = { id: string; visit_id: string | null; patient_id: string; patient_no: string; patient_name: string; sex: string; age: string | null; queue_label: string; token: string; department_id: string; department_name: string; queue_type: string; state: string; status: string; current_stage: string; source_stage: string; priority: string; priority_reason: string; queue_time: string; called_at: string | null; started_at: string | null; service_started_at: string | null; completed_at: string | null; wait_seconds: number; service_seconds: number | null; hold_reason: string; hold_ref: string | null; hold_age_seconds: number | null; call_attempts: number; no_show_count: number; assigned_user_id: string | null; assigned_user_name: string | null; called_by_id: string | null; called_by_name: string | null; served_by_id: string | null; served_by_name: string | null; handoff_note: string; version: number; stale: boolean; sla_minutes: number | null; sla_breached: boolean; longest_wait_seconds: number; triage_acuity: string; test_names: Array<string>; invoice_no: string; amount_due: string; currency: string; invoice_status: string; };
 export type Receipt = { receipt_no: string; invoice_no: string; patient_name: string; patient_no: string; amount: string; currency: string; method: string; reference: string | null; received_at: string; invoice_total: string; invoice_balance: string; printable_text: string; };
 export type Service = { id: string; code: string; name: string; category: string; description: string; is_active: boolean; prices: Array<{ id: string; price_list: string; amount: string; currency: string; effective_from: string; effective_to: string | null; is_active: boolean; active: boolean; source_version: string; }>; };
 export type Visit = { id: string; patient: string; patient_name: string; facility: string; local_service_date: string; visit_type: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; state: "OPEN" | "IN_PROGRESS" | "CLOSED" | "CANCELLED_ERROR"; closure_reason: string; reason_for_visit: string; opened_at: string; opened_by: string; in_progress_at: string | null; closed_at: string | null; closed_by: string | null; payer_binding_id: string | null; legacy_source_key: string | null; emergency_setup_pending: boolean; related_visit: string | null; slip_print_count: number; referral_source_type: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; referral_source_name: string; results_review: boolean; version: number; };
@@ -113,7 +129,49 @@ export type CreateAllergyEnteredInErrorResponse = AllergyStateResponse;
 export type CreateAllergyStatusWriteRequest = AllergyStatusWrite;
 export type CreateAllergyStatusWriteResponse = AllergyStateResponse;
 export type ListQueuesResponse = Array<QueueEntry>;
+export type QueueAssignRequest = QueueAssign;
+export type QueueAssignResponse = QueueMutationResponse;
+export type PublicBoardProjectionResponse = Array<PublicBoardRow>;
+export type QueueCallNextRequest = QueueCall;
+export type QueueCallNextResponse = QueueMutationResponse;
+export type QueueCallRequest = QueueCall;
+export type QueueCallResponse = QueueMutationResponse;
+export type QueueCancelRequest = QueueCancel;
+export type QueueCancelResponse = QueueMutationResponse;
+export type SystemQueueExpireSweepRequest = QueueSweep;
+export type SystemQueueExpireSweepResponse = QueueMutationResponse;
+export type QueueHistoryProjectionResponse = Array<QueueHistoryItem>;
+export type QueueLocationProjectionResponse = QueueLocation;
+export type QueueNoResponseRequest = QueueNoResponse;
+export type QueueNoResponseResponse = QueueMutationResponse;
+export type QueueOperationalProjectionResponse = OperationalQueueEnvelope;
+export type QueuePriorityProjectionResponse = Array<OperationalQueueRow>;
+export type QueuePriorityChangeRequest = QueuePriority;
+export type QueuePriorityChangeResponse = QueueMutationResponse;
+export type QueueRequeueRequest = QueueRequeue;
+export type QueueRequeueResponse = QueueMutationResponse;
+export type SupervisorQueueProjectionResponse = Array<QueueSupervisorRow>;
+export type QueueTakeoverRequest = QueueTakeover;
+export type QueueTakeoverResponse = QueueMutationResponse;
+export type QueueTransferRequest = QueueTransfer;
+export type QueueTransferResponse = QueueMutationResponse;
+export type QueueEntryAssignRequest = QueueAssign;
+export type QueueEntryAssignResponse = QueueMutationResponse;
+export type QueueExactCallRequest = QueueCall;
+export type QueueExactCallResponse = QueueMutationResponse;
+export type QueueEntryCancelRequest = QueueCancel;
+export type QueueEntryCancelResponse = QueueMutationResponse;
 export type CreateQueueClaimResponse = QueueEntry;
+export type QueueEntryNoResponseRequest = QueueNoResponse;
+export type QueueEntryNoResponseResponse = QueueMutationResponse;
+export type QueueEntryPriorityChangeRequest = QueuePriority;
+export type QueueEntryPriorityChangeResponse = QueueMutationResponse;
+export type QueueEntryRequeueRequest = QueueRequeue;
+export type QueueEntryRequeueResponse = QueueMutationResponse;
+export type QueueEntryTakeoverRequest = QueueTakeover;
+export type QueueEntryTakeoverResponse = QueueMutationResponse;
+export type QueueEntryTransferRequest = QueueTransfer;
+export type QueueEntryTransferResponse = QueueMutationResponse;
 export type CreateTriageRequest = Triage;
 export type CreateTriageResponse = TriageResponse;
 export type ListPatientCreatesResponse = Array<Patient>;
@@ -148,7 +206,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "067964e439bb0f754a040b0f852b6f44bb7297f48b84a79660d7da45c5103fd5";
+export const GENERATED_API_CONTRACT_SHA256 = "8bf79627461caaa0cd3bc3397c7635ba06638b42653296bb1056a5115b61a9b4";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -298,8 +356,128 @@ export const GENERATED_API_OPERATIONS = [
   },
   {
     "method": "POST",
+    "operationId": "queueAssign",
+    "path": "/api/v1/clinic/queue/assign/"
+  },
+  {
+    "method": "GET",
+    "operationId": "publicBoardProjection",
+    "path": "/api/v1/clinic/queue/board/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueCallNext",
+    "path": "/api/v1/clinic/queue/call-next/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueCall",
+    "path": "/api/v1/clinic/queue/call/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueCancel",
+    "path": "/api/v1/clinic/queue/cancel/"
+  },
+  {
+    "method": "POST",
+    "operationId": "systemQueueExpireSweep",
+    "path": "/api/v1/clinic/queue/expire-sweep/"
+  },
+  {
+    "method": "GET",
+    "operationId": "queueHistoryProjection",
+    "path": "/api/v1/clinic/queue/history/{visit_id}/"
+  },
+  {
+    "method": "GET",
+    "operationId": "queueLocationProjection",
+    "path": "/api/v1/clinic/queue/location/{visit_id}/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueNoResponse",
+    "path": "/api/v1/clinic/queue/no-response/"
+  },
+  {
+    "method": "GET",
+    "operationId": "queueOperationalProjection",
+    "path": "/api/v1/clinic/queue/operational/"
+  },
+  {
+    "method": "GET",
+    "operationId": "queuePriorityProjection",
+    "path": "/api/v1/clinic/queue/priority-projection/"
+  },
+  {
+    "method": "PATCH",
+    "operationId": "queuePriorityChange",
+    "path": "/api/v1/clinic/queue/priority/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueRequeue",
+    "path": "/api/v1/clinic/queue/requeue/"
+  },
+  {
+    "method": "GET",
+    "operationId": "supervisorQueueProjection",
+    "path": "/api/v1/clinic/queue/supervisor/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueTakeover",
+    "path": "/api/v1/clinic/queue/takeover/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueTransfer",
+    "path": "/api/v1/clinic/queue/transfer/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueEntryAssign",
+    "path": "/api/v1/clinic/queue/{id}/assign/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueExactCall",
+    "path": "/api/v1/clinic/queue/{id}/call/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueEntryCancel",
+    "path": "/api/v1/clinic/queue/{id}/cancel/"
+  },
+  {
+    "method": "POST",
     "operationId": "createQueueClaim",
     "path": "/api/v1/clinic/queue/{id}/claim/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueEntryNoResponse",
+    "path": "/api/v1/clinic/queue/{id}/no-response/"
+  },
+  {
+    "method": "PATCH",
+    "operationId": "queueEntryPriorityChange",
+    "path": "/api/v1/clinic/queue/{id}/priority/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueEntryRequeue",
+    "path": "/api/v1/clinic/queue/{id}/requeue/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueEntryTakeover",
+    "path": "/api/v1/clinic/queue/{id}/takeover/"
+  },
+  {
+    "method": "POST",
+    "operationId": "queueEntryTransfer",
+    "path": "/api/v1/clinic/queue/{id}/transfer/"
   },
   {
     "method": "POST",

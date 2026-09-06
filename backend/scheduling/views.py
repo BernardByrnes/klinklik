@@ -64,7 +64,11 @@ class QueueClaimView(TenantAPIView):
     def post(self, request, pk):
         try:
             entry = claim_queue_entry(
-                organisation=request.organisation, actor=request.user, queue_id=pk, request=request
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                queue_id=pk,
+                request=request,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

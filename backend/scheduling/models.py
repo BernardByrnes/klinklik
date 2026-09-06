@@ -175,6 +175,42 @@ class ArrivalEnquiry(FacilityScopedModel):
 
 
 class QueueEntry(FacilityScopedModel):
+    """The durable position of a Visit in one operational work stage.
+
+    ``status`` is retained as a legacy shadow for the pre-MIG-002 readers.
+    New queue code must use ``state`` and the transition services in
+    ``scheduling.services``.  The shadow is intentionally kept because the
+    older triage and reception slices still read it while their cutovers are
+    being drained.
+    """
+
+    STATE_CHOICES = [
+        ("WAITING_PAYMENT", "Waiting for payment"),
+        ("WAITING", "Waiting"),
+        ("CALLED", "Called"),
+        ("IN_SERVICE", "In service"),
+        ("ON_HOLD", "On hold"),
+        ("READY_TO_RESUME", "Ready to resume"),
+        ("COMPLETED", "Completed"),
+        ("TRANSFERRED", "Transferred"),
+        ("CANCELLED", "Cancelled"),
+        ("LWBS", "Left without being seen"),
+        ("NO_SHOW", "No show"),
+        ("EXPIRED", "Expired"),
+    ]
+    CANONICAL_STATES = frozenset(value for value, _ in STATE_CHOICES)
+    ACTIVE_STATES = frozenset(
+        {
+            "WAITING_PAYMENT",
+            "WAITING",
+            "CALLED",
+            "IN_SERVICE",
+            "ON_HOLD",
+            "READY_TO_RESUME",
+        }
+    )
+    TERMINAL_STATES = frozenset({"COMPLETED", "TRANSFERRED", "CANCELLED", "LWBS", "EXPIRED"})
+
     STATUS_CHOICES = [
         ("WAITING", "Waiting"),
         ("WAITING_PAYMENT", "Waiting for payment"),
@@ -186,7 +222,28 @@ class QueueEntry(FacilityScopedModel):
         ("IN_CONSULTATION", "In consultation"),
         ("COMPLETED", "Completed"),
         ("CANCELLED", "Cancelled"),
+        ("TRANSFERRED", "Transferred"),
+        ("LWBS", "Left without being seen"),
+        ("NO_SHOW", "No show"),
+        ("EXPIRED", "Expired"),
     ]
+
+    LEGACY_STATE_MAP = {
+        "WAITING": "WAITING",
+        "WAITING_PAYMENT": "WAITING_PAYMENT",
+        "ON_HOLD": "ON_HOLD",
+        "READY_TO_RESUME": "READY_TO_RESUME",
+        "CALLED": "CALLED",
+        "IN_TRIAGE": "IN_SERVICE",
+        "TRIAGED": "COMPLETED",
+        "IN_CONSULTATION": "IN_SERVICE",
+        "COMPLETED": "COMPLETED",
+        "TRANSFERRED": "TRANSFERRED",
+        "CANCELLED": "CANCELLED",
+        "LWBS": "LWBS",
+        "NO_SHOW": "NO_SHOW",
+        "EXPIRED": "EXPIRED",
+    }
 
     visit = models.ForeignKey(
         Visit,
@@ -202,15 +259,27 @@ class QueueEntry(FacilityScopedModel):
     queue_type = models.CharField(max_length=40, default="TRIAGE")
     work_identity = models.CharField(max_length=120, default="")
     hold_reason = models.CharField(max_length=120, blank=True)
+    hold_ref = models.CharField(max_length=120, null=True, blank=True)
+    held_at = models.DateTimeField(null=True, blank=True)
+    terminal_reason = models.CharField(max_length=120, null=True, blank=True)
     priority = models.CharField(max_length=20, default="ROUTINE")
     priority_changed_at = models.DateTimeField(null=True, blank=True)
     priority_reason = models.CharField(max_length=240, blank=True)
     visit_type = models.CharField(max_length=40, default="WALK_IN")
     status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="WAITING")
+    state = models.CharField(max_length=30, choices=STATE_CHOICES, default="WAITING")
     current_stage = models.CharField(max_length=40, default="RECEPTION")
+    source_stage = models.CharField(max_length=40, blank=True)
     arrival_at = models.DateTimeField(auto_now_add=True)
     queue_time = models.DateTimeField(default=now)
     called_at = models.DateTimeField(null=True, blank=True)
+    called_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="called_queue_entries",
+    )
     claimed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -219,7 +288,45 @@ class QueueEntry(FacilityScopedModel):
         related_name="claimed_queue_entries",
     )
     claimed_at = models.DateTimeField(null=True, blank=True)
+    assigned_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="assigned_queue_entries",
+    )
+    served_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="served_queue_entries",
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    # ``service_started_at`` is a read-compatible spelling used by the
+    # product story.  ``started_at`` remains the canonical PC-007 field.
+    service_started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="completed_queue_entries",
+    )
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="removed_queue_entries",
+    )
+    wait_seconds = models.PositiveBigIntegerField(null=True, blank=True)
+    service_seconds = models.PositiveBigIntegerField(null=True, blank=True)
+    call_attempts = models.PositiveIntegerField(default=0)
+    no_show_count = models.PositiveIntegerField(default=0)
+    last_activity_at = models.DateTimeField(default=now)
     notes = models.TextField(blank=True)
     source_event_id = models.CharField(max_length=120, default="")
     version = models.PositiveBigIntegerField(default=1)
@@ -235,21 +342,112 @@ class QueueEntry(FacilityScopedModel):
                 condition=models.Q(visit__isnull=False, work_identity__gt=""),
                 name="uniq_visit_queue_work_identity",
             ),
+            models.UniqueConstraint(
+                fields=["organisation", "visit", "department"],
+                condition=models.Q(
+                    visit__isnull=False,
+                    state__in=[
+                        "WAITING_PAYMENT",
+                        "WAITING",
+                        "CALLED",
+                        "IN_SERVICE",
+                        "ON_HOLD",
+                        "READY_TO_RESUME",
+                    ],
+                ),
+                name="uniq_active_queue_visit_department",
+            ),
+            models.UniqueConstraint(
+                fields=["organisation", "visit"],
+                condition=models.Q(visit__isnull=False, state="IN_SERVICE"),
+                name="uniq_in_service_queue_visit",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    state__in=[
+                        "WAITING_PAYMENT",
+                        "WAITING",
+                        "CALLED",
+                        "IN_SERVICE",
+                        "ON_HOLD",
+                        "READY_TO_RESUME",
+                        "COMPLETED",
+                        "TRANSFERRED",
+                        "CANCELLED",
+                        "LWBS",
+                        "NO_SHOW",
+                        "EXPIRED",
+                    ]
+                ),
+                name="queue_entry_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(call_attempts__gte=0, no_show_count__gte=0),
+                name="queue_entry_attempt_counts_nonnegative",
+            ),
         ]
         indexes = [
             models.Index(fields=["facility", "queue_date", "status"]),
+            models.Index(fields=["organisation", "facility", "department", "state", "priority", "queue_time"]),
+            models.Index(fields=["organisation", "visit", "state", "queue_time"]),
             models.Index(fields=["organisation", "patient", "created_at"]),
         ]
+
+    def save(self, *args, **kwargs):
+        """Keep old readers useful while making ``state`` authoritative.
+
+        Existing S-01/S-00 services still assign ``status``.  The legacy
+        TRIAGED and IN_* values have one deterministic MIG-002 meaning; no
+        timing, caller, or clinical facts are manufactured here.
+        """
+
+        synchronized_fields = set()
+        if self.status == "WAITING" and self.state != "WAITING":
+            # A caller supplying only the new canonical field should not be
+            # overwritten by the legacy field's default value.
+            self.status = self.state
+            synchronized_fields.add("status")
+        else:
+            status_state = self.LEGACY_STATE_MAP.get(self.status)
+            if status_state is not None and self.state != status_state:
+                self.state = status_state
+                synchronized_fields.add("state")
+            elif status_state is None and self.state in self.CANONICAL_STATES:
+                self.status = self.state
+                synchronized_fields.add("status")
+        if self.started_at is None and self.service_started_at is not None:
+            self.started_at = self.service_started_at
+            synchronized_fields.add("started_at")
+        elif self.service_started_at is None and self.started_at is not None:
+            self.service_started_at = self.started_at
+            synchronized_fields.add("service_started_at")
+        if self.called_by_id is None and self.claimed_by_id is not None:
+            self.called_by_id = self.claimed_by_id
+            synchronized_fields.add("called_by")
+        elif self.claimed_by_id is None and self.called_by_id is not None:
+            self.claimed_by_id = self.called_by_id
+            synchronized_fields.add("claimed_by")
+        if self.last_activity_at is None:
+            self.last_activity_at = now()
+            synchronized_fields.add("last_activity_at")
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | synchronized_fields
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("Queue entries are retained; use a terminal transition instead.")
 
     @property
     def queue_label(self):
         return f"{self.department.code}-{self.sequence:03d}"
 
     @property
-    def state(self):
-        """Compatibility alias while the legacy queue field is expanded in place."""
+    def token(self):
+        return self.queue_label
 
-        return self.status
+    @property
+    def queued_at(self):
+        return self.queue_time
 
 
 class Appointment(FacilityScopedModel):
