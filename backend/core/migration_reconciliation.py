@@ -2292,7 +2292,9 @@ def backfill_mig002(*, organisation, facility_id=None, batch_size=500, after_id=
     queryset = _mig002_population(organisation=organisation, facility_id=facility_id)
     if after_id:
         queryset = queryset.filter(id__gt=after_id)
-    queues = list(queryset.select_for_update()[:batch_size])
+    # Lock only the QueueEntry rows. The nullable Visit join cannot take part in
+    # a FOR UPDATE, and locking Department/Patient would widen the fence.
+    queues = list(queryset.select_for_update(of=("self",))[:batch_size])
     inspected = 0
     backfilled = 0
     exceptions = 0
@@ -2621,6 +2623,61 @@ def verify_mig002(*, organisation, facility_id=None):
     )
 
 
+def _require_mig002_database_guards():
+    """Verify the owner-installed queue guards without runtime DDL.
+
+    The application role has DML privileges only. Creating the constraints or a
+    global NOT NULL here would either fail or impose one tenant's cutover on
+    every other organisation, so the cutover only verifies what the schema
+    owner installed in ``scheduling.0007_s02_queue_database_guards``.
+    """
+
+    if connection.vendor != "postgresql":
+        return
+    missing = []
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conname FROM pg_constraint
+            WHERE conrelid = 'scheduling_queueentry'::regclass
+              AND conname IN ('queue_entry_state_valid', 'queue_entry_attempt_counts_nonnegative')
+            """
+        )
+        present_constraints = {row[0] for row in cursor.fetchall()}
+        cursor.execute(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE tablename = 'scheduling_queueentry'
+              AND indexname IN ('uniq_active_queue_visit_department', 'uniq_in_service_queue_visit')
+            """
+        )
+        present_indexes = {row[0] for row in cursor.fetchall()}
+        cursor.execute(
+            """
+            SELECT tgname FROM pg_trigger
+            WHERE tgrelid = 'scheduling_queueentry'::regclass
+              AND tgname = 'klin_klink_queue_state'
+              AND NOT tgisinternal
+            """
+        )
+        present_triggers = {row[0] for row in cursor.fetchall()}
+    for name in ("queue_entry_state_valid", "queue_entry_attempt_counts_nonnegative"):
+        if name not in present_constraints:
+            missing.append(name)
+    for name in ("uniq_active_queue_visit_department", "uniq_in_service_queue_visit"):
+        if name not in present_indexes:
+            missing.append(name)
+    if "klin_klink_queue_state" not in present_triggers:
+        missing.append("klin_klink_queue_state")
+    if missing:
+        raise ValueError(
+            "MIG-002 database guards are missing ("
+            + ", ".join(sorted(missing))
+            + "). Apply the owner migration first: "
+            "python backend/manage.py migrate scheduling 0007"
+        )
+
+
 def constrain_mig002(*, organisation):
     """Activate semantic database constraints only after E=0 is proven."""
 
@@ -2649,46 +2706,7 @@ def constrain_mig002(*, organisation):
     ):
         raise ValueError("MIG-002 constrain requires E=0 and two stable verification scans.")
 
-    if connection.vendor == "postgresql":
-        with connection.cursor() as cursor:
-            cursor.execute("ALTER TABLE scheduling_queueentry ALTER COLUMN state SET NOT NULL")
-            cursor.execute(
-                """
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_constraint WHERE conname = 'queue_entry_state_valid'
-                    ) THEN
-                        ALTER TABLE scheduling_queueentry
-                        ADD CONSTRAINT queue_entry_state_valid
-                        CHECK (state IN ('WAITING_PAYMENT','WAITING','CALLED','IN_SERVICE',
-                                         'ON_HOLD','READY_TO_RESUME','COMPLETED','TRANSFERRED',
-                                         'CANCELLED','LWBS','NO_SHOW','EXPIRED'));
-                    END IF;
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_constraint WHERE conname = 'queue_entry_attempt_counts_nonnegative'
-                    ) THEN
-                        ALTER TABLE scheduling_queueentry
-                        ADD CONSTRAINT queue_entry_attempt_counts_nonnegative
-                        CHECK (call_attempts >= 0 AND no_show_count >= 0);
-                    END IF;
-                END $$;
-                """
-            )
-            cursor.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uniq_active_queue_visit_department
-                ON scheduling_queueentry (organisation_id, visit_id, department_id)
-                WHERE visit_id IS NOT NULL AND state IN
-                ('WAITING_PAYMENT','WAITING','CALLED','IN_SERVICE','ON_HOLD','READY_TO_RESUME')
-                """
-            )
-            cursor.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uniq_in_service_queue_visit
-                ON scheduling_queueentry (organisation_id, visit_id)
-                WHERE visit_id IS NOT NULL AND state = 'IN_SERVICE'
-                """
-            )
+    _require_mig002_database_guards()
     switch.phase = "CONSTRAINED"
     switch.target_reads_enabled = True
     switch.target_writes_enabled = True
@@ -2917,7 +2935,7 @@ def resolve_mig002_reconciliation(*, organisation, reconciliation_id, actor, rea
     ).first()
     if evidence is None:
         raise ValueError("MIG-002 evidence was not found in this organisation.")
-    queue = QueueEntry.objects.select_for_update().select_related("visit", "department").filter(
+    queue = QueueEntry.objects.select_for_update(of=("self",)).select_related("visit", "department").filter(
         organisation=organisation,
         id=evidence.legacy_pk,
         **({"facility_id": evidence.facility_id} if evidence.facility_id else {}),

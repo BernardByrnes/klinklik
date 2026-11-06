@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type Keybo
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiRequestError, apiRequest } from "../../../lib/api";
+import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import {
@@ -18,7 +18,8 @@ import {
   EncounterDisposition,
   FollowUpRecommendation,
   PresentingComplaint,
-  LegacyQueueEntry,
+  OperationalQueueEnvelope,
+  OperationalQueueRow,
 } from "../../../features/clinic";
 import type {
   AllergyStateResponse,
@@ -182,6 +183,7 @@ type DraftMutationVariables = {
 
 type StartEncounterVariables = {
   queueEntryId: string;
+  version: number;
   session: number;
 };
 type NoteSaveResponse = NoteResponse;
@@ -1872,7 +1874,7 @@ function TreatmentSection({
 function ConsultationsWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
-  const queueKey = useProtectedQueryKey("queue", "TRIAGED,IN_CONSULTATION");
+  const queueKey = useProtectedQueryKey("queue", "CONSULTATION");
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("entry");
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
@@ -2003,11 +2005,19 @@ function ConsultationsWorkspace() {
 
   const queue = useQuery({
     queryKey: queueKey,
-    queryFn: () => apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/?status=TRIAGED,IN_CONSULTATION"),
+    queryFn: async () => {
+      // Canonical consultation worklist. The completed TRIAGE source row is
+      // never a consultation action, and a 503 leaves the workspace with no
+      // actionable rows instead of falling back to the legacy shadow.
+      const envelope = await apiRequest<OperationalQueueEnvelope>(
+        "/api/v1/clinic/queue/operational/?queue_type=CONSULTATION&state=WAITING,CALLED,IN_SERVICE",
+      );
+      return envelope.entries;
+    },
     enabled: can("clinical.note.create"),
   });
 
-  const selected = useMemo(
+  const selected: OperationalQueueRow | null = useMemo(
     () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
     [queue.data, selectedId],
   );
@@ -2052,7 +2062,7 @@ function ConsultationsWorkspace() {
   }
 
   function currentDiagnosisContext(): DiagnosisContext | null {
-    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+    if (!encounter?.id || !selected?.patient_id || !encounterEtagRef.current) {
       setDiagnosisMutationError("The current consultation revision is unavailable. Reload before changing diagnoses.");
       return null;
     }
@@ -2061,7 +2071,7 @@ function ConsultationsWorkspace() {
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2078,7 +2088,7 @@ function ConsultationsWorkspace() {
     );
   }
   function currentDispositionContext(): DispositionContext | null {
-    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+    if (!encounter?.id || !selected?.patient_id || !encounterEtagRef.current) {
       setDispositionError("The current consultation revision is unavailable. Reload before saving the disposition.");
       return null;
     }
@@ -2087,7 +2097,7 @@ function ConsultationsWorkspace() {
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2105,7 +2115,7 @@ function ConsultationsWorkspace() {
   }
 
   function currentFollowUpContext(): FollowUpContext | null {
-    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+    if (!encounter?.id || !selected?.patient_id || !encounterEtagRef.current) {
       setFollowUpError("The current consultation revision is unavailable. Reload before saving the follow-up.");
       return null;
     }
@@ -2114,7 +2124,7 @@ function ConsultationsWorkspace() {
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2131,12 +2141,12 @@ function ConsultationsWorkspace() {
     );
   }
   function currentAllergyContext(): AllergyContext | null {
-    if (!encounter?.id || !selected?.patient || !encounter.allergy_state_etag) {
+    if (!encounter?.id || !selected?.patient_id || !encounter.allergy_state_etag) {
       setAllergyMutationError("The current allergy state is unavailable. Reload the consultation before trying again.");
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2490,7 +2500,7 @@ function ConsultationsWorkspace() {
     }]);
   }
 
-  function selectEntry(entry: LegacyQueueEntry) {
+  function selectEntry(entry: OperationalQueueRow) {
     if (
       entry.id !== selectedId &&
       hasUnsavedContent() &&
@@ -2524,7 +2534,7 @@ function ConsultationsWorkspace() {
     authoritativeComplaintsRef.current = [];
     complaintsDirtyRef.current = false;
     selectedQueueEntryIdRef.current = entry.id;
-    activePatientIdRef.current = entry.patient;
+    activePatientIdRef.current = entry.patient_id ?? "";
     activeEncounterIdRef.current = null;
     signGuardErrorRef.current = null;
     allergyFormDirtyRef.current = false;
@@ -2580,11 +2590,33 @@ function ConsultationsWorkspace() {
     setError("");
   }
 
+  const encounterIntentRef = useRef<{
+    key: string;
+    queueEntryId: string;
+    version: number;
+  } | null>(null);
+
+  function encounterIntentKey(queueEntryId: string, version: number) {
+    // One idempotency key per intent: the same consultation row at the same
+    // version. A refreshed row version is a new action and gets a new key.
+    const current = encounterIntentRef.current;
+    if (current && current.queueEntryId === queueEntryId && current.version === version) {
+      return current.key;
+    }
+    const key = newIdempotencyKey("encounter-open");
+    encounterIntentRef.current = { key, queueEntryId, version };
+    return key;
+  }
+
   const startEncounter = useMutation<Encounter, unknown, StartEncounterVariables>({
-    mutationFn: ({ queueEntryId }) =>
+    mutationFn: ({ queueEntryId, version }) =>
       apiRequest<Encounter>("/api/v1/clinic/encounters/", {
         method: "POST",
-        body: JSON.stringify({ queue_entry_id: queueEntryId }),
+        headers: {
+          "If-Match": `"${version}"`,
+          "Idempotency-Key": encounterIntentKey(queueEntryId, version),
+        },
+        body: JSON.stringify({ queue_entry_id: queueEntryId, expected_version: version }),
       }),
     onSuccess: (created, variables) => {
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
@@ -2600,6 +2632,16 @@ function ConsultationsWorkspace() {
       setError("");
     },
     onError: (reason, variables) => {
+      // A stale or already-started row is not retried with the same intent;
+      // refresh the scoped worklist so the next action uses the returned
+      // version.
+      if (
+        reason instanceof ApiRequestError &&
+        (reason.status === 409 || reason.status === 412)
+      ) {
+        encounterIntentRef.current = null;
+        queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
+      }
       if (
         variables.session !== draftSessionRef.current ||
         selectedQueueEntryIdRef.current !== variables.queueEntryId
@@ -2612,8 +2654,13 @@ function ConsultationsWorkspace() {
 
   function startCurrentEncounter() {
     const queueEntryId = selected?.id;
-    if (!queueEntryId) return;
-    startEncounter.mutate({ queueEntryId, session: draftSessionRef.current });
+    const version = selected?.version;
+    if (!queueEntryId || typeof version !== "number") return;
+    startEncounter.mutate({
+      queueEntryId,
+      version,
+      session: draftSessionRef.current,
+    });
   }
 
   const allergyStatusMutation = useMutation<AllergyStateResponse, unknown, AllergyStatusMutationVariables>({
@@ -4244,7 +4291,7 @@ function ConsultationsWorkspace() {
                       }`}
                     >
                       <span className="pl-2 flex items-center gap-3 flex-1 min-w-0">
-                        <SequenceCircle value={entry.sequence || index + 1} index={index} />
+                        <SequenceCircle value={entry.token || index + 1} index={index} />
                         <span className="flex-1 min-w-0 leading-tight">
                           <span className="block text-[13px] font-semibold text-ink">{entry.patient_name}</span>
                           <span className="mt-0.5 block text-[11.5px] font-medium text-muted">
@@ -4256,7 +4303,7 @@ function ConsultationsWorkspace() {
                       </span>
                       <span className="pr-2 text-right leading-tight">
                         <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-                        <span className="mt-1 block text-[10.5px] font-medium text-muted">{formatTime(entry.arrival_at)}</span>
+                        <span className="mt-1 block text-[10.5px] font-medium text-muted">{formatTime(entry.queue_time)}</span>
                       </span>
                     </button>
                   </li>
@@ -4274,7 +4321,7 @@ function ConsultationsWorkspace() {
                 aria-label="Patient and encounter context"
                 className="flex items-start gap-3 rounded-[14px] bg-surface-muted border border-line-soft p-4"
               >
-                <SequenceCircle value={selected.sequence || "•"} index={2} />
+                <SequenceCircle value={selected.token || "•"} index={2} />
                 <div className="leading-tight">
                   <p className="text-[14px] font-bold text-ink">{selected.patient_name}</p>
                   <p className="mt-1 text-[11.5px] font-medium text-muted">
@@ -4282,7 +4329,7 @@ function ConsultationsWorkspace() {
                     <span className="mx-0.5">•</span>
                     {selected.department_name}
                     <span className="mx-0.5">•</span>
-                    Arrived {formatTime(selected.arrival_at)}
+                    Arrived {formatTime(selected.queue_time)}
                   </p>
                 </div>
                 {encounter ? (
@@ -4502,7 +4549,7 @@ function ConsultationsWorkspace() {
                       <pre className="mt-2 whitespace-pre-wrap font-sans text-[12.5px] leading-relaxed text-secondary">{note}</pre>
                     </div>
                     {can("billing.invoice.create") ? (
-                      <Link href={`/billing?patient=${selected.patient}&encounter=${encounter.id}`}>
+                      <Link href={`/billing?patient=${selected.patient_id}&encounter=${encounter.id}`}>
                         <Button>Create invoice</Button>
                       </Link>
                     ) : (

@@ -136,7 +136,10 @@ def _lock_entry(*, organisation, facility=None, queue_entry_id=None, entry_id=No
     identifier = queue_entry_id or entry_id
     if identifier is None:
         raise _error("QUEUE_ENTRY_REQUIRED", "A queue entry is required.", status_code=400)
-    queryset = QueueEntry.objects.select_for_update().filter(
+    # Lock only the QueueEntry row. The Visit link is nullable, so a plain
+    # FOR UPDATE over this join is rejected by PostgreSQL ("nullable side of an
+    # outer join") and would also take incidental locks on Department/Patient.
+    queryset = QueueEntry.objects.select_for_update(of=("self",)).filter(
         organisation_id=_organisation_id(organisation),
         id=identifier,
     )

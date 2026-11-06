@@ -228,6 +228,14 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: python backend/manage.py migrate --noinput
       - run: python backend/manage.py seed_demo
+      - name: Cut over MIG-002 for the synthetic organisation
+        run: |
+          org_id="$(python backend/manage.py shell -c 'from tenancy.models import Organisation; print(Organisation.objects.get(slug="clinicopus-demo").pk)' | tail -n 1)"
+          test -n "$org_id"
+          python backend/manage.py mig002 inventory --organisation "$org_id"
+          python backend/manage.py mig002 backfill --organisation "$org_id"
+          python backend/manage.py mig002 verify --organisation "$org_id"
+          python backend/manage.py mig002 cutover --organisation "$org_id"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
