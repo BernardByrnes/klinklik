@@ -47,6 +47,11 @@ type ReceiptState = {
   loading: boolean;
 };
 
+type PaymentContext = {
+  origin: AuthoritySnapshot;
+  visitId: string | null;
+};
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message.includes("permission")) {
     return "You don't have permission to perform this action.";
@@ -82,6 +87,12 @@ function BillingWorkspace() {
   const [method, setMethod] = useState("CASH");
   const [reference, setReference] = useState("");
   const [receiptState, setReceiptState] = useState<ReceiptState | null>(null);
+  // The payment whose post-payment invoice refresh has not yet been confirmed.
+  // No new collection may open until that refresh returns for the same Visit.
+  const [postPaymentGate, setPostPaymentGate] = useState<{
+    invoiceId: string;
+    paidAt: number;
+  } | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -158,21 +169,30 @@ function BillingWorkspace() {
       ? visitInvoice.data
       : null
     : selectedInvoice;
-  const payable =
-    activeInvoice !== null &&
-    (activeInvoice.status === "ISSUED" || activeInvoice.status === "PARTIALLY_PAID") &&
-    Number(activeInvoice.balance) > 0;
   const canRecordPayment = can("billing.payment.record");
   const visitInvoiceMissing =
     visitInvoice.isError &&
     visitInvoice.error instanceof ApiRequestError &&
     visitInvoice.error.status === 404;
+
+  // A cached invoice may still identify a receipt, but it may only authorise a
+  // new payment once the lookup has succeeded for this exact Visit and, after a
+  // posted payment, once the refresh that follows it has actually returned.
+  const lookupConfirmed =
+    visitInvoice.isSuccess &&
+    (!postPaymentGate || visitInvoice.dataUpdatedAt > postPaymentGate.paidAt);
+  const collectionReady = !focused || lookupConfirmed;
+  const payable =
+    collectionReady &&
+    activeInvoice !== null &&
+    (activeInvoice.status === "ISSUED" || activeInvoice.status === "PARTIALLY_PAID") &&
+    Number(activeInvoice.balance) > 0;
   const activeReceipt =
     receiptState && activeInvoice && receiptState.invoiceId === activeInvoice.id
       ? receiptState
       : null;
 
-  const initializedInvoiceRef = useRef<string | null>(null);
+  const initializedInvoiceRef = useRef<{ id: string; balance: string } | null>(null);
   // The invoice whose posted payment is being reconciled. A receipt response is
   // only applied while this still names the same invoice and the authority that
   // submitted it is current.
@@ -182,23 +202,48 @@ function BillingWorkspace() {
   // effect so a response cannot slip through between commit and effect.
   const visitContextRef = useRef<string | null>(focusedVisitId);
   visitContextRef.current = focusedVisitId;
+  // Latest payable invoice, so a result for invoice A cannot render while the
+  // cashier has selected invoice B in the ordinary list.
+  const activeInvoiceIdRef = useRef<string | null>(activeInvoice?.id ?? null);
+  activeInvoiceIdRef.current = activeInvoice?.id ?? null;
+
+  function isCurrentPaymentContext(context: PaymentContext | undefined, invoiceId: string) {
+    return (
+      context !== undefined &&
+      isCurrentAuthority(context.origin) &&
+      visitContextRef.current === context.visitId &&
+      activeInvoiceIdRef.current === invoiceId
+    );
+  }
+
+  function isCurrentReceipt(invoiceId: string, origin: AuthoritySnapshot) {
+    return (
+      isCurrentAuthority(origin) &&
+      activeInvoiceIdRef.current === invoiceId &&
+      receiptTargetRef.current === invoiceId
+    );
+  }
 
   useEffect(() => {
     // A different Visit, facility, or authority must never inherit the previous
     // receipt, notice, or prefilled amount.
     receiptTargetRef.current = null;
     setReceiptState(null);
+    setPostPaymentGate(null);
     setNotice("");
     setError("");
     initializedInvoiceRef.current = null;
   }, [focused, focusedVisitId, currentFacility?.id]);
 
   useEffect(() => {
-    if (!focused || !activeInvoice) return;
-    if (initializedInvoiceRef.current === activeInvoice.id) return;
-    initializedInvoiceRef.current = activeInvoice.id;
+    // Prefill only from a confirmed balance, and again whenever that confirmed
+    // balance changes (a payment, then the refresh that follows it).
+    if (!focused || !activeInvoice || !collectionReady) return;
+    const prefilled = initializedInvoiceRef.current;
+    if (prefilled?.id === activeInvoice.id && prefilled.balance === activeInvoice.balance) return;
+    initializedInvoiceRef.current = { id: activeInvoice.id, balance: activeInvoice.balance };
     setPaymentAmount(activeInvoice.balance);
-  }, [focused, activeInvoice]);
+  }, [focused, activeInvoice, collectionReady]);
 
   async function loadReceipt(invoiceId: string, origin: AuthoritySnapshot) {
     setReceiptState((current) =>
@@ -210,11 +255,11 @@ function BillingWorkspace() {
       const data = await apiRequest<Receipt>(
         `/api/v1/billing/invoices/${invoiceId}/receipt/`,
       );
-      if (!isCurrentAuthority(origin) || receiptTargetRef.current !== invoiceId) return;
+      if (!isCurrentReceipt(invoiceId, origin)) return;
       setReceiptState({ invoiceId, data, error: "", loading: false });
       setNotice(`Payment recorded. Receipt ${data.receipt_no}.`);
     } catch (reason) {
-      if (!isCurrentAuthority(origin) || receiptTargetRef.current !== invoiceId) return;
+      if (!isCurrentReceipt(invoiceId, origin)) return;
       setReceiptState({
         invoiceId,
         data: null,
@@ -256,7 +301,7 @@ function BillingWorkspace() {
         method: "POST",
         body: JSON.stringify({ amount: paymentAmount, method, ...(reference.trim() ? { reference: reference.trim() } : {}) }),
       }),
-    onMutate: () => ({
+    onMutate: (): PaymentContext => ({
       origin: getAuthoritySnapshot(),
       visitId: visitContextRef.current,
     }),
@@ -265,14 +310,15 @@ function BillingWorkspace() {
       // a failed receipt read must never read back as a failed payment.
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
-      if (
-        !context ||
-        !isCurrentAuthority(context.origin) ||
-        visitContextRef.current !== context.visitId
-      ) {
+      if (!isCurrentPaymentContext(context, invoiceId)) {
         // The cashier already moved on; the committed payment stays recorded
         // but nothing from this result may render on the new context.
         return;
+      }
+      if (focused) {
+        // A new collection stays closed until the refresh for this payment has
+        // returned, so a stale balance can never reopen the old form.
+        setPostPaymentGate({ invoiceId, paidAt: Date.now() });
       }
       receiptTargetRef.current = invoiceId;
       setReceiptState({ invoiceId, data: null, error: "", loading: true });
@@ -281,13 +327,8 @@ function BillingWorkspace() {
       setReference("");
       void loadReceipt(invoiceId, context.origin);
     },
-    onError: (reason, _invoiceId, context) => {
-      if (
-        context &&
-        (!isCurrentAuthority(context.origin) || visitContextRef.current !== context.visitId)
-      ) {
-        return;
-      }
+    onError: (reason, invoiceId, context) => {
+      if (!isCurrentPaymentContext(context, invoiceId)) return;
       setNotice("");
       setError(errorMessage(reason));
     },
@@ -448,6 +489,7 @@ function BillingWorkspace() {
                               setReceiptState(null);
                               receiptTargetRef.current = null;
                               setNotice("");
+                              setError("");
                             }}
                           >
                             {active ? "Selected" : "Collect"}
@@ -613,6 +655,16 @@ function BillingWorkspace() {
                       <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
                       This invoice is paid in full.
                     </p>
+                  ) : !collectionReady ? (
+                    <p
+                      className="rounded-[14px] border border-line bg-surface-muted px-4 py-3 text-[12.5px] font-medium text-secondary"
+                      role="status"
+                      aria-busy={visitInvoice.isFetching}
+                    >
+                      {visitInvoice.isError
+                        ? "The invoice balance could not be refreshed. Retry the invoice lookup above before collecting again."
+                        : "Refreshing the invoice balance…"}
+                    </p>
                   ) : payable && canRecordPayment ? (
                     <div className="grid gap-4 sm:grid-cols-2">
                       <Field label={`Amount (${activeInvoice.currency})`} htmlFor="payment-amount">
@@ -717,11 +769,9 @@ function BillingWorkspace() {
                   onClick={() => {
                     setReceiptState(null);
                     receiptTargetRef.current = null;
-                    if (focused) {
-                      if (activeInvoice) setPaymentAmount(activeInvoice.balance);
-                    } else {
-                      setSelectedInvoice(null);
-                    }
+                    // The form only reopens once the confirmed balance is in
+                    // hand; the prefill effect supplies it from that refresh.
+                    if (!focused) setSelectedInvoice(null);
                   }}
                 >
                   {focused ? "Done" : "Done — collect another payment"}

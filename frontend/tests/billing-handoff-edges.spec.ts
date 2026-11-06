@@ -31,6 +31,7 @@ function apiHeaders(session: ApiSession) {
 
 async function newChargeableVisit(page: Page, session: ApiSession, label: string) {
   const suffix = `${Date.now().toString().slice(-6)}${Math.trunc(Math.random() * 1000)}`;
+  const displayName = `${label} Edge${suffix}`;
   const patient = await page.request.post(`${API}/api/v1/patients/`, {
     headers: apiHeaders(session),
     data: {
@@ -50,7 +51,11 @@ async function newChargeableVisit(page: Page, session: ApiSession, label: string
   expect(checkIn.ok()).toBeTruthy();
   const result = (await checkIn.json()) as CheckInResult;
   expect(result.invoice_id).toBeTruthy();
-  return { visitId: result.visit_id, invoiceId: result.invoice_id as string };
+  return {
+    visitId: result.visit_id,
+    invoiceId: result.invoice_id as string,
+    displayName,
+  };
 }
 
 async function readInvoice(page: Page, invoiceId: string) {
@@ -226,4 +231,128 @@ test("a malformed Visit link never opens an invoice for payment", async ({ page 
   await expect(page.getByRole("heading", { name: "Visit invoice" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Post payment" })).toBeVisible();
   expect(lookups.some((url) => url.includes(`/invoices/by-visit/${visitId}/`))).toBe(true);
+});
+
+test("a failed invoice refresh keeps the payment form closed", async ({ page }) => {
+  const session = await signIn(page);
+  const { visitId, invoiceId } = await newChargeableVisit(page, session, "Stale");
+
+  const paymentPosts = countPaymentPosts(page);
+  let lookupMode: "allow" | "fail" | "hold" = "allow";
+  let releaseLookup: (() => Promise<void>) | null = null;
+  await page.route(/\/api\/v1\/billing\/invoices\/by-visit\/[^/]+\/$/, async (route) => {
+    if (lookupMode === "fail") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Invoice refresh unavailable." }),
+      });
+      return;
+    }
+    if (lookupMode === "hold") {
+      const response = await route.fetch();
+      await new Promise<void>((resolve) => {
+        releaseLookup = async () => {
+          try {
+            await route.fulfill({ response });
+          } finally {
+            resolve();
+          }
+        };
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/billing?visit=${visitId}`);
+  await expect(page.getByRole("button", { name: "Post payment" })).toBeVisible();
+
+  // The refresh that follows the payment fails, so the balance is unconfirmed.
+  lookupMode = "fail";
+  const amount = page.getByLabel(/^Amount \(/);
+  await amount.fill("10000");
+  await page.getByRole("button", { name: "Post payment" }).click();
+  await expect(page.getByText(/Payment recorded\. Receipt RCT-/)).toBeVisible();
+  await expect(page.getByText("The Visit invoice could not be loaded.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(
+    page.getByText("The invoice balance could not be refreshed.", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Post payment" })).toHaveCount(0);
+  expect(paymentPosts).toHaveLength(1);
+
+  // A held refresh must not reopen the form either.
+  lookupMode = "hold";
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Post payment" })).toHaveCount(0);
+  await expect.poll(() => Boolean(releaseLookup)).toBe(true);
+  await releaseLookup!();
+
+  await expect(page.getByRole("button", { name: "Post payment" })).toBeVisible();
+  await expect(page.getByLabel(/^Amount \(/)).toHaveValue("20000.00");
+  expect(paymentPosts).toHaveLength(1);
+
+  const settled = await readInvoice(page, invoiceId);
+  expect(settled.payments).toHaveLength(1);
+  expect(settled.amount_paid).toBe("10000.00");
+});
+
+test("a payment result stays out of the ordinary list after a selection change", async ({
+  page,
+}) => {
+  const session = await signIn(page);
+  const first = await newChargeableVisit(page, session, "ListA");
+  const second = await newChargeableVisit(page, session, "ListB");
+
+  const paymentPosts = countPaymentPosts(page);
+  let releasePayment: (() => Promise<void>) | null = null;
+  let paymentProcessed: (() => void) | null = null;
+  const processed = new Promise<void>((resolve) => {
+    paymentProcessed = resolve;
+  });
+  await page.route(/\/api\/v1\/billing\/invoices\/[^/]+\/pay\/$/, async (route) => {
+    const response = await route.fetch();
+    paymentProcessed?.();
+    await new Promise<void>((resolve) => {
+      releasePayment = async () => {
+        try {
+          await route.fulfill({ response });
+        } finally {
+          resolve();
+        }
+      };
+    });
+  });
+
+  await page.goto("/billing");
+  const firstRow = page.getByRole("listitem").filter({ hasText: first.displayName });
+  await expect(firstRow).toBeVisible();
+  await firstRow.getByRole("button", { name: "Collect" }).click();
+  await expect(page.getByRole("button", { name: "Post payment" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Post payment" }).click();
+  await processed;
+
+  // Move to the other invoice while the first payment's response is held.
+  const secondRow = page.getByRole("listitem").filter({ hasText: second.displayName });
+  await secondRow.getByRole("button", { name: "Collect" }).click();
+  await expect(secondRow.getByRole("button", { name: "Selected" })).toBeVisible();
+
+  expect(releasePayment).not.toBeNull();
+  await releasePayment!();
+  await page.waitForTimeout(500);
+
+  // The second invoice keeps the panel; nothing from the first may render.
+  await expect(secondRow.getByRole("button", { name: "Selected" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Post payment" })).toBeVisible();
+  await expect(page.getByText(/Payment recorded/)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Receipt" })).toHaveCount(0);
+  expect(paymentPosts).toHaveLength(1);
+  expect(paymentPosts[0]).toContain(first.invoiceId);
+
+  const settled = await readInvoice(page, first.invoiceId);
+  expect(settled.payments).toHaveLength(1);
+  expect(settled.status).toBe("PAID");
 });
