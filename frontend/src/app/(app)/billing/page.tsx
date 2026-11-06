@@ -266,159 +266,159 @@ function BillingWorkspace() {
           ) : (
             <>
               <Card>
-              <div className="px-5 pt-5 pb-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h2 className="text-[15px] font-bold text-ink">Awaiting payment ({invoices.data?.length ?? 0})</h2>
-                </div>
-                <div className="relative mt-3">
-                  <IconSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 h-[18px] w-[18px] text-muted" />
-                  <TextInput
-                    className="pl-11"
-                    placeholder="Find by invoice number, patient name, or patient number…"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    aria-label="Search invoices"
-                  />
-                </div>
-              </div>
-
-              {invoices.isLoading ? (
-                <div className="px-5 pb-5 space-y-4" aria-busy="true" aria-label="Loading invoices">
-                  {Array.from({ length: 4 }).map((_, index) => (
-                    <div key={index} className="h-12 animate-pulse rounded-[10px] bg-line-soft" />
-                  ))}
-                </div>
-              ) : invoices.isError ? (
-                <EmptyState
-                  icon={<IconBilling className="h-5 w-5" />}
-                  title="Invoices could not be loaded."
-                  action={<Button variant="secondary" onClick={() => invoices.refetch()}>Retry</Button>}
-                />
-              ) : (invoices.data ?? []).length === 0 ? (
-                <EmptyState
-                  icon={<IconBilling className="h-5 w-5" />}
-                  title="No unpaid invoices found."
-                  hint={debouncedSearch ? "Try a different invoice number or patient name." : "Invoices appear here once they are issued."}
-                />
-              ) : (
-                <ul className="px-5 pb-2 divide-y divide-line-soft">
-                  {(invoices.data ?? []).map((invoice) => {
-                    const badge = invoiceStatusBadge(invoice.status);
-                    const active = selectedInvoice?.id === invoice.id;
-                    return (
-                      <li key={invoice.id} className="flex flex-wrap items-center gap-3 py-3">
-                        <div className="flex-1 min-w-0 leading-tight">
-                          <div className="text-[13px] font-semibold text-ink">
-                            {invoice.invoice_no}
-                            <span className="mx-1 text-muted">·</span>
-                            <span className="font-medium">{invoice.patient_name}</span>
-                          </div>
-                          <div className="mt-0.5 text-[11.5px] font-medium text-muted">
-                            Issued {formatDate(invoice.issued_at)}
-                            <span className="mx-0.5">•</span>
-                            Total {invoice.currency} {invoice.total}
-                          </div>
-                        </div>
-                        <div className="text-right leading-tight">
-                          <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-                          <div className="mt-1 text-[11px] font-semibold text-ink">
-                            Balance {invoice.currency} {invoice.balance}
-                          </div>
-                        </div>
-                        <Button
-                          variant="small-secondary"
-                          aria-pressed={active}
-                          className={active ? "bg-primary-soft text-primary-text border-primary-soft" : ""}
-                          onClick={() => {
-                            setSelectedInvoice(invoice);
-                            setPaymentAmount(invoice.balance);
-                            setReceipt(null);
-                            setNotice("");
-                          }}
-                        >
-                          {active ? "Selected" : "Collect"}
-                        </Button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </Card>
-
-            <Card>
-              <CardTitleBar title="New invoice" />
-              <div className="px-5 py-5 grid gap-4 sm:grid-cols-2">
-                {can("patient.view") ? (
-                  <div className="sm:col-span-2 space-y-3">
-                    <Field label="Patient" htmlFor="invoice-patient-search">
-                      <div className="relative">
-                        <IconSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 h-[18px] w-[18px] text-muted" />
-                        <TextInput
-                          id="invoice-patient-search"
-                          className="pl-11"
-                          placeholder="Search patients…"
-                          value={patientSearch}
-                          onChange={(event) => setPatientSearch(event.target.value)}
-                        />
-                      </div>
-                    </Field>
-                    {debouncedPatientSearch && (patientResults.data ?? []).length > 0 && !selectedPatient ? (
-                      <ul className="border border-line rounded-[12px] divide-y divide-line-soft overflow-hidden" role="listbox" aria-label="Patient results">
-                        {(patientResults.data ?? []).slice(0, 5).map((patient) => (
-                          <li key={patient.id}>
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={patient.id === patientId}
-                              onClick={() => setPatientId(patient.id)}
-                              className="w-full text-left px-3.5 py-2.5 text-[12.5px] font-medium text-ink hover:bg-primary-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-                            >
-                              {patient.display_name}
-                              <span className="ml-1 text-muted">· {patient.patient_no}</span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {selectedPatient ? (
-                      <p className="flex items-center gap-2 text-[12.5px] font-medium text-secondary">
-                        <IconCheckCircle className="h-4 w-4 text-accent-teal" />
-                        {selectedPatient.display_name} · {selectedPatient.patient_no}
-                        <button
-                          type="button"
-                          onClick={() => setPatientId("")}
-                          className="font-semibold text-primary-text hover:text-primary-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
-                        >
-                          Change
-                        </button>
-                      </p>
-                    ) : null}
+                <div className="px-5 pt-5 pb-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-[15px] font-bold text-ink">Awaiting payment ({invoices.data?.length ?? 0})</h2>
                   </div>
-                ) : null}
-
-                <Field label="Service" htmlFor="service">
-                  <Select id="service" value={serviceId || activeService?.id || ""} onChange={(event) => setServiceId(event.target.value)}>
-                    {services.data?.map((service) => (
-                      <option key={service.id} value={service.id}>
-                        {service.name} · {service.prices?.[0]?.amount || "No price"}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <div className="flex items-end">
-                  <Button
-                    disabled={!patientId || createInvoice.isPending}
-                    onClick={() => createInvoice.mutate()}
-                  >
-                    {createInvoice.isPending ? "Creating…" : "Create invoice"}
-                  </Button>
+                  <div className="relative mt-3">
+                    <IconSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 h-[18px] w-[18px] text-muted" />
+                    <TextInput
+                      className="pl-11"
+                      placeholder="Find by invoice number, patient name, or patient number…"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      aria-label="Search invoices"
+                    />
+                  </div>
                 </div>
-                {prefillEncounter ? (
-                  <p className="sm:col-span-2 text-[11.5px] font-medium text-muted">
-                    Linked to encounter {prefillEncounter.slice(0, 8)}…
-                  </p>
-                ) : null}
-              </div>
+
+                {invoices.isLoading ? (
+                  <div className="px-5 pb-5 space-y-4" aria-busy="true" aria-label="Loading invoices">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <div key={index} className="h-12 animate-pulse rounded-[10px] bg-line-soft" />
+                    ))}
+                  </div>
+                ) : invoices.isError ? (
+                  <EmptyState
+                    icon={<IconBilling className="h-5 w-5" />}
+                    title="Invoices could not be loaded."
+                    action={<Button variant="secondary" onClick={() => invoices.refetch()}>Retry</Button>}
+                  />
+                ) : (invoices.data ?? []).length === 0 ? (
+                  <EmptyState
+                    icon={<IconBilling className="h-5 w-5" />}
+                    title="No unpaid invoices found."
+                    hint={debouncedSearch ? "Try a different invoice number or patient name." : "Invoices appear here once they are issued."}
+                  />
+                ) : (
+                  <ul className="px-5 pb-2 divide-y divide-line-soft">
+                    {(invoices.data ?? []).map((invoice) => {
+                      const badge = invoiceStatusBadge(invoice.status);
+                      const active = selectedInvoice?.id === invoice.id;
+                      return (
+                        <li key={invoice.id} className="flex flex-wrap items-center gap-3 py-3">
+                          <div className="flex-1 min-w-0 leading-tight">
+                            <div className="text-[13px] font-semibold text-ink">
+                              {invoice.invoice_no}
+                              <span className="mx-1 text-muted">·</span>
+                              <span className="font-medium">{invoice.patient_name}</span>
+                            </div>
+                            <div className="mt-0.5 text-[11.5px] font-medium text-muted">
+                              Issued {formatDate(invoice.issued_at)}
+                              <span className="mx-0.5">•</span>
+                              Total {invoice.currency} {invoice.total}
+                            </div>
+                          </div>
+                          <div className="text-right leading-tight">
+                            <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
+                            <div className="mt-1 text-[11px] font-semibold text-ink">
+                              Balance {invoice.currency} {invoice.balance}
+                            </div>
+                          </div>
+                          <Button
+                            variant="small-secondary"
+                            aria-pressed={active}
+                            className={active ? "bg-primary-soft text-primary-text border-primary-soft" : ""}
+                            onClick={() => {
+                              setSelectedInvoice(invoice);
+                              setPaymentAmount(invoice.balance);
+                              setReceipt(null);
+                              setNotice("");
+                            }}
+                          >
+                            {active ? "Selected" : "Collect"}
+                          </Button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </Card>
+
+              <Card>
+                <CardTitleBar title="New invoice" />
+                <div className="px-5 py-5 grid gap-4 sm:grid-cols-2">
+                  {can("patient.view") ? (
+                    <div className="sm:col-span-2 space-y-3">
+                      <Field label="Patient" htmlFor="invoice-patient-search">
+                        <div className="relative">
+                          <IconSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 h-[18px] w-[18px] text-muted" />
+                          <TextInput
+                            id="invoice-patient-search"
+                            className="pl-11"
+                            placeholder="Search patients…"
+                            value={patientSearch}
+                            onChange={(event) => setPatientSearch(event.target.value)}
+                          />
+                        </div>
+                      </Field>
+                      {debouncedPatientSearch && (patientResults.data ?? []).length > 0 && !selectedPatient ? (
+                        <ul className="border border-line rounded-[12px] divide-y divide-line-soft overflow-hidden" role="listbox" aria-label="Patient results">
+                          {(patientResults.data ?? []).slice(0, 5).map((patient) => (
+                            <li key={patient.id}>
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={patient.id === patientId}
+                                onClick={() => setPatientId(patient.id)}
+                                className="w-full text-left px-3.5 py-2.5 text-[12.5px] font-medium text-ink hover:bg-primary-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                              >
+                                {patient.display_name}
+                                <span className="ml-1 text-muted">· {patient.patient_no}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {selectedPatient ? (
+                        <p className="flex items-center gap-2 text-[12.5px] font-medium text-secondary">
+                          <IconCheckCircle className="h-4 w-4 text-accent-teal" />
+                          {selectedPatient.display_name} · {selectedPatient.patient_no}
+                          <button
+                            type="button"
+                            onClick={() => setPatientId("")}
+                            className="font-semibold text-primary-text hover:text-primary-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+                          >
+                            Change
+                          </button>
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <Field label="Service" htmlFor="service">
+                    <Select id="service" value={serviceId || activeService?.id || ""} onChange={(event) => setServiceId(event.target.value)}>
+                      {services.data?.map((service) => (
+                        <option key={service.id} value={service.id}>
+                          {service.name} · {service.prices?.[0]?.amount || "No price"}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <div className="flex items-end">
+                    <Button
+                      disabled={!patientId || createInvoice.isPending}
+                      onClick={() => createInvoice.mutate()}
+                    >
+                      {createInvoice.isPending ? "Creating…" : "Create invoice"}
+                    </Button>
+                  </div>
+                  {prefillEncounter ? (
+                    <p className="sm:col-span-2 text-[11.5px] font-medium text-muted">
+                      Linked to encounter {prefillEncounter.slice(0, 8)}…
+                    </p>
+                  ) : null}
+                </div>
               </Card>
             </>
           )}
