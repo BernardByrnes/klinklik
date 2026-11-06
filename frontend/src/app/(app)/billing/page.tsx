@@ -425,106 +425,100 @@ function BillingWorkspace() {
         </div>
 
         <div className="space-y-5 xl:sticky xl:top-[92px]">
-          <Card>
-            <CardTitleBar title="Collect payment" />
-            {activeInvoice ? (
-              <div className="px-5 py-5 space-y-5">
-                <div className="leading-tight">
-                  <p className="text-[15px] font-bold text-ink">
-                    {activeInvoice.invoice_no}
-                    <span className="ml-1 font-medium text-secondary">· {activeInvoice.patient_name}</span>
-                  </p>
-                  <p className="mt-1 text-[12px] font-medium text-muted">
-                    Total {activeInvoice.currency} {activeInvoice.total}
-                    <span className="mx-0.5">•</span>
-                    Paid {activeInvoice.currency} {activeInvoice.amount_paid}
-                    <span className="mx-0.5">•</span>
-                    Balance {activeInvoice.currency} {activeInvoice.balance}
-                  </p>
-                </div>
+          {!focused || activeInvoice ? (
+            <Card>
+              <CardTitleBar title="Collect payment" />
+              {activeInvoice ? (
+                <div className="px-5 py-5 space-y-5">
+                  <div className="leading-tight">
+                    <p className="text-[15px] font-bold text-ink">
+                      {activeInvoice.invoice_no}
+                      <span className="ml-1 font-medium text-secondary">· {activeInvoice.patient_name}</span>
+                    </p>
+                    <p className="mt-1 text-[12px] font-medium text-muted">
+                      Total {activeInvoice.currency} {activeInvoice.total}
+                      <span className="mx-0.5">•</span>
+                      Paid {activeInvoice.currency} {activeInvoice.amount_paid}
+                      <span className="mx-0.5">•</span>
+                      Balance {activeInvoice.currency} {activeInvoice.balance}
+                    </p>
+                  </div>
 
-                {!focused && activeInvoice.items?.length ? (
-                  <ul className="rounded-[14px] border border-line-soft divide-y divide-line-soft">
-                    {activeInvoice.items.map((item) => (
-                      <li key={item.id} className="flex items-center justify-between px-3.5 py-2.5 text-[12.5px]">
-                        <span className="font-medium text-ink">{item.description}</span>
-                        <span className="text-secondary">
-                          ×{item.quantity} · {activeInvoice.currency} {item.amount}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
+                  {!focused && activeInvoice.items?.length ? (
+                    <ul className="rounded-[14px] border border-line-soft divide-y divide-line-soft">
+                      {activeInvoice.items.map((item) => (
+                        <li key={item.id} className="flex items-center justify-between px-3.5 py-2.5 text-[12.5px]">
+                          <span className="font-medium text-ink">{item.description}</span>
+                          <span className="text-secondary">
+                            ×{item.quantity} · {activeInvoice.currency} {item.amount}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
 
-                {receipt ? null : activeInvoice.status === "PAID" ? (
-                  <p
-                    className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink"
-                    role="status"
-                  >
-                    <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
-                    This invoice is paid in full.
-                  </p>
-                ) : payable && canRecordPayment ? (
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label={`Amount (${activeInvoice.currency})`} htmlFor="payment-amount">
-                      <TextInput
-                        id="payment-amount"
-                        inputMode="decimal"
-                        value={paymentAmount}
-                        onChange={(event) => setPaymentAmount(event.target.value)}
-                      />
-                    </Field>
-                    <Field label="Method" htmlFor="payment-method">
-                      <Select id="payment-method" value={method} onChange={(event) => setMethod(event.target.value)}>
-                        {METHOD_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                    <div className="sm:col-span-2">
-                      <Field label="Reference (optional)" htmlFor="payment-reference">
+                  {receipt ? null : activeInvoice.status === "PAID" ? (
+                    <p
+                      className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink"
+                      role="status"
+                    >
+                      <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+                      This invoice is paid in full.
+                    </p>
+                  ) : payable && canRecordPayment ? (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label={`Amount (${activeInvoice.currency})`} htmlFor="payment-amount">
                         <TextInput
-                          id="payment-reference"
-                          value={reference}
-                          onChange={(event) => setReference(event.target.value)}
-                          placeholder="Transaction reference for non-cash payments"
+                          id="payment-amount"
+                          inputMode="decimal"
+                          value={paymentAmount}
+                          onChange={(event) => setPaymentAmount(event.target.value)}
                         />
                       </Field>
+                      <Field label="Method" htmlFor="payment-method">
+                        <Select id="payment-method" value={method} onChange={(event) => setMethod(event.target.value)}>
+                          {METHOD_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                      <div className="sm:col-span-2">
+                        <Field label="Reference (optional)" htmlFor="payment-reference">
+                          <TextInput
+                            id="payment-reference"
+                            value={reference}
+                            onChange={(event) => setReference(event.target.value)}
+                            placeholder="Transaction reference for non-cash payments"
+                          />
+                        </Field>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <Button disabled={pay.isPending} onClick={() => pay.mutate(activeInvoice.id)}>
+                          {pay.isPending ? "Posting…" : "Post payment"}
+                        </Button>
+                      </div>
                     </div>
-                    <div className="sm:col-span-2">
-                      <Button disabled={pay.isPending} onClick={() => pay.mutate(activeInvoice.id)}>
-                        {pay.isPending ? "Posting…" : "Post payment"}
-                      </Button>
-                    </div>
-                  </div>
-                ) : payable ? (
-                  <p className="rounded-[14px] border border-line bg-surface-muted px-4 py-3 text-[12.5px] font-medium text-secondary" role="status">
-                    You do not have permission to record payments for this invoice.
-                  </p>
-                ) : (
-                  <p className="rounded-[14px] border border-line bg-surface-muted px-4 py-3 text-[12.5px] font-medium text-secondary" role="status">
-                    This invoice cannot accept a payment in its current state.
-                  </p>
-                )}
-              </div>
-            ) : focused && visitInvoice.isLoading ? (
-              <div className="px-5 py-6" aria-busy="true" aria-label="Loading the Visit invoice">
-                <div className="h-12 animate-pulse rounded-[10px] bg-line-soft" />
-              </div>
-            ) : (
-              <EmptyState
-                icon={<IconBilling className="h-5 w-5" />}
-                title={focused ? "No payable invoice." : "No invoice selected."}
-                hint={
-                  focused
-                    ? "This Visit has no invoice the cashier can collect right now."
-                    : "Select an unpaid invoice, or create a new one, to collect payment."
-                }
-              />
-            )}
-          </Card>
+                  ) : payable ? (
+                    <p className="rounded-[14px] border border-line bg-surface-muted px-4 py-3 text-[12.5px] font-medium text-secondary" role="status">
+                      You do not have permission to record payments for this invoice.
+                    </p>
+                  ) : (
+                    <p className="rounded-[14px] border border-line bg-surface-muted px-4 py-3 text-[12.5px] font-medium text-secondary" role="status">
+                      This invoice cannot accept a payment in its current state.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <EmptyState
+                  icon={<IconBilling className="h-5 w-5" />}
+                  title="No invoice selected."
+                  hint="Select an unpaid invoice, or create a new one, to collect payment."
+                />
+              )}
+            </Card>
+          ) : null}
 
           {receipt ? (
             <Card data-print-sheet className="print:border-0 print:shadow-none">
