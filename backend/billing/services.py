@@ -256,9 +256,10 @@ def require_visit_invoice(*, organisation, encounter):
     still owned by that Visit path and is not repairable here.
 
     Legacy Encounters can predate the Visit link while still naming their queue
-    entry. An explicitly linked Visit on that same queue entry is protected the
-    same way, and an unresolvable link fails closed rather than falling through
-    to a duplicate charge.
+    entry. That fallback only trusts a queue entry that agrees with the scoped
+    Encounter on organisation, facility, and patient, the same scope test the
+    S-01 migration applies. An explicit link that cannot be resolved in scope
+    fails closed rather than falling through to a duplicate charge.
     """
 
     linked_visit_id = encounter.visit_id
@@ -266,6 +267,8 @@ def require_visit_invoice(*, organisation, encounter):
         queue_visit = QueueEntry.objects.filter(
             id=encounter.queue_entry_id,
             organisation=organisation,
+            facility_id=encounter.facility_id,
+            patient_id=encounter.patient_id,
         ).values("visit_id").first()
         if queue_visit is None:
             raise CanonicalError(

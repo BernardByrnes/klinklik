@@ -1872,11 +1872,17 @@ function TreatmentSection({
 /**
  * The Visit a signed consultation is billed through. The Encounter link is
  * authoritative; a legacy Encounter without one may still name the queue entry
- * that carries the Visit, and only that same queue entry is trusted.
+ * that carries the Visit. That fallback trusts the queue entry only when it is
+ * the same entry and the same patient as the Encounter, matching the server's
+ * scope test.
  */
 function encounterVisitId(encounter: Encounter, queueEntry: QueueEntry | null) {
   if (encounter.visit) return encounter.visit;
-  if (encounter.queue_entry && queueEntry?.id === encounter.queue_entry) {
+  if (
+    encounter.queue_entry &&
+    queueEntry?.id === encounter.queue_entry &&
+    queueEntry.patient === encounter.patient
+  ) {
     return queueEntry.visit ?? null;
   }
   return null;

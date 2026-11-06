@@ -18,10 +18,11 @@ from audit.models import AuditEvent
 from billing.models import Invoice, InvoiceItem, Payment, PaymentAllocation
 from billing.services import create_invoice
 from clinical.models import Encounter
+from core.clock import local_service_date
 from core.errors import CanonicalError
 from core.services import tenant_atomic
 from patients.models import Patient
-from scheduling.models import Visit
+from scheduling.models import QueueEntry, Visit
 from tenancy.models import Department, Facility, Organisation
 from tests.clinical_test_helpers import (
     establish_synthetic_final_diagnosis,
@@ -135,6 +136,41 @@ def visit_invoice_url(visit_id):
     return f"/api/v1/billing/invoices/by-visit/{visit_id}/"
 
 
+def legacy_encounter(tenant, *, patient_id, queue_patient_id=None, queue_visit_id=None):
+    """Build the pre-Visit Encounter shape the fallback has to reason about."""
+
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        department = Department.objects.get(id=tenant.department.id)
+        actor = User.objects.get(id=tenant.user.id)
+        queue = QueueEntry.objects.create(
+            organisation=organisation,
+            facility=facility,
+            visit_id=queue_visit_id,
+            patient_id=queue_patient_id or patient_id,
+            department=department,
+            queue_date=local_service_date(),
+            sequence=QueueEntry.objects.filter(
+                facility=facility, queue_date=local_service_date()
+            ).count()
+            + 1,
+            visit_type="WALK_IN",
+            status="IN_CONSULTATION",
+            current_stage="CONSULTATION",
+        )
+        return Encounter.objects.create(
+            organisation=organisation,
+            facility=facility,
+            patient_id=patient_id,
+            visit=None,
+            queue_entry=queue,
+            encounter_no="ENC-LEGACY-" + uuid4().hex[:8],
+            clinician=actor,
+            status="SIGNED",
+        )
+
+
 def create_billing_user(tenant, username, template_code, *, facility=None):
     user = User.objects.create_user(username, "test-password-123")
     with tenant_atomic(tenant.organisation.id):
@@ -230,6 +266,72 @@ def test_signed_consultation_refuses_a_second_invoice_for_the_visit(tenant, auth
             event_code="INVOICE_ISSUED", entity_id=invoice_id
         ).count() == 1
         assert Invoice.objects.get(id=invoice_id).invoice_no == original_number
+
+
+def test_legacy_queue_link_must_match_the_encounter_patient(tenant, authed_client):
+    patient_id = register(authed_client, "handoff-legacy-owner")
+    other_patient_id = register(authed_client, "handoff-legacy-other")
+    encounter = legacy_encounter(
+        tenant, patient_id=patient_id, queue_patient_id=other_patient_id
+    )
+
+    response = authed_client.post(
+        "/api/v1/billing/invoices/",
+        invoice_create_payload(patient_id, encounter.id, tenant.service.id),
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="handoff-legacy-mismatch",
+    )
+    assert response.status_code == 409, response.data
+    assert response.data["code"] == "VISIT_INVOICE_REQUIRED"
+    with tenant_atomic(tenant.organisation.id):
+        assert not Invoice.objects.filter(encounter_id=encounter.id).exists()
+        assert not Invoice.objects.filter(
+            patient_id__in=[patient_id, other_patient_id]
+        ).exists()
+        assert not AuditEvent.objects.filter(
+            event_code="CREATE", entity_type="Invoice"
+        ).exists()
+
+
+def test_legacy_queue_link_with_a_visit_is_protected(tenant, authed_client):
+    patient_id = register(authed_client, "handoff-legacy-visit")
+    checked_in = check_in(authed_client, patient_id, tenant, "handoff-legacy-visit-checkin")
+    encounter = legacy_encounter(
+        tenant,
+        patient_id=patient_id,
+        queue_visit_id=checked_in["visit_id"],
+    )
+
+    response = authed_client.post(
+        "/api/v1/billing/invoices/",
+        invoice_create_payload(patient_id, encounter.id, tenant.service.id),
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="handoff-legacy-linked-visit",
+    )
+    assert response.status_code == 409, response.data
+    assert response.data["code"] == "VISIT_INVOICE_REQUIRED"
+    with tenant_atomic(tenant.organisation.id):
+        assert Invoice.objects.filter(visit_id=checked_in["visit_id"]).count() == 1
+        assert not Invoice.objects.filter(encounter_id=encounter.id).exists()
+
+
+def test_legacy_queue_link_without_a_visit_keeps_the_legacy_path(tenant, authed_client):
+    patient_id = register(authed_client, "handoff-legacy-open")
+    encounter = legacy_encounter(tenant, patient_id=patient_id)
+
+    response = authed_client.post(
+        "/api/v1/billing/invoices/",
+        invoice_create_payload(patient_id, encounter.id, tenant.service.id),
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="handoff-legacy-open",
+    )
+    assert response.status_code == 201, response.data
+    assert response.data["visit"] is None
+    with tenant_atomic(tenant.organisation.id):
+        invoice = Invoice.objects.get(id=response.data["id"])
+        assert invoice.encounter_id == encounter.id
+        assert invoice.visit_id is None
+        assert invoice.balance == Decimal("30000.00")
 
 
 def test_visit_invoice_read_returns_the_check_in_invoice(tenant, authed_client):

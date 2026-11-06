@@ -5,10 +5,16 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest } from "../../../lib/api";
-import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import {
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  protectedQueryKey,
+  useProtectedQueryKey,
+  type AuthoritySnapshot,
+} from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { Invoice, Patient, Receipt, Service } from "../../../features/clinic";
-import { IconBilling, IconCheckCircle, IconPrinter, IconSearch } from "../../../components/icons";
+import { IconAlertTriangle, IconBilling, IconCheckCircle, IconPrinter, IconSearch } from "../../../components/icons";
 import {
   Button,
   Card,
@@ -32,11 +38,31 @@ const METHOD_OPTIONS = [
   { value: "BANK", label: "Bank" },
 ];
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type ReceiptState = {
+  invoiceId: string;
+  data: Receipt | null;
+  error: string;
+  loading: boolean;
+};
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message.includes("permission")) {
     return "You don't have permission to perform this action.";
   }
   return error instanceof Error ? error.message : "The request could not be completed.";
+}
+
+function readVisitParam(searchParams: URLSearchParams) {
+  if (!searchParams.has("visit")) {
+    return { focused: false, visitId: null as string | null, invalid: false };
+  }
+  const raw = (searchParams.get("visit") ?? "").trim();
+  if (!UUID_PATTERN.test(raw)) {
+    return { focused: true, visitId: null as string | null, invalid: true };
+  }
+  return { focused: true, visitId: raw.toLowerCase(), invalid: false };
 }
 
 function BillingWorkspace() {
@@ -45,8 +71,8 @@ function BillingWorkspace() {
   const searchParams = useSearchParams();
   const prefillPatient = searchParams.get("patient");
   const prefillEncounter = searchParams.get("encounter");
-  const focusedVisitId = searchParams.get("visit");
-  const focused = Boolean(focusedVisitId);
+  const { focused, visitId: focusedVisitId, invalid: focusedVisitInvalid } =
+    readVisitParam(searchParams);
   const currency = session?.organisation.default_currency ?? "";
 
   const [search, setSearch] = useState("");
@@ -55,7 +81,7 @@ function BillingWorkspace() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [method, setMethod] = useState("CASH");
   const [reference, setReference] = useState("");
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [receiptState, setReceiptState] = useState<ReceiptState | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -90,8 +116,20 @@ function BillingWorkspace() {
 
   const visitInvoice = useQuery({
     queryKey: visitInvoiceKey,
-    queryFn: () => apiRequest<Invoice>(`/api/v1/billing/invoices/by-visit/${focusedVisitId}/`),
-    enabled: focused && can("billing.invoice.create"),
+    queryFn: async () => {
+      if (!focusedVisitId) {
+        throw new Error("This billing link does not identify a Visit.");
+      }
+      const invoice = await apiRequest<Invoice>(
+        `/api/v1/billing/invoices/by-visit/${encodeURIComponent(focusedVisitId)}/`,
+      );
+      // A response for a different Visit must never become payable here.
+      if (invoice.visit !== focusedVisitId) {
+        throw new Error("The invoice returned does not belong to this Visit.");
+      }
+      return invoice;
+    },
+    enabled: focused && Boolean(focusedVisitId) && can("billing.invoice.create"),
     retry: false,
   });
 
@@ -115,7 +153,11 @@ function BillingWorkspace() {
   );
 
   // The focused view can only ever pay the invoice returned for this Visit.
-  const activeInvoice = focused ? visitInvoice.data ?? null : selectedInvoice;
+  const activeInvoice = focused
+    ? visitInvoice.data && visitInvoice.data.visit === focusedVisitId
+      ? visitInvoice.data
+      : null
+    : selectedInvoice;
   const payable =
     activeInvoice !== null &&
     (activeInvoice.status === "ISSUED" || activeInvoice.status === "PARTIALLY_PAID") &&
@@ -125,16 +167,31 @@ function BillingWorkspace() {
     visitInvoice.isError &&
     visitInvoice.error instanceof ApiRequestError &&
     visitInvoice.error.status === 404;
+  const activeReceipt =
+    receiptState && activeInvoice && receiptState.invoiceId === activeInvoice.id
+      ? receiptState
+      : null;
 
   const initializedInvoiceRef = useRef<string | null>(null);
+  // The invoice whose posted payment is being reconciled. A receipt response is
+  // only applied while this still names the same invoice and the authority that
+  // submitted it is current.
+  const receiptTargetRef = useRef<string | null>(null);
+  // Latest focused Visit, so a mutation result can tell whether its context is
+  // still the one on screen. Kept current on every render rather than in an
+  // effect so a response cannot slip through between commit and effect.
+  const visitContextRef = useRef<string | null>(focusedVisitId);
+  visitContextRef.current = focusedVisitId;
+
   useEffect(() => {
     // A different Visit, facility, or authority must never inherit the previous
     // receipt, notice, or prefilled amount.
-    setReceipt(null);
+    receiptTargetRef.current = null;
+    setReceiptState(null);
     setNotice("");
     setError("");
     initializedInvoiceRef.current = null;
-  }, [focusedVisitId, currentFacility?.id]);
+  }, [focused, focusedVisitId, currentFacility?.id]);
 
   useEffect(() => {
     if (!focused || !activeInvoice) return;
@@ -142,6 +199,31 @@ function BillingWorkspace() {
     initializedInvoiceRef.current = activeInvoice.id;
     setPaymentAmount(activeInvoice.balance);
   }, [focused, activeInvoice]);
+
+  async function loadReceipt(invoiceId: string, origin: AuthoritySnapshot) {
+    setReceiptState((current) =>
+      current && current.invoiceId === invoiceId
+        ? { ...current, loading: true, error: "" }
+        : current,
+    );
+    try {
+      const data = await apiRequest<Receipt>(
+        `/api/v1/billing/invoices/${invoiceId}/receipt/`,
+      );
+      if (!isCurrentAuthority(origin) || receiptTargetRef.current !== invoiceId) return;
+      setReceiptState({ invoiceId, data, error: "", loading: false });
+      setNotice(`Payment recorded. Receipt ${data.receipt_no}.`);
+    } catch (reason) {
+      if (!isCurrentAuthority(origin) || receiptTargetRef.current !== invoiceId) return;
+      setReceiptState({
+        invoiceId,
+        data: null,
+        error: errorMessage(reason),
+        loading: false,
+      });
+      setNotice("Payment recorded.");
+    }
+  }
 
   const createInvoice = useMutation({
     mutationFn: () =>
@@ -156,6 +238,8 @@ function BillingWorkspace() {
     onSuccess: (invoice) => {
       setSelectedInvoice(invoice);
       setPaymentAmount(invoice.balance);
+      setReceiptState(null);
+      receiptTargetRef.current = null;
       setNotice(`Invoice ${invoice.invoice_no} created for ${invoice.patient_name}.`);
       setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
@@ -172,16 +256,38 @@ function BillingWorkspace() {
         method: "POST",
         body: JSON.stringify({ amount: paymentAmount, method, ...(reference.trim() ? { reference: reference.trim() } : {}) }),
       }),
-    onSuccess: async (_payment, invoiceId) => {
-      const data = await apiRequest<Receipt>(`/api/v1/billing/invoices/${invoiceId}/receipt/`);
-      setReceipt(data);
-      setNotice(`Payment recorded. Receipt ${data.receipt_no}.`);
-      setError("");
-      setReference("");
+    onMutate: () => ({
+      origin: getAuthoritySnapshot(),
+      visitId: visitContextRef.current,
+    }),
+    onSuccess: (_payment, invoiceId, context) => {
+      // The POST committed the payment. Everything below is reconciliation:
+      // a failed receipt read must never read back as a failed payment.
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
+      if (
+        !context ||
+        !isCurrentAuthority(context.origin) ||
+        visitContextRef.current !== context.visitId
+      ) {
+        // The cashier already moved on; the committed payment stays recorded
+        // but nothing from this result may render on the new context.
+        return;
+      }
+      receiptTargetRef.current = invoiceId;
+      setReceiptState({ invoiceId, data: null, error: "", loading: true });
+      setNotice("Payment recorded. Preparing the receipt.");
+      setError("");
+      setReference("");
+      void loadReceipt(invoiceId, context.origin);
     },
-    onError: (reason) => {
+    onError: (reason, _invoiceId, context) => {
+      if (
+        context &&
+        (!isCurrentAuthority(context.origin) || visitContextRef.current !== context.visitId)
+      ) {
+        return;
+      }
       setNotice("");
       setError(errorMessage(reason));
     },
@@ -215,7 +321,13 @@ function BillingWorkspace() {
           {focused ? (
             <Card>
               <CardTitleBar title="Visit invoice" />
-              {visitInvoice.isLoading ? (
+              {focusedVisitInvalid ? (
+                <EmptyState
+                  icon={<IconBilling className="h-5 w-5" />}
+                  title="This billing link does not identify a Visit."
+                  hint="Open the invoice from the signed consultation, or find it in the outstanding list."
+                />
+              ) : visitInvoice.isLoading ? (
                 <div className="px-5 py-6 space-y-4" aria-busy="true" aria-label="Loading the Visit invoice">
                   <div className="h-12 animate-pulse rounded-[10px] bg-line-soft" />
                   <div className="h-12 animate-pulse rounded-[10px] bg-line-soft" />
@@ -230,6 +342,7 @@ function BillingWorkspace() {
                 <EmptyState
                   icon={<IconBilling className="h-5 w-5" />}
                   title="The Visit invoice could not be loaded."
+                  hint="No invoice is payable until this lookup succeeds."
                   action={<Button variant="secondary" onClick={() => visitInvoice.refetch()}>Retry</Button>}
                 />
               ) : activeInvoice ? (
@@ -332,7 +445,8 @@ function BillingWorkspace() {
                             onClick={() => {
                               setSelectedInvoice(invoice);
                               setPaymentAmount(invoice.balance);
-                              setReceipt(null);
+                              setReceiptState(null);
+                              receiptTargetRef.current = null;
                               setNotice("");
                             }}
                           >
@@ -457,7 +571,41 @@ function BillingWorkspace() {
                     </ul>
                   ) : null}
 
-                  {receipt ? null : activeInvoice.status === "PAID" ? (
+                  {/* Reconciliation first: a posted payment never sits beside the old form. */}
+                  {activeReceipt?.data ? null : activeReceipt ? (
+                    activeReceipt.loading ? (
+                      <div
+                        className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink"
+                        role="status"
+                        aria-busy="true"
+                      >
+                        <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+                        Payment recorded. Preparing the receipt…
+                      </div>
+                    ) : (
+                      <div
+                        className="rounded-[14px] border border-accent-orange/30 bg-accent-orange-soft px-4 py-3"
+                        role="alert"
+                      >
+                        <p className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
+                          <IconAlertTriangle className="h-[18px] w-[18px] text-accent-orange shrink-0" />
+                          Payment recorded, but the receipt could not be loaded.
+                        </p>
+                        <p className="mt-1 text-[12px] font-medium text-secondary">
+                          The payment is committed. Do not collect it again — retry the receipt for invoice{" "}
+                          {activeInvoice.invoice_no}.
+                        </p>
+                        <Button
+                          variant="secondary"
+                          className="mt-3"
+                          disabled={activeReceipt.loading}
+                          onClick={() => void loadReceipt(activeInvoice.id, getAuthoritySnapshot())}
+                        >
+                          Retry receipt
+                        </Button>
+                      </div>
+                    )
+                  ) : activeInvoice.status === "PAID" ? (
                     <p
                       className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink"
                       role="status"
@@ -520,7 +668,7 @@ function BillingWorkspace() {
             </Card>
           ) : null}
 
-          {receipt ? (
+          {activeReceipt?.data ? (
             <Card data-print-sheet className="print:border-0 print:shadow-none">
               <div className="px-5 py-5">
                 <div className="flex items-center justify-between">
@@ -536,28 +684,28 @@ function BillingWorkspace() {
                   <hr className="my-3 border-line-soft" />
                   <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12.5px]">
                     <dt className="font-medium text-secondary">Receipt no</dt>
-                    <dd className="text-right font-semibold text-ink">{receipt.receipt_no}</dd>
+                    <dd className="text-right font-semibold text-ink">{activeReceipt.data.receipt_no}</dd>
                     <dt className="font-medium text-secondary">Invoice</dt>
-                    <dd className="text-right font-semibold text-ink">{receipt.invoice_no}</dd>
+                    <dd className="text-right font-semibold text-ink">{activeReceipt.data.invoice_no}</dd>
                     <dt className="font-medium text-secondary">Patient</dt>
                     <dd className="text-right font-semibold text-ink">
-                      {receipt.patient_name} · {receipt.patient_no}
+                      {activeReceipt.data.patient_name} · {activeReceipt.data.patient_no}
                     </dd>
                     <dt className="font-medium text-secondary">Amount</dt>
                     <dd className="text-right font-bold text-ink">
-                      {receipt.currency} {receipt.amount}
+                      {activeReceipt.data.currency} {activeReceipt.data.amount}
                     </dd>
                     <dt className="font-medium text-secondary">Method</dt>
-                    <dd className="text-right font-semibold text-ink">{receipt.method.replaceAll("_", " ")}</dd>
-                    {receipt.reference ? (
+                    <dd className="text-right font-semibold text-ink">{activeReceipt.data.method.replaceAll("_", " ")}</dd>
+                    {activeReceipt.data.reference ? (
                       <>
                         <dt className="font-medium text-secondary">Reference</dt>
-                        <dd className="text-right font-semibold text-ink">{receipt.reference}</dd>
+                        <dd className="text-right font-semibold text-ink">{activeReceipt.data.reference}</dd>
                       </>
                     ) : null}
                     <dt className="font-medium text-secondary">Invoice balance</dt>
                     <dd className="text-right font-semibold text-ink">
-                      {receipt.currency} {receipt.invoice_balance}
+                      {activeReceipt.data.currency} {activeReceipt.data.invoice_balance}
                     </dd>
                   </dl>
                   <hr className="my-3 border-line-soft" />
@@ -567,8 +715,13 @@ function BillingWorkspace() {
                   variant="link"
                   className="mt-3"
                   onClick={() => {
-                    setReceipt(null);
-                    if (!focused) setSelectedInvoice(null);
+                    setReceiptState(null);
+                    receiptTargetRef.current = null;
+                    if (focused) {
+                      if (activeInvoice) setPaymentAmount(activeInvoice.balance);
+                    } else {
+                      setSelectedInvoice(null);
+                    }
                   }}
                 >
                   {focused ? "Done" : "Done — collect another payment"}
