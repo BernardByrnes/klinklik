@@ -208,3 +208,179 @@ test("S-02 check-in, call, triage and encounter keep one Visit handoff", async (
   // The handoff never creates a second consultation charge.
   expect(invoiceCreatePosts).toEqual([]);
 });
+
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8100";
+
+async function apiLogin(page: Page) {
+  const response = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "demo", password: DEMO_PASSWORD },
+  });
+  expect(response.ok()).toBeTruthy();
+  const body = (await response.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  return {
+    token: body.access_token,
+    facilityId: body.facilities[0].id,
+  };
+}
+
+function apiHeaders(session: { token: string; facilityId: string }) {
+  return {
+    Authorization: `Bearer ${session.token}`,
+    "X-Facility-Id": session.facilityId,
+    "Content-Type": "application/json",
+  };
+}
+
+async function triagedConsultationRow(page: Page, session: { token: string; facilityId: string }) {
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const patient = await page.request.post(`${API}/api/v1/patients/`, {
+    headers: apiHeaders(session),
+    data: {
+      first_name: "Edge",
+      last_name: `Consult${suffix}`,
+      sex: "FEMALE",
+      phone: `0702${suffix.slice(-6).padStart(6, "0")}`,
+    },
+  });
+  expect(patient.ok()).toBeTruthy();
+  const patientId = ((await patient.json()) as { id: string }).id;
+  const checkIn = await page.request.post(`${API}/api/v1/reception/visits/check-in/`, {
+    headers: { ...apiHeaders(session), "Idempotency-Key": `edge-ci-${suffix}` },
+    data: { patient_id: patientId, visit_type: "OUTPATIENT_NEW", payer_type: "CASH" },
+  });
+  expect(checkIn.ok()).toBeTruthy();
+  const checkedIn = (await checkIn.json()) as { visit_id: string; queue_id: string };
+
+  const worklist = await page.request.get(
+    `${API}/api/v1/clinic/queue/operational/?queue_type=TRIAGE&state=WAITING`,
+    { headers: apiHeaders(session) },
+  );
+  const source = (await worklist.json()) as { entries: Array<{ id: string; version: number }> };
+  const sourceRow = source.entries.find((row) => row.id === checkedIn.queue_id);
+  expect(sourceRow).toBeTruthy();
+
+  const triage = await page.request.post(`${API}/api/v1/clinic/triage/${sourceRow!.id}/`, {
+    headers: {
+      ...apiHeaders(session),
+      "If-Match": `"${sourceRow!.version}"`,
+      "Idempotency-Key": `edge-triage-${suffix}`,
+    },
+    data: {
+      expected_version: sourceRow!.version,
+      acuity: "ROUTINE",
+      chief_complaint: "Synthetic consultation edge",
+    },
+  });
+  expect(triage.status(), await triage.text()).toBe(201);
+
+  const consultation = await page.request.get(
+    `${API}/api/v1/clinic/queue/operational/?queue_type=CONSULTATION&state=WAITING`,
+    { headers: apiHeaders(session) },
+  );
+  const rows = (await consultation.json()) as {
+    entries: Array<{ id: string; visit_id: string | null; version: number }>;
+  };
+  const destination = rows.entries.find((row) => row.visit_id === checkedIn.visit_id);
+  expect(destination).toBeTruthy();
+  return { destination: destination!, visitId: checkedIn.visit_id, suffix };
+}
+
+test("S-02 retryable encounter result keeps the same idempotency key and payload", async ({
+  page,
+}) => {
+  const session = await apiLogin(page);
+  const { destination } = await triagedConsultationRow(page, session);
+
+  const keys: string[] = [];
+  const bodies: string[] = [];
+  let attempt = 0;
+  await page.route(/\/api\/v1\/clinic\/encounters\/$/, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    keys.push(route.request().headers()["idempotency-key"] ?? "");
+    bodies.push(route.request().postData() ?? "");
+    attempt += 1;
+    if (attempt === 1) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "IDEMPOTENCY_IN_PROGRESS",
+          detail: "The idempotent request is still being completed.",
+          retryable: true,
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/consultations?entry=${destination.id}`);
+  await expect(page.getByRole("button", { name: "Start encounter" })).toBeVisible();
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByText(/still being completed/)).toBeVisible();
+  // The intent is retained, so the action stays available for the same key.
+  await expect(page.getByRole("button", { name: "Start encounter" })).toBeEnabled();
+  await page.getByRole("button", { name: "Start encounter" }).click();
+
+  await expect.poll(() => keys.length).toBe(2);
+  expect(keys[0]).toBeTruthy();
+  expect(keys[1]).toBe(keys[0]);
+  expect(bodies[1]).toBe(bodies[0]);
+});
+
+test("S-02 a failed worklist refresh blocks Start until the row is confirmed", async ({ page }) => {
+  const session = await apiLogin(page);
+  const { destination } = await triagedConsultationRow(page, session);
+
+  let failWorklist = false;
+  await page.route(/\/api\/v1\/clinic\/queue\/operational\//, async (route) => {
+    if (failWorklist) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ code: "MIGRATION_TARGET_DISABLED", detail: "unavailable" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  let conflict = true;
+  await page.route(/\/api\/v1\/clinic\/encounters\/$/, async (route) => {
+    if (route.request().method() === "POST" && conflict) {
+      conflict = false;
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ code: "VERSION_CONFLICT", detail: "The queue entry changed." }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/consultations?entry=${destination.id}`);
+  await expect(page.getByRole("button", { name: "Start encounter" })).toBeVisible();
+
+  // A definitive conflict asks for a refreshed row; that refresh fails here.
+  failWorklist = true;
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  await expect(page.getByText("The consultation queue could not be loaded.")).toBeVisible();
+  // The cached row may still be on screen, but it cannot submit while the
+  // scoped worklist is unavailable.
+  await expect(page.getByRole("button", { name: "Start encounter" })).toBeDisabled();
+
+  // Restoring the worklist restores a confirmed row and a usable action.
+  failWorklist = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Edge Consult" });
+  await expect(row.first()).toBeVisible();
+  await row.first().click();
+  await expect(page.getByRole("button", { name: "Start encounter" })).toBeEnabled();
+});

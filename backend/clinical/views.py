@@ -1,5 +1,6 @@
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from clinical.allergies import (
@@ -22,6 +23,8 @@ from clinical.dispositions import DispositionDomainError, DispositionRevisionCon
 from clinical.followups import FollowUpDomainError, FollowUpRevisionConflict, save_follow_up
 from clinical.models import Allergy, Diagnosis, Encounter, TriageAssessment
 from application.clinical.commands import encounter_open, triage_complete
+from core.errors import CanonicalError
+from core.permissions import HasCapability, IsTenantMember, QueueScopePermission
 from patients.models import Patient
 from clinical.serializers import (
     AllergyCreateSerializer,
@@ -68,8 +71,29 @@ def _mig002_command_mode(organisation):
     ).exists()
 
 
+def _require_canonical_queue_version(request, expected_version):
+    """Canonical stage commands need the current queue version.
+
+    The legacy compatibility path keeps accepting a version-less request; the
+    canonical writer must not start service from an unconfirmed row.
+    """
+
+    if expected_version is not None:
+        return
+    if not _mig002_command_mode(request.organisation):
+        return
+    raise CanonicalError(
+        "PRECONDITION_REQUIRED",
+        "A current queue version is required in expected_version or If-Match.",
+        status_code=428,
+    )
+
+
 class TriageView(TenantAPIView):
     capability = "triage.record"
+    # The canonical stage command must be scoped to the row's own department
+    # and work type, before idempotency replay can expose a stored result.
+    permission_classes = [IsAuthenticated, IsTenantMember, HasCapability, QueueScopePermission]
     idempotency_operation = "CMD-027"
     requires_idempotency = True
     serializer_class = TriageSerializer
@@ -112,6 +136,7 @@ class TriageView(TenantAPIView):
         serializer.is_valid(raise_exception=True)
         values = dict(serializer.validated_data)
         expected_version = _clinical_expected_version(request, values)
+        _require_canonical_queue_version(request, expected_version)
         values.pop("expected_version", None)
         try:
             outcome = triage_complete(
@@ -478,6 +503,7 @@ class EncounterAllergyReviewView(TenantAPIView):
 
 class EncounterListCreateView(TenantAPIView):
     capability = "clinical.note.create"
+    permission_classes = [IsAuthenticated, IsTenantMember, HasCapability, QueueScopePermission]
     idempotency_operation = "CMD-030"
     requires_idempotency = True
     serializer_class = EncounterCreateSerializer
@@ -505,13 +531,15 @@ class EncounterListCreateView(TenantAPIView):
         queue_entry_id = values["queue_entry_id"]
         if not queue_entry_id:
             return Response({"detail": "queue_entry_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        expected_version = _clinical_expected_version(request, values)
+        _require_canonical_queue_version(request, expected_version)
         try:
             outcome = encounter_open(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
                 queue_entry_id=queue_entry_id,
-                expected_version=_clinical_expected_version(request, values),
+                expected_version=expected_version,
             )
             encounter = outcome.encounter
         except CanonicalError:

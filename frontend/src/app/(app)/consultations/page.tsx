@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "next/navigation";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
@@ -180,6 +180,8 @@ type DraftMutationVariables = {
   rebaseAttempt: number;
   origin: "manual" | "autosave";
 };
+
+type ConsultationWorkType = "CONSULTATION" | "CLINICIAN";
 
 type StartEncounterVariables = {
   queueEntryId: string;
@@ -1874,7 +1876,7 @@ function TreatmentSection({
 function ConsultationsWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
-  const queueKey = useProtectedQueryKey("queue", "CONSULTATION");
+  const [workType, setWorkType] = useState<ConsultationWorkType>("CONSULTATION");
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("entry");
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
@@ -2003,24 +2005,37 @@ function ConsultationsWorkspace() {
     return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current || dispositionFormDirtyRef.current || followUpFormDirtyRef.current;
   }, []);
 
-  const queue = useQuery({
-    queryKey: queueKey,
-    queryFn: async () => {
+  const queue = useInfiniteQuery({
+    queryKey: useProtectedQueryKey("queue", workType),
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }) => {
       // Canonical consultation worklist. The completed TRIAGE source row is
       // never a consultation action, and a 503 leaves the workspace with no
       // actionable rows instead of falling back to the legacy shadow.
-      const envelope = await apiRequest<OperationalQueueEnvelope>(
-        "/api/v1/clinic/queue/operational/?queue_type=CONSULTATION&state=WAITING,CALLED,IN_SERVICE",
+      return apiRequest<OperationalQueueEnvelope>(
+        `/api/v1/clinic/queue/operational/?queue_type=${workType}` +
+          `&state=WAITING,CALLED,IN_SERVICE&page=${pageParam}`,
       );
-      return envelope.entries;
     },
+    getNextPageParam: (lastPage) => (lastPage.has_next ? lastPage.page + 1 : undefined),
     enabled: can("clinical.note.create"),
   });
-
-  const selected: OperationalQueueRow | null = useMemo(
-    () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
-    [queue.data, selectedId],
+  const queueEntries = useMemo(
+    () => (queue.data?.pages ?? []).flatMap((page) => page.entries),
+    [queue.data],
   );
+  const selected: OperationalQueueRow | null = useMemo(
+    () => queueEntries.find((entry) => entry.id === selectedId) ?? null,
+    [queueEntries, selectedId],
+  );
+  // Start is only offered from a confirmed, currently reachable row.
+  const worklistUnavailable = queue.isError;
+  const worklistSettling = queue.isFetching;
+  const canStartEncounter =
+    Boolean(selected?.id) &&
+    typeof selected?.version === "number" &&
+    !worklistUnavailable &&
+    !worklistSettling;
   function applyAllergySnapshot(snapshot: AllergyStateResponse) {
     setEncounter((current) => {
       if (!current || current.id !== activeEncounterIdRef.current) return current;
@@ -2632,9 +2647,21 @@ function ConsultationsWorkspace() {
       setError("");
     },
     onError: (reason, variables) => {
-      // A stale or already-started row is not retried with the same intent;
-      // refresh the scoped worklist so the next action uses the returned
-      // version.
+      const code =
+        reason instanceof ApiRequestError &&
+        reason.data &&
+        typeof reason.data === "object" &&
+        "code" in reason.data
+          ? String((reason.data as { code?: unknown }).code ?? "")
+          : "";
+      // A retryable or unknown outcome is not a new intent: keep the captured
+      // key, row, and version so a retry resolves the same command.
+      if (reason instanceof ApiRequestError && reason.status === 409 && code === "IDEMPOTENCY_IN_PROGRESS") {
+        setError("This submission is still being completed. Retry to confirm the same result.");
+        return;
+      }
+      // A definitive stale version or state conflict is a new intent; refresh
+      // the scoped worklist so the next action uses the returned version.
       if (
         reason instanceof ApiRequestError &&
         (reason.status === 409 || reason.status === 412)
@@ -4256,7 +4283,32 @@ function ConsultationsWorkspace() {
 
       <section className="grid grid-cols-1 xl:grid-cols-[1fr_1.35fr] gap-5 items-start">
         <Card>
-          <CardTitleBar title={`Ready for consultation (${queue.data?.length ?? 0})`} />
+          <CardTitleBar title={`Ready for consultation (${queueEntries.length})`} />
+          <div
+            className="px-5 pt-3 flex flex-wrap items-center gap-2"
+            role="tablist"
+            aria-label="Consultation work type"
+          >
+            {([
+              { value: "CONSULTATION", label: "Consultation" },
+              { value: "CLINICIAN", label: "Clinician" },
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="tab"
+                aria-selected={workType === option.value}
+                onClick={() => setWorkType(option.value)}
+                className={`rounded-full px-3 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                  workType === option.value
+                    ? "bg-primary-soft text-primary-text"
+                    : "bg-surface-muted text-secondary hover:bg-primary-hover"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           {queue.isLoading ? (
             <div className="px-5 py-6 space-y-5" aria-busy="true" aria-label="Loading consultation queue">
               {Array.from({ length: 4 }).map((_, index) => (
@@ -4269,7 +4321,7 @@ function ConsultationsWorkspace() {
               title="The consultation queue could not be loaded."
               action={<Button variant="secondary" onClick={() => queue.refetch()}>Retry</Button>}
             />
-          ) : (queue.data ?? []).length === 0 ? (
+          ) : queueEntries.length === 0 ? (
             <EmptyState
               icon={<IconConsultation className="h-5 w-5" />}
               title="No patients are waiting for consultation."
@@ -4277,7 +4329,7 @@ function ConsultationsWorkspace() {
             />
           ) : (
             <ul className="px-5 pt-2 pb-4 divide-y divide-line-soft">
-              {(queue.data ?? []).map((entry, index) => {
+              {queueEntries.map((entry, index) => {
                 const badge = queueStatusBadge(entry.status);
                 const active = entry.id === selectedId;
                 return (
@@ -4311,6 +4363,18 @@ function ConsultationsWorkspace() {
               })}
             </ul>
           )}
+          {queue.hasNextPage ? (
+            <div className="px-5 pb-4">
+              <Button
+                variant="link"
+                className="w-full"
+                disabled={queue.isFetchingNextPage}
+                onClick={() => void queue.fetchNextPage()}
+              >
+                {queue.isFetchingNextPage ? "Loading…" : "Load more"}
+              </Button>
+            </div>
+          ) : null}
         </Card>
 
         <Card>
@@ -4373,7 +4437,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the presenting complaint and HPI.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4407,7 +4471,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the general examination.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting..." : "Start encounter"}
                       </Button>
                     </div>
@@ -4448,7 +4512,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the treatment plan.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4494,7 +4558,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to record the diagnosis disposition.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4522,7 +4586,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Start the encounter to open the consultation note for this visit.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4534,7 +4598,7 @@ function ConsultationsWorkspace() {
                     <p className="text-[12.5px] font-medium text-secondary">
                       Start the encounter to open the consultation note for this visit.
                     </p>
-                    <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                    <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                       {startEncounter.isPending ? "Starting…" : "Start encounter"}
                     </Button>
                   </div>

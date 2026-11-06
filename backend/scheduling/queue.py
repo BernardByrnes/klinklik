@@ -17,6 +17,7 @@ from accounts.models import User, UserFacilityRole
 from audit.services import record_fact
 from core.clock import now
 from core.errors import CanonicalError
+from core.permissions import scope_allows, scope_query
 from core.services import allocate_sequence, assert_transaction_active
 from clinical.models import Encounter, EncounterCoAuthor, TriageAssessment, VitalsObservation
 from billing.models import Invoice, Payment, PaymentAllocation
@@ -458,8 +459,15 @@ def call_next_or_exact(
     ordering_watermark=None,
     out_of_order_reason="",
     reason="",
+    allowed_scopes=None,
 ):
-    """Call exactly one entry, or the first conditionally locked candidate."""
+    """Call exactly one entry, or the first conditionally locked candidate.
+
+    ``allowed_scopes`` is the actor's resolved ``(department, work type)``
+    grant. The API resolves it from the authenticated actor so an omitted
+    request filter cannot reach another department's work; ``None`` is reserved
+    for internal callers that already own the scope.
+    """
 
     _require_transaction()
     _require_target_write(organisation)
@@ -467,6 +475,19 @@ def call_next_or_exact(
     if exact_id is not None:
         entry = _lock_entry(organisation=organisation, facility=facility, queue_entry_id=exact_id)
         _require_linked_visit(entry)
+        if allowed_scopes is not None and not scope_allows(
+            allowed_scopes, entry.department_id, entry.queue_type
+        ):
+            raise _error(
+                "OUT_OF_SCOPE",
+                "The queue entry is outside your granted queue scope.",
+                status_code=404,
+            )
+        # A row another caller already called answers as ALREADY_CALLED even
+        # when the loser still holds the version it observed before the race;
+        # 412 stays reserved for a stale version on actionable work.
+        if entry.state == "CALLED":
+            raise _called_error(entry)
         _version_guard(entry, expected_version)
         if department_id and str(entry.department_id) != str(department_id):
             raise _error("OUT_OF_SCOPE", "The queue entry is outside the requested department.", status_code=404)
@@ -507,6 +528,10 @@ def call_next_or_exact(
         department_id=department_id,
         queue_type=queue_type,
     )
+    if allowed_scopes is not None:
+        # Intersect the actor's grants before ordering and locking, so the
+        # first candidate is always one the caller may actually call.
+        candidates = candidates.filter(scope_query(allowed_scopes))
     if ordering_watermark is not None:
         candidates = candidates.filter(queue_time__lte=ordering_watermark)
     try:

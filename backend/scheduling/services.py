@@ -435,7 +435,7 @@ def _check_in_with_visit_compatibility(
 
 
 @transaction.atomic
-def claim_queue_entry(*, organisation, actor, queue_id, facility=None, request=None):
+def claim_queue_entry(*, organisation, actor, queue_id, facility=None, request=None, allowed_scopes=None):
     from core.migration_reconciliation import (
         legacy_writes_enabled,
         target_writes_enabled_mig002,
@@ -451,6 +451,7 @@ def claim_queue_entry(*, organisation, actor, queue_id, facility=None, request=N
             facility=facility,
             actor=actor,
             queue_entry_id=queue_id,
+            allowed_scopes=allowed_scopes,
         )
     if mig002_rollback_active(organisation):
         return _claim_visit_linked_compatibility_entry(

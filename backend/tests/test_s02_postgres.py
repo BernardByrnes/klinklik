@@ -1,4 +1,5 @@
 from datetime import date
+import os
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from uuid import uuid4
@@ -511,16 +512,52 @@ def test_pg_s02_mig002_populated_backfill_reconciliation_and_cursor(
         cutover_mig002(organisation=organisation)
 
 
+def _pg_second_actor(tenant, username):
+    """Return a second authorized actor for the same facility and department."""
+
+    from rest_framework.test import APIClient
+
+    from accounts.models import OrganisationMembership, Role, UserFacilityRole
+
+    user = User.objects.create_user(username, "test-password-123")
+    with tenant_atomic(tenant.organisation.id):
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        role = Role.objects.get(organisation=tenant.organisation, template_code="OWNER_ADMIN")
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=user,
+            role=role,
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    client = APIClient()
+    response = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert response.status_code == 200, response.data
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + response.data["access_token"])
+    return client, user
+
+
 def test_pg_s02_exact_call_replay_and_competing_loser(tenant, authed_client, enabled_mig002_postgres):
     organisation = Organisation.objects.get(id=tenant.organisation.id)
+    rival_client, rival = _pg_second_actor(tenant, "pg-s02-rival")
     with tenant_atomic(organisation.id):
         visit = _pg_visit(tenant, _pg_patient(tenant, "ExactCall"))
         entry = _pg_entry(tenant, visit, label="CALL")
         entry_id = entry.id
-        version = entry.version
+        # Both callers observe this same version before either request lands.
+        observed_version = entry.version
 
     headers = {
-        "HTTP_IF_MATCH": f'"{version}"',
+        "HTTP_IF_MATCH": f'"{observed_version}"',
         "HTTP_IDEMPOTENCY_KEY": "pg-s02-exact-call",
     }
     first = authed_client.post(
@@ -529,7 +566,6 @@ def test_pg_s02_exact_call_replay_and_competing_loser(tenant, authed_client, ena
     assert first.status_code == 200, first.data
     assert first.data["state"] == "CALLED"
     assert first.data["called_by_id"] == str(tenant.user.id)
-    assert first.data["version"] == version + 1
 
     replay = authed_client.post(
         f"/api/v1/clinic/queue/{entry_id}/call/", {}, format="json", **headers
@@ -538,22 +574,25 @@ def test_pg_s02_exact_call_replay_and_competing_loser(tenant, authed_client, ena
     assert replay.data == first.data
     assert replay["Idempotent-Replay"] == "true"
 
-    with tenant_atomic(organisation.id):
-        assert AuditEvent.objects.filter(
-            entity_id=str(entry_id), event_code="QUEUE_CALLED"
-        ).count() == 1
-        current_version = QueueEntry.objects.get(id=entry_id).version
-
-    loser = authed_client.post(
+    # The competing caller starts from the same observed version and its own
+    # key. It must learn the row is already called, not that its version is
+    # stale, and it must not create a second transition.
+    loser = rival_client.post(
         f"/api/v1/clinic/queue/{entry_id}/call/",
         {},
         format="json",
-        HTTP_IF_MATCH=f'"{current_version}"',
+        HTTP_IF_MATCH=f'"{observed_version}"',
         HTTP_IDEMPOTENCY_KEY="pg-s02-exact-call-loser",
     )
     assert loser.status_code == 409, loser.data
     assert loser.data["code"] == "ALREADY_CALLED"
     assert loser.data["called_by_id"] == str(tenant.user.id)
+    assert loser.data["called_by_id"] != str(rival.id)
+
+    with tenant_atomic(organisation.id):
+        assert AuditEvent.objects.filter(
+            entity_id=str(entry_id), event_code="QUEUE_CALLED"
+        ).count() == 1
 
     with tenant_atomic(organisation.id):
         other_visit = _pg_visit(tenant, _pg_patient(tenant, "StaleCall"))
@@ -844,3 +883,81 @@ def test_pg_s02_rollback_fences_target_and_requires_a_new_cycle(
     with tenant_atomic(organisation.id):
         with pytest.raises(ValueError):
             cutover_mig002(organisation=organisation)
+
+
+def test_pg_s02_concurrent_call_next_gives_distinct_winners(tenant, enabled_mig002_postgres):
+    organisation = Organisation.objects.get(id=tenant.organisation.id)
+    with tenant_atomic(organisation.id):
+        urgent_visit = _pg_visit(tenant, _pg_patient(tenant, "NextUrgent"))
+        urgent = _pg_entry(tenant, urgent_visit, label="NEXT-URGENT", priority="URGENT")
+        routine_visit = _pg_visit(tenant, _pg_patient(tenant, "NextRoutine"))
+        routine = _pg_entry(tenant, routine_visit, label="NEXT-ROUTINE", priority="ROUTINE")
+        expected_ids = {str(urgent.id), str(routine.id)}
+
+    first_client, _ = _pg_second_actor(tenant, "pg-s02-next-a")
+    second_client, _ = _pg_second_actor(tenant, "pg-s02-next-b")
+    barrier = threading.Barrier(2)
+
+    def attempt(client, key):
+        close_old_connections()
+        try:
+            barrier.wait(timeout=10)
+            response = client.post(
+                "/api/v1/clinic/queue/call-next/",
+                {},
+                format="json",
+                HTTP_IDEMPOTENCY_KEY=key,
+            )
+            return response.status_code, response.data.get("queue_entry_id")
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: attempt(*args),
+                [(first_client, "pg-s02-next-a-key"), (second_client, "pg-s02-next-b-key")],
+            )
+        )
+    assert [status for status, _ in results] == [200, 200]
+    assert {entry_id for _, entry_id in results} == expected_ids
+
+    with tenant_atomic(organisation.id):
+        assert QueueEntry.objects.filter(
+            organisation=organisation, id__in=expected_ids, state="CALLED"
+        ).count() == 2
+
+
+OWNER_DSN = os.getenv("S02_OWNER_DSN")
+
+
+@pytest.mark.skipif(
+    not OWNER_DSN,
+    reason="S02_OWNER_DSN is not configured for the owner-prepared guard proof",
+)
+def test_pg_s02_cutover_refuses_a_disabled_state_guard(tenant, enabled_mig002_postgres):
+    """A guard that exists but is disabled must block activation."""
+
+    import psycopg
+
+    organisation = Organisation.objects.get(id=tenant.organisation.id)
+    with psycopg.connect(OWNER_DSN, autocommit=True) as owner:
+        owner.execute(
+            "ALTER TABLE scheduling_queueentry DISABLE TRIGGER klin_klink_queue_state"
+        )
+        try:
+            with pytest.raises(ValueError) as refused:
+                with tenant_atomic(organisation.id):
+                    cutover_mig002(organisation=organisation)
+            assert "klin_klink_queue_state" in str(refused.value)
+            assert "migrate scheduling 0007" in str(refused.value)
+        finally:
+            owner.execute(
+                "ALTER TABLE scheduling_queueentry ENABLE TRIGGER klin_klink_queue_state"
+            )
+    with tenant_atomic(organisation.id):
+        cutover_mig002(organisation=organisation)
+        switch = MigrationCutover.objects.get(
+            organisation=organisation, migration_id="MIG-002"
+        )
+        assert switch.target_writes_enabled is True

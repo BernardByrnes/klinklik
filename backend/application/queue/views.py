@@ -20,7 +20,7 @@ from application.queue.commands import (
 )
 from core.errors import CanonicalError
 from core.idempotency import json_safe
-from core.permissions import IsTenantMember
+from core.permissions import IsTenantMember, queue_scope_pairs, scope_allows
 from core.tenant_api import TenantAPIView
 from scheduling.operational_queries import (
     operational_queue_projection,
@@ -56,47 +56,46 @@ QUEUE_READ_CAPABILITIES = ("queue.read", "queue.view")
 
 
 class QueueCapability(BasePermission):
-    """Accept canonical queue capabilities and the S-01 compatibility grants."""
+    """Accept canonical queue capabilities and the S-01 compatibility grants.
+
+    The scope is resolved from the actor's active grants for the facility and,
+    when the request names one, the department. Omitted filters never widen a
+    department-scoped grant: the handler receives the same resolved scope.
+    """
 
     @staticmethod
-    def _permission_codes(request, *, department_id=None):
-        if request.user.is_superuser:
-            return None
-        grants = UserFacilityRole.objects.filter(
-            organisation_id=request.organisation.id,
-            user_id=request.user.id,
-            status="ACTIVE",
-        ).filter(
-            models.Q(facility_id=request.facility.id) | models.Q(facility_id__isnull=True)
-        )
-        if department_id:
-            grants = grants.filter(
-                models.Q(department_id=department_id) | models.Q(department_id__isnull=True)
-            )
-        return set(
-            RolePermission.objects.filter(
-                organisation_id=request.organisation.id,
-                role_id__in=grants.values("role_id"),
-            ).values_list("permission__code", flat=True)
+    def _scope(request, capabilities):
+        return queue_scope_pairs(
+            organisation=request.organisation,
+            facility=request.facility,
+            user=request.user,
+            capabilities=capabilities,
         )
 
     @staticmethod
-    def _allows(capabilities, permission_codes, requested_type):
-        if permission_codes is None:
-            return True
-        normalized_codes = {
-            str(code).strip().lower() for code in permission_codes
-        }
-        normalized_type = str(requested_type or "").strip().lower()
-        for capability in dict.fromkeys(capabilities):
-            if not capability:
-                continue
-            normalized_capability = str(capability).strip().lower()
-            if normalized_capability in normalized_codes:
-                return True
-            if normalized_type and f"{normalized_capability}:{normalized_type}" in normalized_codes:
-                return True
-        return False
+    def _requested_scope(request):
+        """Resolve the command scope from the values the handler will use.
+
+        For writes the body is authoritative; a query string may only supply a
+        value the body omits. Naming two different scopes is refused rather
+        than silently authorizing the narrower one.
+        """
+
+        query_department = request.query_params.get("department_id")
+        query_type = request.query_params.get("queue_type")
+        if request.method not in {"POST", "PUT", "PATCH"}:
+            return query_department, query_type, True
+        body_department = request.data.get("department_id")
+        body_type = request.data.get("queue_type")
+        if body_department and query_department and str(body_department) != str(query_department):
+            return None, None, False
+        if body_type and query_type and str(body_type).upper() != str(query_type).upper():
+            return None, None, False
+        return (
+            body_department or query_department,
+            body_type or query_type,
+            True,
+        )
 
     def _has_permission(self, request, view, capabilities=None):
         capabilities = tuple(
@@ -104,14 +103,9 @@ class QueueCapability(BasePermission):
         )
         if not capabilities:
             capabilities = (getattr(view, "capability", None),)
-        requested_type = request.query_params.get("queue_type")
-        requested_department = request.query_params.get("department_id")
-        if not requested_type and request.method in {"POST", "PUT", "PATCH"}:
-            requested_type = request.data.get("queue_type")
-            # ``target_department_id`` is never allowed to define the source
-            # permission scope for a transfer.  The source row below is the
-            # authority for that half of the command.
-            requested_department = request.data.get("department_id") or requested_department
+        requested_department, requested_type, consistent = self._requested_scope(request)
+        if not consistent:
+            return False
 
         target_department = None
         target_type = None
@@ -148,17 +142,12 @@ class QueueCapability(BasePermission):
                 source_department = source["department_id"]
                 source_type = source["queue_type"]
 
-        scope_requests = [(source_department, source_type)]
-        if target_department:
-            scope_requests.append((target_department, target_type))
-        return all(
-            self._allows(
-                capabilities,
-                self._permission_codes(request, department_id=department_id),
-                queue_type,
-            )
-            for department_id, queue_type in scope_requests
-        )
+        scope = self._scope(request, capabilities)
+        if not scope_allows(scope, source_department, source_type):
+            return False
+        if target_department and not scope_allows(scope, target_department, target_type):
+            return False
+        return True
 
     def has_permission(self, request, view):
         return self._has_permission(request, view)
@@ -284,6 +273,13 @@ class QueueCallView(QueueTenantAPIView):
             ordering_watermark=values.get("ordering_watermark"),
             out_of_order_reason=values.get("out_of_order_reason", ""),
             queue_entry_id=values.get("queue_entry_id"),
+            # Authorize exactly the candidate scope the handler will use.
+            allowed_scopes=queue_scope_pairs(
+                organisation=request.organisation,
+                facility=request.facility,
+                user=request.user,
+                capabilities=self.queue_capabilities,
+            ),
         )
         body = {"queue_entry_id": None} if entry is None else _entry_result(entry)
         reference = (

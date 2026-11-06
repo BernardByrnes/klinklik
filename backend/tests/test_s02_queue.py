@@ -1381,3 +1381,281 @@ def test_history_and_location_hide_out_of_scope_handoff(tenant, authed_client, e
     assert location.status_code == 200, location.data
     assert str(destination.id) not in str(location.data)
     assert location.data["state"] == "IN_FACILITY_NO_ACTIVE_QUEUE"
+
+
+def scoped_queue_client(tenant, *, username, department):
+    """Return a client granted one department and only TRIAGE call work."""
+
+    from rest_framework.test import APIClient
+
+    from accounts.models import OrganisationMembership
+
+    user = User.objects.create_user(username, "test-password-123")
+    with tenant_atomic(tenant.organisation.id):
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        role = Role.objects.create(
+            organisation=tenant.organisation,
+            name="Scoped Triage Caller",
+            template_code="SCOPED_TRIAGE_CALLER",
+        )
+        for code in ("queue.call:TRIAGE", "queue.view", "triage.record", "clinical.note.create"):
+            permission, _ = Permission.objects.get_or_create(
+                code=code,
+                defaults={"name": code, "sensitivity_tier": "T1"},
+            )
+            RolePermission.objects.create(
+                organisation=tenant.organisation, role=role, permission=permission
+            )
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=user,
+            role=role,
+            facility=tenant.facility,
+            department=department,
+        )
+    client = APIClient()
+    response = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert response.status_code == 200, response.data
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + response.data["access_token"])
+    return client
+
+
+def test_s02_command_scope_is_bound_to_the_granted_department(
+    tenant, enabled_mig002_target
+):
+    with tenant_atomic(tenant.organisation.id):
+        hidden_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Hidden Department",
+            code="HIDDEN",
+        )
+    _, hidden_visit, hidden = make_entry(
+        tenant, label="Hidden Urgent", department=hidden_department, priority="URGENT"
+    )
+    _, allowed_visit, allowed = make_entry(
+        tenant, label="Allowed Routine", department=tenant.department, priority="ROUTINE"
+    )
+    client = scoped_queue_client(
+        tenant, username="s02-scoped", department=tenant.department
+    )
+
+    # Omitted filters must not reach the hidden department's higher-priority row.
+    called = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-scope-call-next",
+    )
+    assert called.status_code == 200, called.data
+    assert called.data["queue_entry_id"] == str(allowed.id)
+    with tenant_atomic(tenant.organisation.id):
+        assert QueueEntry.objects.get(id=hidden.id).state == "WAITING"
+        assert QueueEntry.objects.get(id=allowed.id).state == "CALLED"
+
+    # Explicit filters naming the hidden department or a mismatched type are
+    # refused by the same resolved scope.
+    denied_department = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {"department_id": str(hidden_department.id)},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-scope-call-next-hidden",
+    )
+    assert denied_department.status_code == 403, denied_department.data
+    denied_type = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {"queue_type": "PHARMACY"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-scope-call-next-type",
+    )
+    assert denied_type.status_code == 403, denied_type.data
+
+    # Stage commands cannot target a known hidden UUID either.
+    with tenant_atomic(tenant.organisation.id):
+        hidden_version = QueueEntry.objects.get(id=hidden.id).version
+    denied_triage = client.post(
+        f"/api/v1/clinic/triage/{hidden.id}/",
+        {"expected_version": hidden_version, "acuity": "URGENT", "chief_complaint": "Hidden"},
+        format="json",
+        HTTP_IF_MATCH=f'"{hidden_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-scope-triage-hidden",
+    )
+    assert denied_triage.status_code == 403, denied_triage.data
+    denied_encounter = client.post(
+        "/api/v1/clinic/encounters/",
+        {"queue_entry_id": str(hidden.id), "expected_version": hidden_version},
+        format="json",
+        HTTP_IF_MATCH=f'"{hidden_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-scope-encounter-hidden",
+    )
+    assert denied_encounter.status_code == 403, denied_encounter.data
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=hidden.id)
+        assert unchanged.state == "WAITING"
+        assert unchanged.version == hidden_version
+        assert not TriageAssessment.objects.filter(queue_entry_id=hidden.id).exists()
+        assert not Encounter.objects.filter(queue_entry_id=hidden.id).exists()
+        assert not AuditEvent.objects.filter(
+            entity_id=str(hidden.id), event_code__in=["TRIAGE_COMPLETED", "QUEUE_CALLED"]
+        ).exists()
+
+    # The authorised row still completes the same commands.
+    with tenant_atomic(tenant.organisation.id):
+        allowed_version = QueueEntry.objects.get(id=allowed.id).version
+    triaged = client.post(
+        f"/api/v1/clinic/triage/{allowed.id}/",
+        {"expected_version": allowed_version, "acuity": "ROUTINE", "chief_complaint": "Allowed"},
+        format="json",
+        HTTP_IF_MATCH=f'"{allowed_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-scope-triage-allowed",
+    )
+    assert triaged.status_code == 201, triaged.data
+    assert triaged.data["queue_entry"]["state"] == "COMPLETED"
+
+
+def test_s02_canonical_stage_commands_require_the_current_version(
+    tenant, authed_client, enabled_mig002_target
+):
+    _, _, entry = make_entry(tenant, label="Version Required")
+    missing = authed_client.post(
+        f"/api/v1/clinic/triage/{entry.id}/",
+        {"acuity": "ROUTINE", "chief_complaint": "No version"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-version-missing",
+    )
+    assert missing.status_code == 428, missing.data
+    assert missing.data["code"] == "PRECONDITION_REQUIRED"
+
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=entry.id)
+        assert unchanged.state == "WAITING"
+        assert unchanged.version == entry.version
+        assert not TriageAssessment.objects.filter(queue_entry_id=entry.id).exists()
+        # A positive but stale version, so the guard is exercised rather than
+        # the If-Match syntax check.
+        QueueEntry.objects.filter(id=entry.id).update(version=2)
+
+    stale = authed_client.post(
+        f"/api/v1/clinic/triage/{entry.id}/",
+        {"expected_version": 1, "acuity": "ROUTINE", "chief_complaint": "Stale"},
+        format="json",
+        HTTP_IF_MATCH='"1"',
+        HTTP_IDEMPOTENCY_KEY="s02-version-stale",
+    )
+    assert stale.status_code == 412, stale.data
+    with tenant_atomic(tenant.organisation.id):
+        assert QueueEntry.objects.get(id=entry.id).version == 2
+        assert not TriageAssessment.objects.filter(queue_entry_id=entry.id).exists()
+
+    _, _, consultation = make_entry(
+        tenant, label="Encounter Version", queue_type="CONSULTATION"
+    )
+    encounter_missing = authed_client.post(
+        "/api/v1/clinic/encounters/",
+        {"queue_entry_id": str(consultation.id)},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-encounter-version-missing",
+    )
+    assert encounter_missing.status_code == 428, encounter_missing.data
+    with tenant_atomic(tenant.organisation.id):
+        assert not Encounter.objects.filter(queue_entry_id=consultation.id).exists()
+        assert QueueEntry.objects.get(id=consultation.id).state == "WAITING"
+
+
+def test_mig002_constrain_does_not_activate_target_routes(
+    tenant, authed_client, enabled_mig001_target
+):
+    _, _, entry = make_entry(tenant, label="Constrain Only")
+    with tenant_atomic(tenant.organisation.id):
+        inventory_mig002(organisation=tenant.organisation)
+        backfill_mig002(organisation=tenant.organisation)
+        verify_mig002(organisation=tenant.organisation)
+        verify_mig002(organisation=tenant.organisation)
+        constrain_mig002(organisation=tenant.organisation)
+        switch = MigrationCutover.objects.get(
+            organisation=tenant.organisation, migration_id="MIG-002"
+        )
+        assert switch.phase == "CONSTRAINED"
+        assert switch.target_reads_enabled is False
+        assert switch.target_writes_enabled is False
+
+    # Constrain records verification; it must not open the target routes.
+    fenced_read = authed_client.get("/api/v1/clinic/queue/operational/")
+    assert fenced_read.status_code == 503, fenced_read.data
+    with pytest.raises(QueueDomainError) as fenced_write:
+        with tenant_atomic(tenant.organisation.id):
+            call_next_or_exact(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=tenant.user,
+                department_id=tenant.department.id,
+                queue_type="TRIAGE",
+            )
+    assert fenced_write.value.code == "MIGRATION_TARGET_DISABLED"
+
+    with tenant_atomic(tenant.organisation.id):
+        cutover_mig002(organisation=tenant.organisation)
+        active = MigrationCutover.objects.get(
+            organisation=tenant.organisation, migration_id="MIG-002"
+        )
+        assert active.phase == "CUTOVER"
+        assert active.target_reads_enabled is True
+        assert active.target_writes_enabled is True
+
+    live_read = authed_client.get("/api/v1/clinic/queue/operational/")
+    assert live_read.status_code == 200, live_read.data
+    assert str(entry.id) in {row["id"] for row in live_read.data["entries"]}
+
+
+def test_s02_consultation_worklist_pages_and_includes_clinician(
+    tenant, authed_client, enabled_mig002_target
+):
+    consultation_ids = []
+    for index in range(26):
+        _, _, entry = make_entry(
+            tenant, label=f"Page Row {index}", queue_type="CONSULTATION"
+        )
+        consultation_ids.append(str(entry.id))
+    _, _, clinician = make_entry(
+        tenant, label="Clinician Work", queue_type="CLINICIAN"
+    )
+    _, _, triage_source = make_entry(tenant, label="Triage Source", queue_type="TRIAGE")
+
+    first = authed_client.get(
+        "/api/v1/clinic/queue/operational/?queue_type=CONSULTATION&state=WAITING&page=1&page_size=25"
+    )
+    assert first.status_code == 200, first.data
+    assert len(first.data["entries"]) == 25
+    assert first.data["has_next"] is True
+    assert first.data["page"] == 1
+
+    second = authed_client.get(
+        "/api/v1/clinic/queue/operational/?queue_type=CONSULTATION&state=WAITING&page=2&page_size=25"
+    )
+    assert second.status_code == 200, second.data
+    assert len(second.data["entries"]) == 1
+    assert second.data["has_next"] is False
+
+    reached = {row["id"] for row in first.data["entries"]} | {
+        row["id"] for row in second.data["entries"]
+    }
+    assert reached == set(consultation_ids)
+    assert str(triage_source.id) not in reached
+
+    clinician_page = authed_client.get(
+        "/api/v1/clinic/queue/operational/?queue_type=CLINICIAN&state=WAITING"
+    )
+    assert clinician_page.status_code == 200, clinician_page.data
+    assert [row["id"] for row in clinician_page.data["entries"]] == [str(clinician.id)]
+    assert str(triage_source.id) not in {
+        row["id"] for row in clinician_page.data["entries"]
+    }

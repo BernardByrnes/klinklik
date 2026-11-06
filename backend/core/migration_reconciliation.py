@@ -2628,37 +2628,53 @@ def _require_mig002_database_guards():
 
     The application role has DML privileges only. Creating the constraints or a
     global NOT NULL here would either fail or impose one tenant's cutover on
-    every other organisation, so the cutover only verifies what the schema
-    owner installed in ``scheduling.0007_s02_queue_database_guards``.
+    every other organisation, so activation only verifies what the schema owner
+    installed in ``scheduling.0007_s02_queue_database_guards``.
+
+    The check is bound to the target table OID and rejects objects that exist
+    but are unusable: an unvalidated CHECK, an invalid or not-ready index, or a
+    state trigger that is disabled for normal application writes.
     """
 
     if connection.vendor != "postgresql":
         return
     missing = []
     with connection.cursor() as cursor:
+        cursor.execute("SELECT 'scheduling_queueentry'::regclass::oid")
+        table_oid = cursor.fetchone()[0]
         cursor.execute(
             """
             SELECT conname FROM pg_constraint
-            WHERE conrelid = 'scheduling_queueentry'::regclass
+            WHERE conrelid = %s
+              AND contype = 'c'
+              AND convalidated
               AND conname IN ('queue_entry_state_valid', 'queue_entry_attempt_counts_nonnegative')
-            """
+            """,
+            [table_oid],
         )
         present_constraints = {row[0] for row in cursor.fetchall()}
         cursor.execute(
             """
-            SELECT indexname FROM pg_indexes
-            WHERE tablename = 'scheduling_queueentry'
-              AND indexname IN ('uniq_active_queue_visit_department', 'uniq_in_service_queue_visit')
-            """
+            SELECT c.relname FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE i.indrelid = %s
+              AND i.indisunique
+              AND i.indisvalid
+              AND i.indisready
+              AND c.relname IN ('uniq_active_queue_visit_department', 'uniq_in_service_queue_visit')
+            """,
+            [table_oid],
         )
         present_indexes = {row[0] for row in cursor.fetchall()}
         cursor.execute(
             """
             SELECT tgname FROM pg_trigger
-            WHERE tgrelid = 'scheduling_queueentry'::regclass
+            WHERE tgrelid = %s
               AND tgname = 'klin_klink_queue_state'
               AND NOT tgisinternal
-            """
+              AND tgenabled = 'O'
+            """,
+            [table_oid],
         )
         present_triggers = {row[0] for row in cursor.fetchall()}
     for name in ("queue_entry_state_valid", "queue_entry_attempt_counts_nonnegative"):
@@ -2671,7 +2687,7 @@ def _require_mig002_database_guards():
         missing.append("klin_klink_queue_state")
     if missing:
         raise ValueError(
-            "MIG-002 database guards are missing ("
+            "MIG-002 database guards are missing or unusable ("
             + ", ".join(sorted(missing))
             + "). Apply the owner migration first: "
             "python backend/manage.py migrate scheduling 0007"
@@ -2707,9 +2723,13 @@ def constrain_mig002(*, organisation):
         raise ValueError("MIG-002 constrain requires E=0 and two stable verification scans.")
 
     _require_mig002_database_guards()
-    switch.phase = "CONSTRAINED"
-    switch.target_reads_enabled = True
-    switch.target_writes_enabled = True
+    # Constrain records that the guards and evidence were verified. Activation
+    # belongs to cutover: a tenant that is not already active stays fenced.
+    already_active = bool(switch.target_reads_enabled and switch.target_writes_enabled)
+    if not already_active:
+        switch.phase = "CONSTRAINED"
+        switch.target_reads_enabled = False
+        switch.target_writes_enabled = False
     switch.blocker_checks_passed = summary.blocker_checks_passed
     switch.write_fence += 1
     switch.version += 1
@@ -2787,6 +2807,10 @@ def cutover_mig002(*, organisation, facility_id=None, parity_passes=2):
     if switch.phase != "CONSTRAINED":
         constrain_mig002(organisation=organisation)
         switch = _mig002_switch(organisation)
+    # Activation is the explicit gate: re-verify the installed guards even for
+    # a tenant already marked CONSTRAINED, so a disabled or invalid object can
+    # never be activated by an earlier verification.
+    _require_mig002_database_guards()
     switch.phase = "CUTOVER"
     switch.target_reads_enabled = True
     switch.target_writes_enabled = True

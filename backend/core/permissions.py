@@ -1,3 +1,13 @@
+"""Actor-scoped queue authorization shared by commands and views.
+
+A grant carries a facility and optionally a department. The permission code may
+be the bare capability (any work type in that scope) or a type-qualified code
+such as ``queue.call:TRIAGE``. Command handlers and permission checks must use
+the same resolved scope so an omitted request filter can never widen what the
+actor was granted.
+"""
+
+from django.db import models
 from rest_framework.permissions import BasePermission
 
 
@@ -27,3 +37,142 @@ class HasCapability(BasePermission):
         if not capability:
             return True
         return request.user.has_capability(capability, getattr(request, "facility", None))
+
+
+def queue_scope_pairs(*, organisation, facility, user, capabilities):
+    """Return the allowed ``(department_id, queue_type)`` pairs for the actor.
+
+    ``None`` means unrestricted (superuser). A pair of ``(None, None)`` means a
+    facility-wide grant for every work type; ``(department, None)`` is a
+    department-wide grant; ``(None, "TRIAGE")`` is a work type across the
+    facility.
+    """
+
+    if getattr(user, "is_superuser", False):
+        return None
+    from accounts.models import RolePermission, UserFacilityRole
+
+    organisation_id = getattr(organisation, "id", organisation)
+    facility_id = getattr(facility, "id", facility)
+    grants = UserFacilityRole.objects.filter(
+        organisation_id=organisation_id,
+        user_id=getattr(user, "id", user),
+        status="ACTIVE",
+    ).filter(
+        models.Q(facility_id=facility_id) | models.Q(facility_id__isnull=True)
+    )
+    codes_by_role = {}
+    pairs = set()
+    for grant in grants:
+        if grant.role_id not in codes_by_role:
+            codes_by_role[grant.role_id] = {
+                str(code).strip().lower()
+                for code in RolePermission.objects.filter(
+                    organisation_id=organisation_id,
+                    role_id=grant.role_id,
+                ).values_list("permission__code", flat=True)
+            }
+        codes = codes_by_role[grant.role_id]
+        department = str(grant.department_id) if grant.department_id else None
+        for capability in capabilities:
+            normalized = str(capability or "").strip().lower()
+            if not normalized:
+                continue
+            if normalized in codes:
+                pairs.add((department, None))
+            prefix = f"{normalized}:"
+            for code in codes:
+                if code.startswith(prefix) and len(code) > len(prefix):
+                    pairs.add((department, code[len(prefix):].upper()))
+    return sorted(pairs, key=lambda pair: (pair[0] or "", pair[1] or ""))
+
+
+def scope_allows(pairs, department_id, queue_type):
+    """Return whether the resolved scope covers one department/work type.
+
+    ``None`` on either axis means the request did not narrow that axis, so any
+    grant on the other axis covers it. The handler still filters candidates by
+    the full scope, so an omitted filter can only narrow, never widen.
+    """
+
+    if pairs is None:
+        return True
+    for allowed_department, allowed_type in pairs:
+        if (
+            department_id is not None
+            and allowed_department is not None
+            and str(allowed_department) != str(department_id)
+        ):
+            continue
+        if (
+            queue_type is not None
+            and allowed_type is not None
+            and str(allowed_type).upper() != str(queue_type).upper()
+        ):
+            continue
+        return True
+    return False
+
+
+def scope_query(pairs):
+    """Return a queryset filter for the resolved scope, or ``None``."""
+
+    if pairs is None:
+        return None
+    query = models.Q(pk__in=[])
+    for department_id, queue_type in pairs:
+        clause = models.Q()
+        if department_id is not None:
+            clause &= models.Q(department_id=department_id)
+        if queue_type is not None:
+            clause &= models.Q(queue_type=queue_type)
+        query |= clause
+    return query
+
+
+class QueueScopePermission(BasePermission):
+    """Check a targeted queue row against the actor's granted department scope."""
+
+    capability = None
+
+    def has_permission(self, request, view):
+        capability = (
+            getattr(view, "scope_capability", None)
+            or getattr(view, "capability", None)
+            or self.capability
+        )
+        if not capability:
+            return True
+        identifier = self._target_identifier(request)
+        if not identifier:
+            # The command owns the missing-identifier contract; nothing is
+            # disclosed here.
+            return True
+        from scheduling.models import QueueEntry
+
+        row = QueueEntry.objects.filter(
+            organisation_id=request.organisation.id,
+            facility_id=request.facility.id,
+            id=identifier,
+        ).values("department_id", "queue_type").first()
+        if row is None:
+            return True
+        pairs = queue_scope_pairs(
+            organisation=request.organisation,
+            facility=request.facility,
+            user=request.user,
+            capabilities=(capability,),
+        )
+        return scope_allows(pairs, row["department_id"], row["queue_type"])
+
+    @staticmethod
+    def _target_identifier(request):
+        parser_context = getattr(request, "parser_context", None) or {}
+        kwargs = parser_context.get("kwargs") or {}
+        for name in ("pk", "queue_id", "queue_entry_id"):
+            if kwargs.get(name):
+                return kwargs[name]
+        data = getattr(request, "data", None) or {}
+        if hasattr(data, "get"):
+            return data.get("queue_entry_id") or data.get("source_queue_entry_id")
+        return None
