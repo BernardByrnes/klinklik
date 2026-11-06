@@ -19,7 +19,7 @@ from core.clock import local_service_date, now
 from core.errors import CanonicalError
 from core.services import allocate_sequence, assert_transaction_active
 from patients.models import Patient
-from scheduling.models import Visit
+from scheduling.models import QueueEntry, Visit
 
 
 def _reference(prefix):
@@ -245,6 +245,43 @@ def void_unpaid_visit_invoice(*, organisation, facility, actor, invoice, reason_
     return invoice, True
 
 
+def require_visit_invoice(*, organisation, encounter):
+    """Refuse generic invoice creation when the Encounter already has a Visit.
+
+    A Visit-linked Encounter is billed through the single Invoice that check-in
+    (or the authorised financial setup path) already owns. The generic create
+    path writes an Invoice without a Visit link, so the Visit's unique-invoice
+    constraint cannot catch the duplicate; it must refuse instead. The refusal
+    is based on the stored Visit link only. A Visit whose Invoice is missing is
+    still owned by that Visit path and is not repairable here.
+
+    Legacy Encounters can predate the Visit link while still naming their queue
+    entry. An explicitly linked Visit on that same queue entry is protected the
+    same way, and an unresolvable link fails closed rather than falling through
+    to a duplicate charge.
+    """
+
+    linked_visit_id = encounter.visit_id
+    if linked_visit_id is None and encounter.queue_entry_id is not None:
+        queue_visit = QueueEntry.objects.filter(
+            id=encounter.queue_entry_id,
+            organisation=organisation,
+        ).values("visit_id").first()
+        if queue_visit is None:
+            raise CanonicalError(
+                "VISIT_INVOICE_REQUIRED",
+                "Use the invoice for this Visit.",
+                status_code=409,
+            )
+        linked_visit_id = queue_visit["visit_id"]
+    if linked_visit_id is not None:
+        raise CanonicalError(
+            "VISIT_INVOICE_REQUIRED",
+            "Use the invoice for this Visit.",
+            status_code=409,
+        )
+
+
 @transaction.atomic
 def create_invoice(*, organisation, facility, actor, patient_id, encounter_id=None, items=None, discount=Decimal("0.00"), request=None):
     patient = Patient.objects.filter(id=patient_id, organisation=organisation, status="ACTIVE").first()
@@ -259,6 +296,7 @@ def create_invoice(*, organisation, facility, actor, patient_id, encounter_id=No
             raise ValueError("Encounter was not found in this facility.")
         if encounter.status not in {"SIGNED", "CLOSED"}:
             raise ValueError("The consultation must be signed before billing.")
+        require_visit_invoice(organisation=organisation, encounter=encounter)
     if not items:
         raise ValueError("At least one service item is required.")
     today = local_service_date()
@@ -357,7 +395,7 @@ def post_payment(*, organisation, facility, actor, invoice_id, amount, method, r
     ).first()
     if invoice is None:
         raise ValueError("Invoice was not found in this facility.")
-    if invoice.status in {"PAID", "VOID"}:
+    if invoice.status in {"PAID", "VOID", "VOIDED"}:
         raise ValueError("This invoice cannot accept a payment.")
     amount = Decimal(str(amount)).quantize(Decimal("0.01"))
     if amount <= 0 or amount > invoice.balance:

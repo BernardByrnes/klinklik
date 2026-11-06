@@ -1,6 +1,6 @@
 "use client";
 
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
 
 import { IconAlertTriangle, IconDismiss } from "./icons";
 
@@ -36,9 +36,11 @@ export function Button({
   return <button type={type} className={`${BUTTON_VARIANTS[variant]} ${FOCUS_RING} ${className}`} {...props} />;
 }
 
-export function Card({ className = "", children }: { className?: string; children?: ReactNode }) {
+export function Card({ className = "", children, ...rest }: HTMLAttributes<HTMLElement>) {
   return (
-    <article className={`bg-white border border-line rounded-[18px] shadow-card ${className}`}>{children}</article>
+    <article className={`bg-white border border-line rounded-[18px] shadow-card ${className}`} {...rest}>
+      {children}
+    </article>
   );
 }
 

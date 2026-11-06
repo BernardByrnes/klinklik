@@ -76,6 +76,7 @@ export type CreateRefreshResponse = SessionResponse;
 export type ListInvoiceCreatesResponse = Array<Invoice>;
 export type CreateInvoiceCreateRequest = InvoiceCreate;
 export type CreateInvoiceCreateResponse = Invoice;
+export type RetrieveVisitInvoiceResponse = Invoice;
 export type RetrieveInvoiceDetailResponse = Invoice;
 export type CreatePaymentCreateRequest = PaymentCreate;
 export type CreatePaymentCreateResponse = Payment;
@@ -148,7 +149,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "067964e439bb0f754a040b0f852b6f44bb7297f48b84a79660d7da45c5103fd5";
+export const GENERATED_API_CONTRACT_SHA256 = "9180577d2e3bbed2b6196353aa379b97635d49f314fdcfbffeecd42e9eb6cb42";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -180,6 +181,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createInvoiceCreate",
     "path": "/api/v1/billing/invoices/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveVisitInvoice",
+    "path": "/api/v1/billing/invoices/by-visit/{visit_id}/"
   },
   {
     "method": "GET",

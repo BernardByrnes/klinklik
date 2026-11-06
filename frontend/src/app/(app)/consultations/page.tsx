@@ -1869,6 +1869,19 @@ function TreatmentSection({
   );
 }
 
+/**
+ * The Visit a signed consultation is billed through. The Encounter link is
+ * authoritative; a legacy Encounter without one may still name the queue entry
+ * that carries the Visit, and only that same queue entry is trusted.
+ */
+function encounterVisitId(encounter: Encounter, queueEntry: QueueEntry | null) {
+  if (encounter.visit) return encounter.visit;
+  if (encounter.queue_entry && queueEntry?.id === encounter.queue_entry) {
+    return queueEntry.visit ?? null;
+  }
+  return null;
+}
+
 function ConsultationsWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
@@ -4192,6 +4205,8 @@ function ConsultationsWorkspace() {
     return <UnauthorisedState capability="clinical.note.create" />;
   }
 
+  const billingVisitId = encounter ? encounterVisitId(encounter, selected) : null;
+
   return (
     <>
       <PageHeader
@@ -4502,9 +4517,15 @@ function ConsultationsWorkspace() {
                       <pre className="mt-2 whitespace-pre-wrap font-sans text-[12.5px] leading-relaxed text-secondary">{note}</pre>
                     </div>
                     {can("billing.invoice.create") ? (
-                      <Link href={`/billing?patient=${selected.patient}&encounter=${encounter.id}`}>
-                        <Button>Create invoice</Button>
-                      </Link>
+                      billingVisitId ? (
+                        <Link href={`/billing?visit=${billingVisitId}`}>
+                          <Button>Open invoice</Button>
+                        </Link>
+                      ) : (
+                        <Link href={`/billing?patient=${selected.patient}&encounter=${encounter.id}`}>
+                          <Button>Create invoice</Button>
+                        </Link>
+                      )
                     ) : (
                       <p className="text-[12px] font-medium text-muted">
                         The patient is ready for billing. Hand over to the cashier.

@@ -70,8 +70,26 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
   await page.locator("form").getByRole("button", { name: "Register patient" }).click();
   await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible();
 
+  // Observe the canonical check-in before clicking so the handoff is asserted
+  // against the invoice that check-in actually issued.
+  const checkInResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/reception/visits/check-in/") &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Check in patient" }).click();
-  await expect(page.getByText(new RegExp("checked in as \\w+-\\d{3}"))).toBeVisible();
+  const checkInResponse = await checkInResponsePromise;
+  expect(checkInResponse.ok()).toBeTruthy();
+  const checkInBody = (await checkInResponse.json()) as {
+    visit_id: string;
+    invoice_id: string | null;
+  };
+  expect(checkInBody.invoice_id).toBeTruthy();
+  const visitId = checkInBody.visit_id;
+  const invoiceId = checkInBody.invoice_id as string;
+  await expect(page.getByRole("status").filter({ hasText: "checked in." })).toContainText(
+    patientName + " checked in.",
+  );
 
   // Claim the queue entry (queue workspace).
   await page.locator('nav a[href="/queue"]').click();
@@ -142,12 +160,63 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
   await expect(page.getByText("This consultation is signed and immutable.")).toBeVisible();
   await expect(page.getByRole("tabpanel")).toContainText("Assessment: stable. Plan: hydration.");
 
-  // Invoice and payment (billing workspace) via the clinician handoff.
-  await page.getByRole("button", { name: "Create invoice" }).click();
-  await expect(page).toHaveURL(/\/billing\?/);
-  await page.getByRole("button", { name: "Create invoice" }).click();
-  await expect(page.getByText(new RegExp("Invoice INV-\\S+ created for " + patientName))).toBeVisible();
+  // The signed consultation opens the invoice check-in already issued.
+  const invoiceCreateRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/v1/billing/invoices/") invoiceCreateRequests.push(request.url());
+  });
+  const visitInvoicePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes(`/api/v1/billing/invoices/by-visit/${visitId}/`) &&
+      response.request().method() === "GET" &&
+      response.status() === 200,
+  );
+  await page.getByRole("link", { name: "Open invoice" }).click();
+  await expect(page).toHaveURL(new RegExp(`/billing\\?visit=${visitId}`));
+  const visitInvoiceResponse = await visitInvoicePromise;
+  const visitInvoiceBody = (await visitInvoiceResponse.json()) as {
+    id: string;
+    invoice_no: string;
+    visit: string;
+  };
+  expect(visitInvoiceBody.id).toBe(invoiceId);
+  expect(visitInvoiceBody.visit).toBe(visitId);
+  const invoiceNumber = visitInvoiceBody.invoice_no;
+
+  // Focused mode is the only invoice in play: no new-invoice form or action.
+  await expect(page.getByRole("heading", { name: "New invoice" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create invoice" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Visit invoice" })).toBeVisible();
+
+  const payResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/billing/invoices/${invoiceId}/pay/`) &&
+      response.request().method() === "POST",
+  );
+  const receiptResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/billing/invoices/${invoiceId}/receipt/`) &&
+      response.request().method() === "GET",
+  );
   await page.getByRole("button", { name: "Post payment" }).click();
+  const payResponse = await payResponsePromise;
+  expect(payResponse.ok()).toBeTruthy();
+  expect(payResponse.url()).toContain(invoiceId);
+  const receiptResponse = await receiptResponsePromise;
+  expect(receiptResponse.ok()).toBeTruthy();
+  expect(receiptResponse.url()).toContain(invoiceId);
+
   await expect(page.getByText("Payment recorded. Receipt RCT-")).toBeVisible();
-  await expect(page.getByText(/^RCT-/).first()).toBeVisible();
+  const printedReceipt = page.locator("[data-print-sheet]");
+  await expect(printedReceipt).toContainText("Receipt");
+  await expect(printedReceipt).toContainText(invoiceNumber);
+  await expect(printedReceipt).toContainText(patientName);
+
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByText("This invoice is paid in full.")).toBeVisible();
+
+  // No generic invoice-create request was made anywhere in the focused flow.
+  expect(invoiceCreateRequests).toEqual([]);
 });

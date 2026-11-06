@@ -19,7 +19,8 @@ from application.reception.commands import (
 )
 from application.reception.visit_query import get_visit_projection
 from audit.models import AuditEvent
-from billing.models import Invoice, InvoiceItem, PriceList, ServiceCatalogItem, ServicePrice, VisitPayerBinding
+from billing.models import Invoice, InvoiceItem, PaymentAllocation, PriceList, ServiceCatalogItem, ServicePrice, VisitPayerBinding
+from billing.services import create_invoice, post_payment
 from clinical.models import Encounter
 from clinical.services import start_encounter
 from core.errors import CanonicalError
@@ -249,6 +250,79 @@ def test_pg_competing_checkins_have_one_visit_invoice_and_consultation_line(tena
             source_type="CONSULTATION",
             state="ACTIVE",
         ).count() == 1
+
+
+def test_pg_visit_invoice_handoff_refuses_duplicate_and_pays_the_original(tenant, enabled_mig001_target):
+    """The Visit invoice is the only charge, and payment targets it under RLS."""
+
+    patient = _new_patient(tenant, "VisitInvoiceHandoff")
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        actor = User.objects.get(id=tenant.user.id)
+        outcome = visit_check_in(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            patient_id=patient.id,
+            department_id=tenant.department.id,
+            visit_type="OUTPATIENT_NEW",
+            payer_type="CASH",
+        )
+        visit_id = outcome.visit.id
+        invoice_id = outcome.invoice.id
+        invoice_no = outcome.invoice.invoice_no
+        queue_id = outcome.queue.id
+
+    with tenant_atomic(tenant.organisation.id):
+        encounter = start_encounter(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            queue_entry_id=queue_id,
+        )
+        assert encounter.visit_id == visit_id
+        # Synthetic signature: this test exercises the billing guard, not the
+        # clinical signing workflow.
+        Encounter.objects.filter(id=encounter.id).update(status="SIGNED")
+
+        with pytest.raises(CanonicalError) as refused:
+            create_invoice(
+                organisation=organisation,
+                facility=facility,
+                actor=actor,
+                patient_id=patient.id,
+                encounter_id=encounter.id,
+                items=[{"service_id": str(tenant.service.id), "quantity": "1"}],
+            )
+        assert refused.value.code == "VISIT_INVOICE_REQUIRED"
+        assert refused.value.status_code == 409
+
+        assert Invoice.objects.filter(visit_id=visit_id).count() == 1
+        assert Invoice.objects.filter(encounter_id=encounter.id).count() == 0
+        assert InvoiceItem.objects.filter(source_type="CONSULTATION", state="ACTIVE").count() == 1
+        assert not AuditEvent.objects.filter(event_code="CREATE", entity_type="Invoice").exists()
+
+    with tenant_atomic(tenant.organisation.id):
+        payment = post_payment(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            invoice_id=invoice_id,
+            amount="30000.00",
+            method="CASH",
+        )
+        assert payment.invoice_id == invoice_id
+        allocation = PaymentAllocation.objects.get(payment=payment)
+        assert allocation.invoice_id == invoice_id
+        invoice = Invoice.objects.get(id=invoice_id)
+        assert invoice.status == "PAID"
+        assert invoice.balance == 0
+        assert invoice.invoice_no == invoice_no
+        event = AuditEvent.objects.get(
+            event_code="PAYMENT", entity_type="Payment", entity_id=str(payment.id)
+        )
+        assert event.after["invoice_id"] == str(invoice_id)
 
 
 def test_pg_competing_enquiry_conversions_have_one_winner_and_no_orphan_visit(tenant, enabled_mig001_target):

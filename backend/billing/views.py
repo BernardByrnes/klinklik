@@ -1,4 +1,5 @@
 from django.db import models
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
@@ -76,6 +77,37 @@ class InvoiceListCreateView(TenantAPIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(InvoiceSerializer(invoice).data, status=status.HTTP_201_CREATED)
+
+
+class InvoiceByVisitView(TenantAPIView):
+    """Read the one Invoice a Visit already owns.
+
+    Check-in issues the consultation Invoice against the Visit, and the signed
+    consultation must open that same record instead of creating a new charge.
+    This is a read only: it exposes no clinical detail and grants no capability
+    beyond the invoice read already used for invoice detail.
+    """
+
+    capability = "billing.invoice.create"
+    response_serializer_class = InvoiceSerializer
+    operation_id = "retrieveVisitInvoice"
+
+    def get(self, request, visit_id):
+        invoice = (
+            Invoice.objects.filter(
+                organisation=request.organisation,
+                facility=request.facility,
+                visit_id=visit_id,
+                status__in=["ISSUED", "PARTIALLY_PAID", "PAID"],
+            )
+            .select_related("patient")
+            .prefetch_related("items", "payments")
+            .order_by("created_at", "id")
+            .first()
+        )
+        if invoice is None:
+            raise Http404
+        return Response(InvoiceSerializer(invoice).data)
 
 
 class InvoiceDetailView(TenantAPIView):

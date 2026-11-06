@@ -235,5 +235,5 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts
+      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/clinic-slice.spec.ts
         working-directory: frontend
