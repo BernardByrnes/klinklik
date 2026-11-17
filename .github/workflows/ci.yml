@@ -202,6 +202,7 @@ jobs:
           python -m pytest --reuse-db -v \
             backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
             backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
+            backend/tests/test_s04_postgres.py::test_pg_s04_disabled_guard_blocks_cutover_from_constrained \
             | tee "$RUNNER_TEMP/guard-proof.log"
           if grep -q "SKIPPED" "$RUNNER_TEMP/guard-proof.log"; then
             echo "A disabled-guard proof was skipped; the cutover proof is incomplete." >&2
@@ -217,7 +218,8 @@ jobs:
           python -m pytest --reuse-db -q \
             --deselect backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
             --deselect backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
-            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py backend/tests/test_s03_postgres.py
+            --deselect backend/tests/test_s04_postgres.py::test_pg_s04_disabled_guard_blocks_cutover_from_constrained \
+            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py backend/tests/test_s03_postgres.py backend/tests/test_s04_postgres.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -268,6 +270,16 @@ jobs:
           python backend/manage.py mig003 verify --organisation "$org_id"
           python backend/manage.py mig003 constrain --organisation "$org_id"
           python backend/manage.py mig003 cutover --organisation "$org_id"
+      - name: Verify MIG-004 for the synthetic organisation
+        run: |
+          org_id="$(python backend/manage.py shell -c 'from tenancy.models import Organisation; print(Organisation.objects.get(slug="clinicopus-demo").pk)' | tail -n 1)"
+          test -n "$org_id"
+          python backend/manage.py mig004 inventory --organisation "$org_id"
+          python backend/manage.py mig004 backfill --organisation "$org_id"
+          python backend/manage.py mig004 verify --organisation "$org_id"
+          python backend/manage.py mig004 verify --organisation "$org_id"
+          python backend/manage.py mig004 constrain --organisation "$org_id"
+          python backend/manage.py mig004 cutover --organisation "$org_id"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -277,5 +289,5 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts
+      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts tests/s04-encounter.spec.ts
         working-directory: frontend
