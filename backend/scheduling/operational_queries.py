@@ -4,11 +4,12 @@ import statistics
 
 from django.db import models
 
-from accounts.models import RolePermission, UserFacilityRole
+from accounts.models import UserFacilityRole
 from billing.models import Invoice
 from clinical.models import TriageAssessment
 from core.clock import now
 from core.errors import CanonicalError
+from core.permissions import UNRESTRICTED_SCOPE, queue_scope_pairs, scope_query
 from core.services import assert_transaction_active
 from scheduling.models import QueueEntry, Visit
 from tenancy.models import Department, FacilityWorkflowPolicy
@@ -19,9 +20,12 @@ IN_SERVICE_SLA_MINUTES = 60
 ON_HOLD_SLA_MINUTES = 120
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
-QUEUE_READ_PERMISSION_BASES = frozenset(
-    {"queue.read", "queue.view", "queue.read_board", "queue.supervise"}
-)
+# Route capabilities. Every read resolves grant pairs from these; the queue
+# type and department stay paired so a two-department grant never becomes a
+# cross product.
+QUEUE_READ_CAPABILITIES = ("queue.read", "queue.view")
+QUEUE_HISTORY_CAPABILITIES = ("visit.read", "queue.read", "queue.view")
+QUEUE_SUPERVISOR_CAPABILITIES = ("queue.read_board", "queue.supervise")
 
 
 def _organisation_id(organisation):
@@ -46,48 +50,49 @@ def _role_templates(*, organisation, actor, facility_id, department_id=None):
     return set(grants.values_list("role__template_code", flat=True))
 
 
-def _queue_scope(*, organisation, facility, actor):
-    """Return the actor's department and queue-type read scope.
+def _resolve_scope(*, organisation, facility, actor, capabilities, allowed_scopes=None):
+    """Return this actor's paired ``(department, work type)`` grants.
 
-    ``None`` means an organisation/facility-wide grant.  An empty set means
-    the actor has no matching grant and must see no queue rows.  Keeping those
-    values distinct is important: a valid tenant member without a department
-    grant must not become an unrestricted reader.
+    The API passes the pairs it already resolved from the route's declared
+    capabilities so the read applies exactly the authorization that admitted
+    the request. Direct service callers omit them and get the projection's own
+    default capability set. ``None`` from either source means unrestricted.
     """
 
-    if actor is None or getattr(actor, "is_superuser", False):
-        return None, None
-    grants = UserFacilityRole.objects.filter(
-        organisation_id=_organisation_id(organisation),
-        user_id=actor.id,
-        status="ACTIVE",
-    ).filter(
-        models.Q(facility_id=_facility_id(facility)) | models.Q(facility_id__isnull=True)
+    if allowed_scopes is not None:
+        return allowed_scopes
+    if actor is None:
+        # Internal and system reads have no actor to resolve; their call site
+        # still applies the mandatory organisation and facility filters.
+        return None
+    return queue_scope_pairs(
+        organisation=organisation,
+        facility=facility,
+        user=actor,
+        capabilities=capabilities,
     )
-    if not grants.exists():
-        return set(), set()
-    rows = list(grants.values_list("department_id", flat=True))
-    department_ids = None if any(value is None for value in rows) else set(rows)
-    permission_codes = {
-        str(code).strip().lower()
-        for code in RolePermission.objects.filter(
-            organisation_id=_organisation_id(organisation),
-            role_id__in=grants.values("role_id"),
-        ).values_list("permission__code", flat=True)
-    }
-    if permission_codes.intersection(QUEUE_READ_PERMISSION_BASES):
-        queue_types = None
-    else:
-        queue_types = {
-            code.split(":", 1)[1].upper()
-            for code in permission_codes
-            if code.split(":", 1)[0] in {"queue.read", "queue.view"} and ":" in code
-        }
-    return department_ids, queue_types
 
 
-def _scoped_department_ids(*, organisation, facility, actor):
-    return _queue_scope(organisation=organisation, facility=facility, actor=actor)[0]
+def _apply_queue_scope(queryset, pairs):
+    """Intersect a queryset with the paired scope, before ordering or paging."""
+
+    predicate = scope_query(pairs)
+    if predicate is UNRESTRICTED_SCOPE:
+        return queryset
+    return queryset.filter(predicate)
+
+
+def _scoped_department_ids(pairs):
+    """Return the departments a card may be shown for, or ``None`` for all."""
+
+    if pairs is None:
+        return None
+    department_ids = set()
+    for department_id, _ in pairs:
+        if department_id is None:
+            return None
+        department_ids.add(department_id)
+    return department_ids
 
 
 def _require_target_reads(organisation):
@@ -289,6 +294,7 @@ def operational_queue_projection(
     as_of=None,
     envelope=False,
     include_terminal=False,
+    allowed_scopes=None,
 ):
     """Return a deterministic, role-minimal operational worklist.
 
@@ -318,13 +324,19 @@ def operational_queue_projection(
     )
     if queue_date:
         queryset = queryset.filter(queue_date=queue_date)
-    scoped_departments, scoped_queue_types = _queue_scope(
-        organisation=organisation,
-        facility=facility,
-        actor=actor,
+    # The paired grant filter is applied to the organisation/facility queryset
+    # before any ordering, counting, or paging. Explicit request filters below
+    # can only narrow it.
+    queryset = _apply_queue_scope(
+        queryset,
+        _resolve_scope(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            capabilities=QUEUE_READ_CAPABILITIES,
+            allowed_scopes=allowed_scopes,
+        ),
     )
-    if scoped_departments is not None:
-        queryset = queryset.filter(department_id__in=scoped_departments)
     if department_id:
         queryset = queryset.filter(department_id=department_id)
     state_values = []
@@ -348,8 +360,6 @@ def operational_queue_projection(
         queryset = queryset.filter(models.Q(state__in=state_values) | models.Q(status__in=state_values))
     elif not include_terminal:
         queryset = queryset.filter(state__in=QueueEntry.ACTIVE_STATES | {"NO_SHOW"})
-    if scoped_queue_types is not None:
-        queryset = queryset.filter(queue_type__in=scoped_queue_types)
     if queue_type:
         queryset = queryset.filter(queue_type=str(queue_type).upper())
     assignment_rank = models.Case(
@@ -403,7 +413,9 @@ def operational_queue_projection(
     }
 
 
-def queue_priority_projection(*, organisation, facility, actor=None, department_id=None, as_of=None):
+def queue_priority_projection(
+    *, organisation, facility, actor=None, department_id=None, as_of=None, allowed_scopes=None
+):
     return operational_queue_projection(
         organisation=organisation,
         facility=facility,
@@ -412,10 +424,13 @@ def queue_priority_projection(*, organisation, facility, actor=None, department_
         states=["WAITING_PAYMENT", "WAITING", "CALLED"],
         as_of=as_of,
         envelope=False,
+        allowed_scopes=allowed_scopes,
     )
 
 
-def queue_location_projection(*, organisation, facility, visit_id, actor=None, as_of=None):
+def queue_location_projection(
+    *, organisation, facility, visit_id, actor=None, as_of=None, allowed_scopes=None
+):
     """Derive current downstream location and any held return obligation."""
 
     assert_transaction_active()
@@ -428,23 +443,24 @@ def queue_location_projection(*, organisation, facility, visit_id, actor=None, a
     ).first()
     if visit is None:
         raise CanonicalError("NOT_FOUND", "The Visit was not found in this facility.", status_code=404)
-    entries = list(
-        QueueEntry.objects.filter(
-            organisation_id=visit.organisation_id,
-            facility_id=visit.facility_id,
-            visit_id=visit.id,
-        ).select_related("patient", "department", "assigned_user", "served_by", "called_by", "claimed_by")
-        .order_by("queue_time", "sequence", "id")
+    # Scope before ranking: a hidden stage must not decide the displayed
+    # location or contribute a return obligation.
+    entries_queryset = QueueEntry.objects.filter(
+        organisation_id=visit.organisation_id,
+        facility_id=visit.facility_id,
+        visit_id=visit.id,
+    ).select_related("patient", "department", "assigned_user", "served_by", "called_by", "claimed_by")
+    entries_queryset = _apply_queue_scope(
+        entries_queryset,
+        _resolve_scope(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            capabilities=QUEUE_READ_CAPABILITIES,
+            allowed_scopes=allowed_scopes,
+        ),
     )
-    scoped_departments, scoped_queue_types = _queue_scope(
-        organisation=organisation,
-        facility=facility,
-        actor=actor,
-    )
-    if scoped_departments is not None:
-        entries = [entry for entry in entries if entry.department_id in scoped_departments]
-    if scoped_queue_types is not None:
-        entries = [entry for entry in entries if entry.queue_type.upper() in scoped_queue_types]
+    entries = list(entries_queryset.order_by("queue_time", "sequence", "id"))
     active = [entry for entry in entries if entry.state in QueueEntry.ACTIVE_STATES]
     held = [entry for entry in active if entry.state in {"ON_HOLD", "READY_TO_RESUME"}]
     current_candidates = [entry for entry in active if entry.state not in {"ON_HOLD", "READY_TO_RESUME"}]
@@ -498,7 +514,9 @@ def queue_location_projection(*, organisation, facility, visit_id, actor=None, a
     }
 
 
-def queue_history_projection(*, organisation, facility, visit_id, actor=None):
+def queue_history_projection(
+    *, organisation, facility, visit_id, actor=None, allowed_scopes=None
+):
     assert_transaction_active()
     _require_target_reads(organisation)
     visit = Visit.objects.filter(
@@ -512,18 +530,19 @@ def queue_history_projection(*, organisation, facility, visit_id, actor=None):
         organisation_id=visit.organisation_id,
         facility_id=visit.facility_id,
         visit_id=visit.id,
-    ).select_related("department", "called_by", "claimed_by", "served_by", "completed_by", "removed_by").order_by(
-        "queue_time", "sequence", "id"
-    )
-    scoped_departments, scoped_queue_types = _queue_scope(
-        organisation=organisation,
-        facility=facility,
-        actor=actor,
-    )
-    if scoped_departments is not None:
-        entries = entries.filter(department_id__in=scoped_departments)
-    if scoped_queue_types is not None:
-        entries = entries.filter(queue_type__in=scoped_queue_types)
+    ).select_related("department", "called_by", "claimed_by", "served_by", "completed_by", "removed_by")
+    # The displayed history is selected from the paired scope, so a hidden
+    # stage never appears in the visit timeline.
+    entries = _apply_queue_scope(
+        entries,
+        _resolve_scope(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            capabilities=QUEUE_HISTORY_CAPABILITIES,
+            allowed_scopes=allowed_scopes,
+        ),
+    ).order_by("queue_time", "sequence", "id")
     return [
         {
             "id": str(entry.id),
@@ -558,7 +577,14 @@ def queue_history_projection(*, organisation, facility, visit_id, actor=None):
     ]
 
 
-def supervisor_queue_projection(*, organisation, facility, actor=None, as_of=None):
+def supervisor_queue_projection(*, organisation, facility, actor=None, as_of=None, allowed_scopes=None):
+    pairs = _resolve_scope(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        capabilities=QUEUE_SUPERVISOR_CAPABILITIES,
+        allowed_scopes=allowed_scopes,
+    )
     rows = []
     page = 1
     while True:
@@ -570,16 +596,13 @@ def supervisor_queue_projection(*, organisation, facility, actor=None, as_of=Non
             page=page,
             page_size=MAX_PAGE_SIZE,
             envelope=False,
+            allowed_scopes=pairs,
         )
         rows.extend(page_rows)
         if len(page_rows) < MAX_PAGE_SIZE:
             break
         page += 1
-    scoped_departments, _ = _queue_scope(
-        organisation=organisation,
-        facility=facility,
-        actor=actor,
-    )
+    scoped_departments = _scoped_department_ids(pairs)
     departments = Department.objects.filter(
         organisation_id=_organisation_id(organisation),
         facility_id=_facility_id(facility),

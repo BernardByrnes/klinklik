@@ -17,7 +17,7 @@ from accounts.models import User, UserFacilityRole
 from audit.services import record_fact
 from core.clock import now
 from core.errors import CanonicalError
-from core.permissions import scope_allows, scope_query
+from core.permissions import UNRESTRICTED_SCOPE, scope_allows, scope_query
 from core.services import allocate_sequence, assert_transaction_active
 from clinical.models import Encounter, EncounterCoAuthor, TriageAssessment, VitalsObservation
 from billing.models import Invoice, Payment, PaymentAllocation
@@ -530,8 +530,11 @@ def call_next_or_exact(
     )
     if allowed_scopes is not None:
         # Intersect the actor's grants before ordering and locking, so the
-        # first candidate is always one the caller may actually call.
-        candidates = candidates.filter(scope_query(allowed_scopes))
+        # first candidate is always one the caller may actually call. An empty
+        # grant set matches no row; a facility-wide wildcard adds no condition.
+        predicate = scope_query(allowed_scopes)
+        if predicate is not UNRESTRICTED_SCOPE:
+            candidates = candidates.filter(predicate)
     if ordering_watermark is not None:
         candidates = candidates.filter(queue_time__lte=ordering_watermark)
     try:

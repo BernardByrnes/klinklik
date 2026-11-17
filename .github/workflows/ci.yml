@@ -190,12 +190,32 @@ jobs:
         run: |
           python tools/check_s00_postgres.py
           python backend/manage.py check_rls --require-postgres
+      - name: Prove cutover refuses a disabled state guard
+        env:
+          DB_NAME: clinicopus
+          DB_USER: clinicopus_app
+          DB_PASSWORD: clinicopus_app_test
+          S02_OWNER_DSN: postgresql://clinicopus_owner:clinicopus_owner_test@127.0.0.1:5432/test_clinicopus
+        run: |
+          : "${S02_OWNER_DSN:?S02_OWNER_DSN is required for the disabled-guard proof}"
+          set -o pipefail
+          python -m pytest --reuse-db -v \
+            backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
+            | tee "$RUNNER_TEMP/guard-proof.log"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/guard-proof.log"; then
+            echo "The disabled-guard proof was skipped; the S-02 cutover proof is incomplete." >&2
+            exit 1
+          fi
       - name: Run PostgreSQL-only S-00 tests
         env:
           DB_NAME: clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
-        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py
+          S02_OWNER_DSN: postgresql://clinicopus_owner:clinicopus_owner_test@127.0.0.1:5432/test_clinicopus
+        run: |
+          python -m pytest --reuse-db -q \
+            --deselect backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
+            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 """HTTP coordinators for S-02 queue commands and read projections."""
 
 from datetime import date
+import uuid
 
 from django.db import models
 from rest_framework import status
@@ -23,6 +24,9 @@ from core.idempotency import json_safe
 from core.permissions import IsTenantMember, queue_scope_pairs, scope_allows
 from core.tenant_api import TenantAPIView
 from scheduling.operational_queries import (
+    QUEUE_HISTORY_CAPABILITIES,
+    QUEUE_READ_CAPABILITIES,
+    QUEUE_SUPERVISOR_CAPABILITIES,
     operational_queue_projection,
     public_board_projection,
     queue_history_projection,
@@ -52,57 +56,72 @@ from scheduling.serializers import (
 )
 
 
-QUEUE_READ_CAPABILITIES = ("queue.read", "queue.view")
-
-
 class QueueCapability(BasePermission):
     """Accept canonical queue capabilities and the S-01 compatibility grants.
 
     The scope is resolved from the actor's active grants for the facility and,
     when the request names one, the department. Omitted filters never widen a
     department-scoped grant: the handler receives the same resolved scope.
+    The resolved pairs are cached on the request so a read projection applies
+    exactly the authorization that admitted it.
     """
 
     @staticmethod
+    def _capabilities_for(view):
+        capabilities = tuple(getattr(view, "queue_capabilities", ()) or ())
+        if not capabilities:
+            capabilities = (getattr(view, "capability", None),)
+        return capabilities
+
+    @staticmethod
     def _scope(request, capabilities):
-        return queue_scope_pairs(
-            organisation=request.organisation,
-            facility=request.facility,
-            user=request.user,
-            capabilities=capabilities,
-        )
+        capabilities = tuple(capabilities or ())
+        cache = getattr(request, "_queue_capability_scopes", None)
+        if cache is None:
+            cache = {}
+            request._queue_capability_scopes = cache
+        if capabilities not in cache:
+            cache[capabilities] = queue_scope_pairs(
+                organisation=request.organisation,
+                facility=request.facility,
+                user=request.user,
+                capabilities=capabilities,
+            )
+        return cache[capabilities]
+
+    @classmethod
+    def scope_for_request(cls, request, view):
+        """Return the route's resolved grant pairs for its own projection."""
+
+        return cls._scope(request, cls._capabilities_for(view))
 
     @staticmethod
     def _requested_scope(request):
         """Resolve the command scope from the values the handler will use.
 
-        For writes the body is authoritative; a query string may only supply a
-        value the body omits. Naming two different scopes is refused rather
-        than silently authorizing the narrower one.
+        Body fields are the single command input for department and work type,
+        and they are the values the request fingerprint already binds. A query
+        string command scope would be authorized here but ignored by the
+        handler, so it is refused before any idempotency lookup. GET filters
+        remain the read projections' input.
         """
 
         query_department = request.query_params.get("department_id")
         query_type = request.query_params.get("queue_type")
         if request.method not in {"POST", "PUT", "PATCH"}:
             return query_department, query_type, True
-        body_department = request.data.get("department_id")
-        body_type = request.data.get("queue_type")
-        if body_department and query_department and str(body_department) != str(query_department):
-            return None, None, False
-        if body_type and query_type and str(body_type).upper() != str(query_type).upper():
-            return None, None, False
-        return (
-            body_department or query_department,
-            body_type or query_type,
-            True,
-        )
+        if query_department or query_type:
+            raise CanonicalError(
+                "INVALID_QUERY_SCOPE",
+                "Command department and queue type filters must be sent in the request body.",
+                status_code=400,
+            )
+        return request.data.get("department_id"), request.data.get("queue_type"), True
 
     def _has_permission(self, request, view, capabilities=None):
         capabilities = tuple(
-            capabilities if capabilities is not None else getattr(view, "queue_capabilities", ()) or ()
+            capabilities if capabilities is not None else self._capabilities_for(view)
         )
-        if not capabilities:
-            capabilities = (getattr(view, "capability", None),)
         requested_department, requested_type, consistent = self._requested_scope(request)
         if not consistent:
             return False
@@ -126,11 +145,23 @@ class QueueCapability(BasePermission):
         source_department = requested_department
         source_type = requested_type
         if source_identifier:
-            source = QueueEntry.objects.filter(
-                organisation_id=request.organisation.id,
-                facility_id=request.facility.id,
-                id=source_identifier,
-            ).values("department_id", "queue_type").first()
+            try:
+                source_entry_id = uuid.UUID(str(source_identifier))
+            except (AttributeError, TypeError, ValueError):
+                # The serializer owns malformed identifiers; a UUID-column
+                # lookup here would fail before its field-level 400.
+                source_entry_id = None
+            source = (
+                QueueEntry.objects.filter(
+                    organisation_id=request.organisation.id,
+                    facility_id=request.facility.id,
+                    id=source_entry_id,
+                )
+                .values("department_id", "queue_type")
+                .first()
+                if source_entry_id is not None
+                else None
+            )
             if source is not None:
                 # A caller may narrow a source request, but may not relabel
                 # the authoritative entry to obtain another department/type
@@ -174,6 +205,9 @@ class QueueTenantAPIView(TenantAPIView):
     permission_classes = [IsAuthenticated, IsTenantMember, QueueCapability]
     denial_audit_required = False
     operation_id = None
+
+    def resolved_queue_scope(self):
+        return QueueCapability.scope_for_request(self.request, self)
 
 
 def _mutation_response(data, *, status_code=status.HTTP_200_OK, result_reference=None):
@@ -250,7 +284,51 @@ class QueueCallView(QueueTenantAPIView):
     response_serializer_classes_by_status = {"POST": {"200": QueueMutationResponseSerializer}}
 
     def replay_idempotent_response(self, record):
-        return record.response_body
+        """Re-authorize a stored call result against the actor's current scope.
+
+        The key is bound to the original request, not to the grants that made
+        it succeed. A caller whose department or work-type grant moved must not
+        receive another department's row, so the persisted row is resolved and
+        checked here before the saved envelope is returned.
+        """
+
+        body = record.response_body
+        reference = record.result_reference if isinstance(record.result_reference, dict) else {}
+        entry_id = reference.get("entity_id") if reference.get("entity_type") == "QueueEntry" else None
+        if not entry_id and isinstance(body, dict):
+            entry_id = body.get("queue_entry_id")
+        if not entry_id:
+            # An empty result stays an empty result.
+            return body
+        try:
+            target_id = uuid.UUID(str(entry_id))
+        except (AttributeError, TypeError, ValueError):
+            raise self._replay_denial() from None
+        entry = (
+            QueueEntry.objects.filter(
+                organisation_id=self.request.organisation.id,
+                facility_id=self.request.facility.id,
+                id=target_id,
+            )
+            .values("department_id", "queue_type")
+            .first()
+        )
+        if entry is None:
+            raise self._replay_denial()
+        scope = QueueCapability.scope_for_request(self.request, self)
+        if not scope_allows(scope, entry["department_id"], entry["queue_type"]):
+            raise self._replay_denial()
+        return body
+
+    @staticmethod
+    def _replay_denial():
+        """Return the canonical denial without row or caller metadata."""
+
+        return CanonicalError(
+            "NOT_FOUND",
+            "The queue entry was not found in this facility.",
+            status_code=404,
+        )
 
     def post(self, request, pk=None):
         serializer = QueueCallSerializer(data=request.data)
@@ -274,12 +352,7 @@ class QueueCallView(QueueTenantAPIView):
             out_of_order_reason=values.get("out_of_order_reason", ""),
             queue_entry_id=values.get("queue_entry_id"),
             # Authorize exactly the candidate scope the handler will use.
-            allowed_scopes=queue_scope_pairs(
-                organisation=request.organisation,
-                facility=request.facility,
-                user=request.user,
-                capabilities=self.queue_capabilities,
-            ),
+            allowed_scopes=QueueCapability.scope_for_request(request, self),
         )
         body = {"queue_entry_id": None} if entry is None else _entry_result(entry)
         reference = (
@@ -579,6 +652,7 @@ class OperationalQueueProjectionView(QueueTenantAPIView):
             page_size=page_size,
             include_terminal=include_terminal,
             envelope=True,
+            allowed_scopes=self.resolved_queue_scope(),
         )
         return Response(result)
 
@@ -596,6 +670,7 @@ class QueuePriorityProjectionView(QueueTenantAPIView):
                 facility=request.facility,
                 actor=request.user,
                 department_id=request.query_params.get("department_id"),
+                allowed_scopes=self.resolved_queue_scope(),
             )
         )
 
@@ -612,12 +687,13 @@ class QueueLocationProjectionView(QueueTenantAPIView):
                 facility=request.facility,
                 visit_id=visit_id,
                 actor=request.user,
+                allowed_scopes=self.resolved_queue_scope(),
             )
         )
 
 
 class QueueHistoryProjectionView(QueueTenantAPIView):
-    queue_capabilities = ("visit.read", "queue.read", "queue.view")
+    queue_capabilities = QUEUE_HISTORY_CAPABILITIES
     operation_id = "queueHistoryProjection"
     response_serializer_class = QueueHistoryItemSerializer
     response_is_list = True
@@ -629,12 +705,13 @@ class QueueHistoryProjectionView(QueueTenantAPIView):
                 facility=request.facility,
                 visit_id=visit_id,
                 actor=request.user,
+                allowed_scopes=self.resolved_queue_scope(),
             )
         )
 
 
 class SupervisorQueueProjectionView(QueueTenantAPIView):
-    queue_capabilities = ("queue.read_board", "queue.supervise")
+    queue_capabilities = QUEUE_SUPERVISOR_CAPABILITIES
     operation_id = "supervisorQueueProjection"
     response_serializer_class = QueueSupervisorRowSerializer
     response_is_list = True
@@ -645,6 +722,7 @@ class SupervisorQueueProjectionView(QueueTenantAPIView):
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
+                allowed_scopes=self.resolved_queue_scope(),
             )
         )
 

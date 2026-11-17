@@ -5,7 +5,13 @@ be the bare capability (any work type in that scope) or a type-qualified code
 such as ``queue.call:TRIAGE``. Command handlers and permission checks must use
 the same resolved scope so an omitted request filter can never widen what the
 actor was granted.
+
+The resolved scope is a set of ``(department, work type)`` pairs, not two
+independent axes: a reader granted TRIAGE in department A and CONSULTATION in
+department B may read neither A's consultation work nor B's triage work.
 """
+
+import uuid
 
 from django.db import models
 from rest_framework.permissions import BasePermission
@@ -114,18 +120,48 @@ def scope_allows(pairs, department_id, queue_type):
     return False
 
 
+class _UnrestrictedScope:
+    """Marker for a resolved scope that narrows nothing.
+
+    The facility/organisation filters are mandatory at every call site, so an
+    unrestricted department/work-type condition is safe: it cannot reach
+    another tenant or another branch.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):  # pragma: no cover - debugging aid
+        return "<queue scope: unrestricted>"
+
+
+UNRESTRICTED_SCOPE = _UnrestrictedScope()
+
+
 def scope_query(pairs):
-    """Return a queryset filter for the resolved scope, or ``None``."""
+    """Return a queryset filter for the resolved scope, or ``UNRESTRICTED_SCOPE``.
+
+    ``None`` and the facility-wide wildcard pair ``(None, None)`` mean the
+    resolver found no department/type restriction. Call sites must skip the
+    filter for the sentinel. An empty collection is the opposite case: it
+    matches no row. Within one pair the conditions are ANDed and the pairs are
+    ORed, so a grant never contributes a second department's work type.
+    """
 
     if pairs is None:
-        return None
-    query = models.Q(pk__in=[])
+        return UNRESTRICTED_SCOPE
+    clauses = []
     for department_id, queue_type in pairs:
+        if department_id is None and queue_type is None:
+            # A wildcard stays effective even alongside narrower grants.
+            return UNRESTRICTED_SCOPE
         clause = models.Q()
         if department_id is not None:
             clause &= models.Q(department_id=department_id)
         if queue_type is not None:
             clause &= models.Q(queue_type=queue_type)
+        clauses.append(clause)
+    query = models.Q(pk__in=[])
+    for clause in clauses:
         query |= clause
     return query
 
@@ -148,12 +184,19 @@ class QueueScopePermission(BasePermission):
             # The command owns the missing-identifier contract; nothing is
             # disclosed here.
             return True
+        try:
+            target_id = uuid.UUID(str(identifier))
+        except (AttributeError, TypeError, ValueError):
+            # A malformed identifier is a request-shape problem. Defer to the
+            # command serializer so the caller receives its field-level 400
+            # without a UUID-column lookup or a scope disclosure.
+            return True
         from scheduling.models import QueueEntry
 
         row = QueueEntry.objects.filter(
             organisation_id=request.organisation.id,
             facility_id=request.facility.id,
-            id=identifier,
+            id=target_id,
         ).values("department_id", "queue_type").first()
         if row is None:
             return True

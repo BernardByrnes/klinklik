@@ -1659,3 +1659,464 @@ def test_s02_consultation_worklist_pages_and_includes_clinician(
     assert str(triage_source.id) not in {
         row["id"] for row in clinician_page.data["entries"]
     }
+
+
+# --- S-02 review follow-up: paired grants, command scope, replay, target validation ---
+
+
+def queue_scope_client(tenant, *, username, grants):
+    """Return a client whose scope is exactly the given (department, codes) grants.
+
+    Each grant is its own role so the work type stays bound to its department,
+    which is what a real two-department reader looks like.
+    """
+
+    from rest_framework.test import APIClient
+
+    from accounts.models import OrganisationMembership
+
+    user = User.objects.create_user(username, "test-password-123")
+    with tenant_atomic(tenant.organisation.id):
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        for index, (department, codes) in enumerate(grants):
+            role = Role.objects.create(
+                organisation=tenant.organisation,
+                name=f"{username} role {index}",
+                template_code=f"SCOPED_{username.upper().replace('-', '_')}_{index}",
+            )
+            for code in codes:
+                permission, _ = Permission.objects.get_or_create(
+                    code=code,
+                    defaults={"name": code, "sensitivity_tier": "T1"},
+                )
+                RolePermission.objects.create(
+                    organisation=tenant.organisation,
+                    role=role,
+                    permission=permission,
+                )
+            UserFacilityRole.objects.create(
+                organisation=tenant.organisation,
+                user=user,
+                role=role,
+                facility=tenant.facility,
+                department=department,
+            )
+    client = APIClient()
+    response = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert response.status_code == 200, response.data
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + response.data["access_token"])
+    return client, user
+
+
+def test_queue_reads_keep_department_and_work_type_paired(tenant, enabled_mig002_target):
+    with tenant_atomic(tenant.organisation.id):
+        department_b = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Second Department",
+            code="SECOND",
+        )
+    _, _, a_triage = make_entry(
+        tenant, label="A Triage", department=tenant.department, queue_type="TRIAGE"
+    )
+    _, _, a_consultation = make_entry(
+        tenant,
+        label="A Consultation",
+        department=tenant.department,
+        queue_type="CONSULTATION",
+    )
+    _, _, b_triage = make_entry(
+        tenant, label="B Triage", department=department_b, queue_type="TRIAGE"
+    )
+    _, _, b_consultation = make_entry(
+        tenant,
+        label="B Consultation",
+        department=department_b,
+        queue_type="CONSULTATION",
+    )
+    client, _ = queue_scope_client(
+        tenant,
+        username="paired-reader",
+        grants=[
+            (tenant.department, ("queue.read:TRIAGE",)),
+            (department_b, ("queue.read:CONSULTATION",)),
+        ],
+    )
+    allowed_ids = {str(a_triage.id), str(b_consultation.id)}
+
+    worklist = client.get("/api/v1/clinic/queue/operational/?include_terminal=true")
+    assert worklist.status_code == 200, worklist.data
+    assert {row["id"] for row in worklist.data["entries"]} == allowed_ids
+    assert worklist.data["count"] == 2
+    assert str(a_consultation.id) not in str(worklist.data)
+    assert str(b_triage.id) not in str(worklist.data)
+
+    narrowed = client.get(
+        f"/api/v1/clinic/queue/operational/?department_id={tenant.department.id}"
+    )
+    assert narrowed.status_code == 200, narrowed.data
+    assert [row["id"] for row in narrowed.data["entries"]] == [str(a_triage.id)]
+    assert narrowed.data["count"] == 1
+
+    # An explicit combination the reader does not hold is refused with no
+    # hidden identifier or patient field in the response.
+    out_of_scope = client.get(
+        f"/api/v1/clinic/queue/operational/?department_id={department_b.id}&queue_type=TRIAGE"
+    )
+    assert out_of_scope.status_code == 403, out_of_scope.data
+    assert str(b_triage.id) not in str(out_of_scope.data)
+    assert "patient" not in str(out_of_scope.data).lower()
+
+    priority = client.get("/api/v1/clinic/queue/priority-projection/")
+    assert priority.status_code == 200, priority.data
+    assert {row["id"] for row in priority.data} == allowed_ids
+
+    # The visit timeline and derived location use the same paired predicate:
+    # B/TRIAGE is hidden even though it would rank ahead of A/TRIAGE.
+    _, visit, visible = make_entry(
+        tenant, label="Scoped Location", department=tenant.department, queue_type="TRIAGE"
+    )
+    with tenant_atomic(tenant.organisation.id):
+        hidden, created = create_or_reuse_destination(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            visit=visit,
+            department=department_b,
+            queue_type="TRIAGE",
+            source_stage="TRIAGE",
+            work_identity=f"LOCATION-HIDDEN:{uuid4().hex}",
+        )
+        assert created
+        QueueEntry.objects.filter(id=hidden.id).update(
+            state="IN_SERVICE", status="IN_TRIAGE"
+        )
+
+    location = client.get(f"/api/v1/clinic/queue/location/{visit.id}/")
+    assert location.status_code == 200, location.data
+    assert location.data["current"]["queue_entry_id"] == str(visible.id)
+    assert location.data["current"]["department_id"] == str(tenant.department.id)
+    assert str(hidden.id) not in str(location.data)
+
+    history = client.get(f"/api/v1/clinic/queue/history/{visit.id}/")
+    assert history.status_code == 200, history.data
+    assert {row["id"] for row in history.data} == {str(visible.id)}
+
+    # A role without a queue-read capability sees nothing at all.
+    unrelated, _ = queue_scope_client(
+        tenant,
+        username="unrelated-reader",
+        grants=[(tenant.department, ("clinical.note.create",))],
+    )
+    denied = unrelated.get("/api/v1/clinic/queue/operational/")
+    assert denied.status_code == 403, denied.data
+
+    # Supervisor cards stay inside the supervisor's authorized departments.
+    supervisor, _ = queue_scope_client(
+        tenant,
+        username="department-supervisor",
+        grants=[(tenant.department, ("queue.read_board",))],
+    )
+    cards = supervisor.get("/api/v1/clinic/queue/supervisor/")
+    assert cards.status_code == 200, cards.data
+    assert {card["department_id"] for card in cards.data} == {str(tenant.department.id)}
+
+
+def test_call_next_facility_wide_grant_reaches_a_waiting_row(tenant, enabled_mig002_target):
+    _, _, entry = make_entry(tenant, label="Facility Wide Call")
+    client, _ = queue_scope_client(
+        tenant,
+        username="facility-caller",
+        grants=[(None, ("queue.call", "queue.view"))],
+    )
+    called = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-facility-wide-call",
+    )
+    assert called.status_code == 200, called.data
+    assert called.data["queue_entry_id"] == str(entry.id)
+    assert QueueEntry.objects.get(id=entry.id).state == "CALLED"
+
+
+def test_call_next_command_filters_come_from_the_validated_body(tenant, enabled_mig002_target):
+    with tenant_atomic(tenant.organisation.id):
+        department_b = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Filtered Department",
+            code="FILTERED",
+        )
+    _, _, urgent_b = make_entry(
+        tenant,
+        label="Other Department Urgent",
+        department=department_b,
+        queue_type="TRIAGE",
+        priority="URGENT",
+    )
+    _, _, routine_a = make_entry(
+        tenant, label="Requested Department Routine", queue_type="TRIAGE"
+    )
+    client, _ = queue_scope_client(
+        tenant,
+        username="two-department-caller",
+        grants=[
+            (tenant.department, ("queue.call", "queue.view")),
+            (department_b, ("queue.call", "queue.view")),
+        ],
+    )
+
+    # The body filter is the command input, so the higher-priority row in the
+    # other granted department is not called.
+    called = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {"department_id": str(tenant.department.id)},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-body-filter-call",
+    )
+    assert called.status_code == 200, called.data
+    assert called.data["queue_entry_id"] == str(routine_a.id)
+    assert QueueEntry.objects.get(id=urgent_b.id).state == "WAITING"
+
+    replay = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {"department_id": str(tenant.department.id)},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-body-filter-call",
+    )
+    assert replay.status_code == 200, replay.data
+    assert replay["Idempotent-Replay"] == "true"
+    assert replay.data == called.data
+
+    # A command scope in the query string is refused before any idempotency
+    # lookup or execution, including for an already-used key.
+    rejected = client.post(
+        f"/api/v1/clinic/queue/call-next/?department_id={department_b.id}",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-query-scope-new",
+    )
+    assert rejected.status_code == 400, rejected.data
+    assert rejected.data["code"] == "INVALID_QUERY_SCOPE"
+    assert not IdempotencyRecord.objects.filter(
+        organisation=tenant.organisation, key_hash=key_hash("s02-query-scope-new")
+    ).exists()
+    assert QueueEntry.objects.get(id=urgent_b.id).state == "WAITING"
+
+    rejected_replay = client.post(
+        f"/api/v1/clinic/queue/call-next/?department_id={department_b.id}",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-body-filter-call",
+    )
+    assert rejected_replay.status_code == 400, rejected_replay.data
+    assert rejected_replay.data["code"] == "INVALID_QUERY_SCOPE"
+    assert "Idempotent-Replay" not in rejected_replay
+    assert QueueEntry.objects.get(id=routine_a.id).state == "CALLED"
+
+    # The same key with a different accepted body is still the existing
+    # fingerprint conflict.
+    conflict = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {"department_id": str(department_b.id)},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-body-filter-call",
+    )
+    assert conflict.status_code == 409, conflict.data
+    assert conflict.data["code"] == "IDEMPOTENCY_CONFLICT"
+    assert QueueEntry.objects.get(id=urgent_b.id).state == "WAITING"
+
+
+def test_call_next_with_empty_grants_has_no_candidates(tenant, enabled_mig002_target):
+    _, _, entry = make_entry(tenant, label="Empty Grant Row")
+    client, user = queue_scope_client(
+        tenant,
+        username="no-queue-grant",
+        grants=[(tenant.department, ("clinical.note.create",))],
+    )
+    denied = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-empty-grant-call",
+    )
+    assert denied.status_code == 403, denied.data
+    with tenant_atomic(tenant.organisation.id):
+        assert (
+            call_next_or_exact(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=user,
+                allowed_scopes=[],
+            )
+            is None
+        )
+    assert QueueEntry.objects.get(id=entry.id).state == "WAITING"
+    assert not AuditEvent.objects.filter(
+        entity_id=str(entry.id), event_code="QUEUE_CALLED"
+    ).exists()
+
+
+def test_call_next_replay_reauthorizes_the_stored_row(tenant, enabled_mig002_target):
+    from types import SimpleNamespace
+
+    from application.queue.views import QueueCallView
+
+    with tenant_atomic(tenant.organisation.id):
+        department_b = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Replay Department",
+            code="REPLAY",
+        )
+    _, _, entry = make_entry(tenant, label="Replay Scope Row")
+    client, user = queue_scope_client(
+        tenant,
+        username="moving-caller",
+        grants=[(tenant.department, ("queue.call", "queue.view"))],
+    )
+    first = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-replay-scope",
+    )
+    assert first.status_code == 200, first.data
+    assert first.data["queue_entry_id"] == str(entry.id)
+
+    replay = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-replay-scope",
+    )
+    assert replay.status_code == 200, replay.data
+    assert replay["Idempotent-Replay"] == "true"
+    assert replay.data == first.data
+
+    with tenant_atomic(tenant.organisation.id):
+        UserFacilityRole.objects.filter(
+            organisation=tenant.organisation, user=user
+        ).update(department=department_b)
+
+    denied = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-replay-scope",
+    )
+    assert denied.status_code == 404, denied.data
+    assert denied.data["code"] == "NOT_FOUND"
+    for field in ("queue_entry_id", "called_by_id", "version", "state", "served_by_id"):
+        assert field not in denied.data
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=entry.id)
+        assert unchanged.state == "CALLED"
+        assert unchanged.version == first.data["version"]
+        record = IdempotencyRecord.objects.get(
+            organisation=tenant.organisation,
+            operation="CMD-013",
+            key_hash=key_hash("s02-replay-scope"),
+        )
+        assert record.response_body["queue_entry_id"] == str(entry.id)
+    assert AuditEvent.objects.filter(
+        entity_id=str(entry.id), event_code="QUEUE_CALLED"
+    ).count() == 1
+
+    # Prove the row-level check independently of the authority fingerprint:
+    # the same callback must refuse a synthetic stored result outside scope.
+    view = QueueCallView()
+    view.request = SimpleNamespace(
+        organisation=tenant.organisation,
+        facility=tenant.facility,
+        user=user,
+    )
+    stored = SimpleNamespace(
+        response_body={
+            "queue_entry_id": str(entry.id),
+            "state": "CALLED",
+            "version": first.data["version"],
+            "called_by_id": str(user.id),
+        },
+        result_reference={"entity_type": "QueueEntry", "entity_id": str(entry.id)},
+    )
+    with tenant_atomic(tenant.organisation.id):
+        with pytest.raises(CanonicalError) as refused:
+            view.replay_idempotent_response(stored)
+        assert refused.value.code == "NOT_FOUND"
+        assert str(entry.id) not in str(refused.value.detail)
+
+
+def test_call_next_empty_result_replays_as_empty(tenant, enabled_mig002_target):
+    client, _ = queue_scope_client(
+        tenant,
+        username="empty-result-caller",
+        grants=[(None, ("queue.call",))],
+    )
+    first = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-empty-result",
+    )
+    assert first.status_code == 200, first.data
+    assert first.data == {"queue_entry_id": None}
+    replay = client.post(
+        "/api/v1/clinic/queue/call-next/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s02-empty-result",
+    )
+    assert replay.status_code == 200, replay.data
+    assert replay["Idempotent-Replay"] == "true"
+    assert replay.data == {"queue_entry_id": None}
+
+
+def test_encounter_rejects_a_malformed_queue_target_before_lookup(
+    tenant, enabled_mig002_target
+):
+    client, _ = queue_scope_client(
+        tenant,
+        username="malformed-target-caller",
+        grants=[(tenant.department, ("clinical.note.create", "queue.view"))],
+    )
+    malformed = client.post(
+        "/api/v1/clinic/encounters/",
+        {"queue_entry_id": "not-a-uuid", "expected_version": 1},
+        format="json",
+        HTTP_IF_MATCH='"1"',
+        HTTP_IDEMPOTENCY_KEY="s02-malformed-encounter",
+    )
+    assert malformed.status_code == 400, malformed.data
+    assert "queue_entry_id" in malformed.data
+    with tenant_atomic(tenant.organisation.id):
+        assert not Encounter.objects.filter(organisation=tenant.organisation).exists()
+        assert not AuditEvent.objects.filter(
+            organisation=tenant.organisation, event_code="ENCOUNTER_OPENED"
+        ).exists()
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s02-malformed-encounter"),
+        ).exists()
+
+    # A well-formed but unknown target keeps the command's own missing-row
+    # contract instead of becoming a permission denial.
+    missing = client.post(
+        "/api/v1/clinic/encounters/",
+        {"queue_entry_id": str(uuid4()), "expected_version": 1},
+        format="json",
+        HTTP_IF_MATCH='"1"',
+        HTTP_IDEMPOTENCY_KEY="s02-missing-encounter",
+    )
+    assert missing.status_code == 404, missing.data
+    assert missing.data["code"] == "NOT_FOUND"

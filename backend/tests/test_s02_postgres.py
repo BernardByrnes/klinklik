@@ -15,6 +15,7 @@ from clinical.models import Encounter, TriageAssessment
 from core.rls import rls_status
 from core.migration_reconciliation import (
     backfill_mig002,
+    constrain_mig002,
     cutover_mig002,
     inventory_mig002,
     legacy_writes_enabled_mig002,
@@ -935,17 +936,55 @@ OWNER_DSN = os.getenv("S02_OWNER_DSN")
     not OWNER_DSN,
     reason="S02_OWNER_DSN is not configured for the owner-prepared guard proof",
 )
-def test_pg_s02_cutover_refuses_a_disabled_state_guard(tenant, enabled_mig002_postgres):
-    """A guard that exists but is disabled must block activation."""
+def test_pg_s02_cutover_refuses_a_disabled_state_guard(tenant, enabled_mig001_target):
+    """Activation from CONSTRAINED must refuse a guard disabled afterwards.
+
+    Starting at CONSTRAINED is the important part: a verifier that only checks
+    the phase transition would otherwise activate a tenant whose trigger was
+    disabled after the earlier verification.
+    """
 
     import psycopg
 
+    # The proof is only meaningful under the restricted application role with
+    # FORCE RLS; it must not run as the schema owner or a BYPASSRLS role.
+    status = rls_status()
+    assert status["enforced"] is True
+    assert status["role"]["superuser"] is False
+    assert status["role"]["bypass_rls"] is False
+    queue_table = next(
+        table for table in status["tables"] if table["name"] == "scheduling_queueentry"
+    )
+    assert queue_table["rowsecurity"] is True
+    assert queue_table["force"] is True
+    assert queue_table["owner"] != status["role"]["name"]
+
     organisation = Organisation.objects.get(id=tenant.organisation.id)
+    with tenant_atomic(organisation.id):
+        inventory_mig002(organisation=organisation)
+        backfill_mig002(organisation=organisation)
+        verify_mig002(organisation=organisation)
+        verify_mig002(organisation=organisation)
+        constrain_mig002(organisation=organisation)
+        constrained = MigrationCutover.objects.get(
+            organisation=organisation, migration_id="MIG-002"
+        )
+        assert constrained.phase == "CONSTRAINED"
+        assert constrained.target_reads_enabled is False
+        assert constrained.target_writes_enabled is False
+        constrained_version = constrained.version
+
     with psycopg.connect(OWNER_DSN, autocommit=True) as owner:
+        with owner.cursor() as cursor:
+            cursor.execute("SELECT current_database()")
+            assert cursor.fetchone()[0] == connection.settings_dict["NAME"], (
+                "S02_OWNER_DSN must target the disposable test database"
+            )
         owner.execute(
             "ALTER TABLE scheduling_queueentry DISABLE TRIGGER klin_klink_queue_state"
         )
         try:
+            # The restricted application role performs the activation attempt.
             with pytest.raises(ValueError) as refused:
                 with tenant_atomic(organisation.id):
                     cutover_mig002(organisation=organisation)
@@ -955,9 +994,22 @@ def test_pg_s02_cutover_refuses_a_disabled_state_guard(tenant, enabled_mig002_po
             owner.execute(
                 "ALTER TABLE scheduling_queueentry ENABLE TRIGGER klin_klink_queue_state"
             )
+
+    # A refused activation leaves the tenant exactly at CONSTRAINED.
     with tenant_atomic(organisation.id):
-        cutover_mig002(organisation=organisation)
-        switch = MigrationCutover.objects.get(
+        unchanged = MigrationCutover.objects.get(
             organisation=organisation, migration_id="MIG-002"
         )
-        assert switch.target_writes_enabled is True
+        assert unchanged.phase == "CONSTRAINED"
+        assert unchanged.target_reads_enabled is False
+        assert unchanged.target_writes_enabled is False
+        assert unchanged.version == constrained_version
+
+    with tenant_atomic(organisation.id):
+        cutover_mig002(organisation=organisation)
+        activated = MigrationCutover.objects.get(
+            organisation=organisation, migration_id="MIG-002"
+        )
+        assert activated.phase == "CUTOVER"
+        assert activated.target_reads_enabled is True
+        assert activated.target_writes_enabled is True
