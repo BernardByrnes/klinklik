@@ -112,6 +112,30 @@ test("S-02 check-in, call, triage and encounter keep one Visit handoff", async (
   const visitId = checkIn.visit_id;
   const triageQueueId = checkIn.queue_id;
 
+  // The canonical triage record requires an explicit patient allergy status.
+  const apiSession = await apiLogin(page);
+  const visitContext = await page.request.get(`${API}/api/v1/reception/visits/${visitId}/`, {
+    headers: apiHeaders(apiSession),
+  });
+  expect(visitContext.ok()).toBeTruthy();
+  const contextBody = (await visitContext.json()) as {
+    patient: { id: string };
+    allergy: { etag: string } | null;
+  };
+  expect(contextBody.allergy?.etag).toBeTruthy();
+  const allergy = await page.request.post(
+    `${API}/api/v1/clinic/patients/${contextBody.patient.id}/allergy-status/`,
+    {
+      headers: {
+        ...apiHeaders(apiSession),
+        "If-Match": contextBody.allergy!.etag,
+        "Idempotency-Key": `s02-allergy-${suffix}`,
+      },
+      data: { status: "NKA" },
+    }
+  );
+  expect(allergy.ok(), await allergy.text()).toBeTruthy();
+
   // Queue: the operational worklist is live and the exact call claims the row.
   const queueResponsePromise = page.waitForResponse(
     (response) =>
@@ -143,17 +167,23 @@ test("S-02 check-in, call, triage and encounter keep one Visit handoff", async (
   await expect(page).toHaveURL(/\/triage/);
   await expect(page.getByText(patientName).first()).toBeVisible();
   await steadyFill(page, "Chief complaint", "Synthetic S-02 handoff complaint");
+  await steadyFill(page, "Pulse (bpm)", "78");
   await page.getByLabel("Priority", { exact: true }).selectOption("URGENT");
   const triagePromise = page.waitForResponse(
     (response) =>
-      response.url().endsWith(`/api/v1/clinic/triage/${triageQueueId}/`) &&
+      response.url().endsWith("/complete/") &&
+      response.url().includes("/triage-records/") &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Complete triage" }).click();
   const triageResponse = await triagePromise;
-  expect(triageResponse.status()).toBe(201);
-  const triageBody = (await triageResponse.json()) as { queue_entry: { state: string } };
-  expect(triageBody.queue_entry.state).toBe("COMPLETED");
+  expect(triageResponse.status()).toBe(200);
+  const triageBody = (await triageResponse.json()) as {
+    triage_record: { state: string };
+    source_state: string;
+  };
+  expect(triageBody.triage_record.state).toBe("COMPLETED");
+  expect(triageBody.source_state).toBe("COMPLETED");
   await expect(page.getByText("Triage recorded for " + patientName)).toBeVisible();
 
   // Consultation: the worklist offers the waiting destination for the same Visit.

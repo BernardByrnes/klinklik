@@ -97,10 +97,13 @@ const DISPOSITION_OPTIONS: Array<{ value: EncounterDisposition; label: string }>
 
 type DraftSaveState = "idle" | "unsaved" | "saved" | "retrying";
 
+type TriageRecordSummary = NonNullable<Encounter["triage_record"]>;
+
 type ConsultationDraft = {
   content: ClinicalNoteContent;
   complaints: PresentingComplaint[];
   triageComplaint: string | null;
+  triageRecord: TriageRecordSummary | null;
   hpi: string;
   pastMedicalHistory: string;
   pastSurgicalHistory: string;
@@ -673,6 +676,7 @@ function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft
     content,
     complaints: cloneComplaints(encounter.complaints ?? []),
     triageComplaint: encounter.triage_complaint ?? null,
+    triageRecord: encounter.triage_record ?? null,
     ...editableDraftValuesFromContent(content),
   };
 }
@@ -1186,6 +1190,7 @@ type HistorySectionProps = {
   status: string;
   complaints: PresentingComplaint[];
   triageComplaint: string | null;
+  triageRecord: TriageRecordSummary | null;
   complaintConflict: PresentingComplaint[] | null;
   hpi: string;
   pastMedicalHistory: string;
@@ -1205,8 +1210,7 @@ type HistorySectionProps = {
   savedAt: string | null;
 };
 
-function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingComplaint[]; testId?: string }) {
-  if (complaints.length === 0) {
+function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingComplaint[]; testId?: string }) {  if (complaints.length === 0) {
     return <p className="mt-2 text-[12.5px] leading-relaxed text-muted">No presenting complaints recorded.</p>;
   }
   return (
@@ -1226,10 +1230,113 @@ function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingC
   );
 }
 
+function CanonicalTriageSummary({ record }: { record: TriageRecordSummary }) {
+  const observation = (record.observation ?? {}) as Record<string, unknown>;
+  const vitals: Array<[string, string]> = [];
+  if (observation.systolic != null && observation.diastolic != null) {
+    vitals.push(["BP", `${observation.systolic}/${observation.diastolic} mmHg`]);
+  }
+  if (observation.pulse != null) vitals.push(["Pulse", `${observation.pulse} bpm`]);
+  if (observation.temperature_c != null) vitals.push(["Temp", `${observation.temperature_c} °C`]);
+  if (observation.respiratory_rate != null) {
+    vitals.push(["Respiratory rate", `${observation.respiratory_rate} /min`]);
+  }
+  if (observation.oxygen_saturation != null) {
+    vitals.push(["SpO₂", `${observation.oxygen_saturation}%`]);
+  }
+  if (observation.weight_kg != null) vitals.push(["Weight", `${observation.weight_kg} kg`]);
+  if (observation.height_cm != null) vitals.push(["Height", `${observation.height_cm} cm`]);
+  if (observation.muac_cm != null) vitals.push(["MUAC", `${observation.muac_cm} cm`]);
+  const complaints =
+    (record.presenting_complaints as Array<{ text?: string }> | null) ?? [];
+  const medications = (record.current_medications as {
+    medications?: string[];
+    chronic_conditions?: string[];
+  } | null) ?? {};
+  const unableReasons = (observation.unable_reason_fields ?? {}) as Record<string, string>;
+  return (
+    <div
+      data-testid="triage-summary"
+      className="rounded-[14px] border border-line bg-white p-4"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-bold text-ink">Nurse triage</h3>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+          Read-only · v{record.current_version}
+        </p>
+      </div>
+      <p className="mt-2 text-[12.5px] font-medium text-secondary">
+        Acuity: <span className="font-bold text-ink">{record.acuity ?? "Not selected"}</span>
+        {record.completed_at ? ` · Completed ${new Date(record.completed_at).toLocaleString()}` : ""}
+        {record.completed_by_name ? ` · ${record.completed_by_name}` : ""}
+      </p>
+      {record.acuity_reason ? (
+        <p className="mt-1 text-[12px] font-medium text-secondary">Priority reason: {record.acuity_reason}</p>
+      ) : null}
+      {vitals.length > 0 ? (
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+          {vitals.map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted">{label}</dt>
+              <dd className="text-[12.5px] font-medium text-ink">{value}</dd>
+            </div>
+          ))}
+          {record.bmi ? (
+            <div>
+              <dt className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted">BMI</dt>
+              <dd className="text-[12.5px] font-medium text-ink">{record.bmi}</dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : (
+        <p className="mt-3 text-[12px] font-medium text-muted">No measurements recorded.</p>
+      )}
+      {Object.keys(unableReasons).length > 0 ? (
+        <p className="mt-2 text-[12px] font-medium text-secondary">
+          Not done:{" "}
+          {Object.entries(unableReasons)
+            .map(([field, reason]) => `${field.replace(/_/g, " ")} (${reason.toLowerCase().replace(/_/g, " ")})`)
+            .join(", ")}
+        </p>
+      ) : null}
+      {complaints.length > 0 ? (
+        <div className="mt-3">
+          <p className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted">Triage complaints</p>
+          <ul className="mt-1 space-y-1">
+            {complaints.map((complaint, index) => (
+              <li key={index} className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+                {complaint.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {(medications.medications?.length ?? 0) > 0 || (medications.chronic_conditions?.length ?? 0) > 0 ? (
+        <div className="mt-3 space-y-1">
+          {(medications.medications?.length ?? 0) > 0 ? (
+            <p className="text-[12px] font-medium text-secondary">
+              Current medications: {medications.medications?.join(", ")}
+            </p>
+          ) : null}
+          {(medications.chronic_conditions?.length ?? 0) > 0 ? (
+            <p className="text-[12px] font-medium text-secondary">
+              Chronic conditions: {medications.chronic_conditions?.join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <p className="mt-3 text-[11px] font-medium text-muted">
+        Recorded by {record.recorded_by_name}. Triage data is read-only to clinicians.
+      </p>
+    </div>
+  );
+}
+
 function HistorySection({
   status,
   complaints,
   triageComplaint,
+  triageRecord,
   complaintConflict,
   hpi,
   pastMedicalHistory,
@@ -1287,6 +1394,7 @@ function HistorySection({
           <h3 className="text-[13px] font-bold text-ink">Presenting complaints</h3>
           <ComplaintReadOnlyList complaints={complaints} testId="signed-presenting-complaints" />
         </div>
+        {triageRecord ? <CanonicalTriageSummary record={triageRecord} /> : null}
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">Triage complaint</h3>
           <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
@@ -1339,6 +1447,7 @@ function HistorySection({
           <p data-testid="triage-complaint" className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{triageComplaint || "No triage complaint recorded."}</p>
           <p className="mt-1 text-[11px] font-medium text-muted">It is never copied automatically. Use Copy from triage to append it as a new row.</p>
         </div>
+        {triageRecord ? <CanonicalTriageSummary record={triageRecord} /> : null}
         {complaintConflict ? (
           <div data-testid="complaint-conflict" role="status" aria-label="Latest saved complaint values" className="space-y-3 rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-3">
             <p className="text-[12px] font-semibold text-ink">Current saved complaints from another update</p>
@@ -1887,6 +1996,7 @@ function ConsultationsWorkspace() {
   const encounterEtagRef = useRef<string | null>(null);
   const [complaints, setComplaints] = useState<PresentingComplaint[]>([]);
   const [triageComplaint, setTriageComplaint] = useState<string | null>(null);
+  const [triageRecord, setTriageRecord] = useState<TriageRecordSummary | null>(null);
   const [hpi, setHpi] = useState("");
   const [pastMedicalHistory, setPastMedicalHistory] = useState("");
   const [pastSurgicalHistory, setPastSurgicalHistory] = useState("");
@@ -2324,6 +2434,7 @@ function ConsultationsWorkspace() {
     draftSessionRef.current += 1;
     setComplaints(cloneComplaints(draft.complaints));
     setTriageComplaint(draft.triageComplaint);
+    setTriageRecord(draft.triageRecord);
     setHpi(values.hpi);
     setPastMedicalHistory(values.pastMedicalHistory);
     setPastSurgicalHistory(values.pastSurgicalHistory);
@@ -2559,6 +2670,7 @@ function ConsultationsWorkspace() {
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
     setTriageComplaint(null);
+    setTriageRecord(null);
     setComplaints([]);
     setHpi("");
     setPastMedicalHistory("");
@@ -4446,6 +4558,7 @@ function ConsultationsWorkspace() {
                       status={encounter.status}
                       complaints={complaints}
                       triageComplaint={triageComplaint}
+                      triageRecord={triageRecord}
                       complaintConflict={complaintConflict}
                       hpi={hpi}
                       pastMedicalHistory={pastMedicalHistory}
