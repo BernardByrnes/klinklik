@@ -24,6 +24,7 @@ from clinical.followups import FollowUpDomainError, FollowUpRevisionConflict, sa
 from clinical.models import Allergy, Diagnosis, Encounter, TriageAssessment, TriageRecord
 from application.clinical.commands import (
     encounter_open,
+    encounter_sign,
     triage_complete,
     triage_record_complete,
     triage_record_save,
@@ -73,7 +74,6 @@ from clinical.services import (
     PresentingComplaintRequired,
     amend_note,
     save_note,
-    sign_note,
 )
 from core.tenant_api import TenantAPIView
 from core.errors import CanonicalError
@@ -929,16 +929,17 @@ class EncounterSignView(TenantAPIView):
         serializer = NoteWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            note = sign_note(
+            outcome = encounter_sign(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
-                encounter=encounter,
+                encounter_id=encounter.id,
                 content=serializer.validated_data["content"],
                 complaints=serializer.validated_data.get("complaints"),
                 expected_etag=expected_etag,
                 request=request,
             )
+            encounter.refresh_from_db()
         except ClinicalNoteRevisionConflict as exc:
             return _revision_conflict_response(exc)
         except AllergyStateConflict as exc:
@@ -965,7 +966,7 @@ class EncounterSignView(TenantAPIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return _note_response(encounter=encounter, note=note, include_version=True)
+        return _note_response(encounter=encounter, note=outcome.note, include_version=True)
 
 
 class EncounterAmendView(TenantAPIView):

@@ -7,17 +7,18 @@ remain the only owners of QueueEntry state changes.
 from dataclasses import dataclass
 
 from application.contracts import CommandSpec
-from application.queue.commands import queue_start_service, queue_transfer
+from application.queue.commands import queue_complete, queue_start_service, queue_transfer
 from audit.services import record_fact
 from clinical import triage as triage_service
 from clinical.models import (
+    ClinicalNote,
     Encounter,
     TriageAssessment,
     TriageRecord,
     TriageRecordVersion,
     VitalsObservation,
 )
-from clinical.services import _reference
+from clinical.services import _reference, sign_note
 from core.errors import CanonicalError
 from core.services import assert_transaction_active
 from scheduling.models import QueueEntry, Visit
@@ -125,6 +126,22 @@ def _require_queue_type(*, organisation, facility, queue_entry_id, allowed, deta
 
 
 def _ensure_encounter(*, organisation, facility, actor, entry, visit):
+    # ENC-001/002: one Visit resumes the Encounter already open for it, even
+    # when the clinician is opening a different downstream queue stage.
+    if visit is not None:
+        open_encounter = (
+            Encounter.objects.select_for_update()
+            .filter(
+                organisation=organisation,
+                facility=facility,
+                visit=visit,
+                status="OPEN",
+            )
+            .order_by("id")
+            .first()
+        )
+        if open_encounter is not None:
+            return open_encounter, False
     encounter = Encounter.objects.select_for_update().filter(
         organisation=organisation,
         facility=facility,
@@ -233,6 +250,109 @@ def encounter_open(*, organisation, facility, actor, queue_entry_id, expected_ve
             queue.version += 1
             queue.save(update_fields=["current_stage", "status", "version", "updated_at"])
     return EncounterOpenOutcome(encounter=encounter, queue=queue)
+
+
+@dataclass(frozen=True)
+class EncounterSignOutcome:
+    note: ClinicalNote
+    queue: QueueEntry | None
+
+
+def encounter_sign(
+    *,
+    organisation,
+    facility,
+    actor,
+    encounter_id,
+    content=None,
+    complaints=None,
+    expected_etag=None,
+    request=None,
+):
+    """CMD-035: sign the encounter and complete its consultation stage.
+
+    The note service owns the immutable version and sign evidence. This
+    application command adds the Visit/QueueEntry lock order and completes
+    the matching in-service consultation row in the same transaction. The
+    invoice and Visit closure remain owned by their existing commands.
+    """
+
+    assert_transaction_active()
+    encounter = Encounter.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        id=encounter_id,
+    ).first()
+    if encounter is None:
+        raise CanonicalError(
+            "NOT_FOUND", "The Encounter was not found in this facility.", status_code=404
+        )
+    visit = None
+    if encounter.visit_id:
+        visit = Visit.objects.select_for_update().filter(
+            id=encounter.visit_id,
+            organisation=organisation,
+            facility=facility,
+        ).first()
+    queue = None
+    if visit is not None:
+        queue = (
+            QueueEntry.objects.select_for_update()
+            .filter(
+                organisation=organisation,
+                facility=facility,
+                visit_id=visit.id,
+                queue_type__in=("CONSULTATION", "CLINICIAN"),
+                state="IN_SERVICE",
+            )
+            .order_by("id")
+            .first()
+        )
+    note = sign_note(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        encounter=encounter,
+        content=content,
+        complaints=complaints,
+        expected_etag=expected_etag,
+        request=request,
+    )
+    if queue is not None:
+        queue = queue_complete(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            queue_entry_id=queue.id,
+            expected_version=queue.version,
+            terminal_reason="ENCOUNTER_SIGNED",
+        )
+    version = note.versions.order_by("-version_number").first()
+    source_ids = {"encounter_id": encounter.id, "note_id": note.id}
+    if queue is not None:
+        source_ids["queue_entry_id"] = queue.id
+    if visit is not None:
+        source_ids["visit_id"] = visit.id
+    after = {
+        "status": "SIGNED",
+        "content_hash": version.content_hash if version is not None else "",
+    }
+    if version is not None:
+        after["note_version"] = version.version_number
+    if queue is not None:
+        after["queue_state"] = queue.state
+    record_fact(
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        event_code="ENCOUNTER_SIGNED",
+        action="SIGN",
+        entity_type="Encounter",
+        entity_id=encounter.id,
+        source_ids=source_ids,
+        after=after,
+    )
+    return EncounterSignOutcome(note=note, queue=queue)
 
 
 def triage_start(*, organisation, facility, actor, queue_entry_id, expected_version=None):
