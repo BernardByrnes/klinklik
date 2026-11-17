@@ -1,7 +1,6 @@
 """HTTP coordinators for S-02 queue commands and read projections."""
 
 from datetime import date
-import uuid
 
 from django.db import models
 from rest_framework import status
@@ -21,7 +20,12 @@ from application.queue.commands import (
 )
 from core.errors import CanonicalError
 from core.idempotency import json_safe
-from core.permissions import IsTenantMember, queue_scope_pairs, scope_allows
+from core.permissions import (
+    IsTenantMember,
+    coerce_queue_identifier,
+    queue_scope_pairs,
+    scope_allows,
+)
 from core.tenant_api import TenantAPIView
 from scheduling.operational_queries import (
     QUEUE_HISTORY_CAPABILITIES,
@@ -102,29 +106,29 @@ class QueueCapability(BasePermission):
         Body fields are the single command input for department and work type,
         and they are the values the request fingerprint already binds. A query
         string command scope would be authorized here but ignored by the
-        handler, so it is refused before any idempotency lookup. GET filters
-        remain the read projections' input.
+        handler, so its presence is refused before any idempotency lookup,
+        including when the value is blank or repeated. GET filters remain the
+        read projections' input.
         """
 
-        query_department = request.query_params.get("department_id")
-        query_type = request.query_params.get("queue_type")
         if request.method not in {"POST", "PUT", "PATCH"}:
-            return query_department, query_type, True
-        if query_department or query_type:
+            return (
+                request.query_params.get("department_id"),
+                request.query_params.get("queue_type"),
+            )
+        if "department_id" in request.query_params or "queue_type" in request.query_params:
             raise CanonicalError(
                 "INVALID_QUERY_SCOPE",
                 "Command department and queue type filters must be sent in the request body.",
                 status_code=400,
             )
-        return request.data.get("department_id"), request.data.get("queue_type"), True
+        return request.data.get("department_id"), request.data.get("queue_type")
 
     def _has_permission(self, request, view, capabilities=None):
         capabilities = tuple(
             capabilities if capabilities is not None else self._capabilities_for(view)
         )
-        requested_department, requested_type, consistent = self._requested_scope(request)
-        if not consistent:
-            return False
+        requested_department, requested_type = self._requested_scope(request)
 
         target_department = None
         target_type = None
@@ -134,23 +138,11 @@ class QueueCapability(BasePermission):
             if not target_department:
                 target_type = target_type or requested_type
 
-        source_identifier = (
-            request.parser_context.get("kwargs", {}).get("pk")
-            if getattr(request, "parser_context", None)
-            else None
-        )
-        source_identifier = source_identifier or request.query_params.get("queue_entry_id")
-        if not source_identifier and request.method in {"POST", "PUT", "PATCH"}:
-            source_identifier = request.data.get("queue_entry_id") or request.data.get("source_queue_entry_id")
+        source_identifier, source_supplied = self._source_identifier(request)
         source_department = requested_department
         source_type = requested_type
-        if source_identifier:
-            try:
-                source_entry_id = uuid.UUID(str(source_identifier))
-            except (AttributeError, TypeError, ValueError):
-                # The serializer owns malformed identifiers; a UUID-column
-                # lookup here would fail before its field-level 400.
-                source_entry_id = None
+        if source_supplied:
+            source_entry_id = coerce_queue_identifier(source_identifier)
             source = (
                 QueueEntry.objects.filter(
                     organisation_id=request.organisation.id,
@@ -179,6 +171,33 @@ class QueueCapability(BasePermission):
         if target_department and not scope_allows(scope, target_department, target_type):
             return False
         return True
+
+    @staticmethod
+    def _source_identifier(request):
+        """Return ``(value, supplied)`` for the command target, URL first.
+
+        The order matches the handler's own precedence (path, then body), so
+        an ignored identifier can never mask the one the command will act on.
+        Presence is explicit so a falsey supplied value is not mistaken for an
+        absent identifier, and the value is coerced with the serializer's UUID
+        rules before any lookup.
+        """
+
+        parser_context = getattr(request, "parser_context", None) or {}
+        kwargs = parser_context.get("kwargs") or {}
+        if kwargs.get("pk") is not None:
+            return kwargs["pk"], True
+        if request.method in {"POST", "PUT", "PATCH"}:
+            data = request.data
+            if hasattr(data, "__contains__"):
+                for name in ("queue_entry_id", "source_queue_entry_id"):
+                    if name in data:
+                        return data.get(name), True
+            return None, False
+        query_params = getattr(request, "query_params", None)
+        if query_params is not None and "queue_entry_id" in query_params:
+            return query_params.get("queue_entry_id"), True
+        return None, False
 
     def has_permission(self, request, view):
         return self._has_permission(request, view)
@@ -297,13 +316,12 @@ class QueueCallView(QueueTenantAPIView):
         entry_id = reference.get("entity_id") if reference.get("entity_type") == "QueueEntry" else None
         if not entry_id and isinstance(body, dict):
             entry_id = body.get("queue_entry_id")
-        if not entry_id:
+        if entry_id is None:
             # An empty result stays an empty result.
             return body
-        try:
-            target_id = uuid.UUID(str(entry_id))
-        except (AttributeError, TypeError, ValueError):
-            raise self._replay_denial() from None
+        target_id = coerce_queue_identifier(entry_id)
+        if target_id is None:
+            raise self._replay_denial()
         entry = (
             QueueEntry.objects.filter(
                 organisation_id=self.request.organisation.id,

@@ -1,5 +1,5 @@
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from django.utils import timezone
@@ -1924,6 +1924,30 @@ def test_call_next_command_filters_come_from_the_validated_body(tenant, enabled_
     assert "Idempotent-Replay" not in rejected_replay
     assert QueueEntry.objects.get(id=routine_a.id).state == "CALLED"
 
+    # Presence, not truthiness: a blank or repeated query key is a supplied
+    # but unusable filter, never an omitted one.
+    blank_queries = (
+        ("department_id=", "s02-blank-query-department"),
+        ("queue_type=", "s02-blank-query-type"),
+        ("department_id=&department_id=", "s02-repeated-query-department"),
+    )
+    for suffix, key in blank_queries:
+        blank = client.post(
+            f"/api/v1/clinic/queue/call-next/?{suffix}",
+            {},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY=key,
+        )
+        assert blank.status_code == 400, blank.data
+        assert blank.data["code"] == "INVALID_QUERY_SCOPE"
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation, key_hash=key_hash(key)
+        ).exists()
+    assert QueueEntry.objects.get(id=urgent_b.id).state == "WAITING"
+    assert not AuditEvent.objects.filter(
+        entity_id=str(urgent_b.id), event_code="QUEUE_CALLED"
+    ).exists()
+
     # The same key with a different accepted body is still the existing
     # fingerprint conflict.
     conflict = client.post(
@@ -2120,3 +2144,194 @@ def test_encounter_rejects_a_malformed_queue_target_before_lookup(
     )
     assert missing.status_code == 404, missing.data
     assert missing.data["code"] == "NOT_FOUND"
+
+
+def serializer_uuid_representations(value):
+    """Every representation DRF's UUIDField accepts as the same identifier."""
+
+    return (
+        str(value),
+        value.hex,
+        "{" + str(value) + "}",
+        f"urn:uuid:{value}",
+        value.int,
+    )
+
+
+def test_encounter_permission_matches_every_serializer_identifier_representation(
+    tenant, enabled_mig002_target
+):
+    from types import SimpleNamespace
+
+    from core.permissions import QueueScopePermission
+
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Identifier Department",
+            code="IDENTIFIER",
+        )
+    _, _, authorized = make_entry(
+        tenant, label="Identifier Authorized", queue_type="CONSULTATION"
+    )
+    _, _, hidden = make_entry(
+        tenant,
+        label="Identifier Hidden",
+        department=other_department,
+        queue_type="CONSULTATION",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        # The nil UUID is valid UUIDField input and its integer form is the
+        # falsey value ``0``; a supplied identifier must never look omitted.
+        QueueEntry.objects.filter(id=hidden.id).update(id=UUID(int=0))
+    hidden = QueueEntry.objects.get(id=UUID(int=0))
+    client = scoped_queue_client(
+        tenant, username="s02-encounter-id-forms", department=tenant.department
+    )
+    user = User.objects.get(username="s02-encounter-id-forms")
+    permission = QueueScopePermission()
+    view = SimpleNamespace(capability="clinical.note.create")
+
+    def decision(value):
+        request = SimpleNamespace(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            user=user,
+            parser_context={},
+            data={"queue_entry_id": value},
+        )
+        with tenant_atomic(tenant.organisation.id):
+            return permission.has_permission(request, view)
+
+    for representation in serializer_uuid_representations(authorized.id):
+        assert decision(representation) is True, representation
+    for representation in serializer_uuid_representations(hidden.id):
+        assert decision(representation) is False, representation
+    assert decision(0) is False
+
+    # The falsey integer form must deny before the command runs, disclosing
+    # nothing and leaving both the QueueEntry and Encounter unchanged.
+    with tenant_atomic(tenant.organisation.id):
+        hidden_version = QueueEntry.objects.get(id=UUID(int=0)).version
+    denied = client.post(
+        "/api/v1/clinic/encounters/",
+        {"queue_entry_id": 0, "expected_version": hidden_version},
+        format="json",
+        HTTP_IF_MATCH=f'"{hidden_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-identifier-form-denied",
+    )
+    assert denied.status_code == 403, denied.data
+    assert str(hidden.id) not in str(denied.data)
+    assert "patient" not in str(denied.data).lower()
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=UUID(int=0))
+        assert unchanged.state == "WAITING"
+        assert unchanged.version == hidden_version
+        assert not Encounter.objects.filter(queue_entry_id=unchanged.id).exists()
+        assert not Encounter.objects.filter(organisation=tenant.organisation).exists()
+        assert not AuditEvent.objects.filter(
+            organisation=tenant.organisation, event_code="ENCOUNTER_OPENED"
+        ).exists()
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s02-identifier-form-denied"),
+        ).exists()
+
+    # The authorized target still completes the command through the same
+    # integer representation the permission now authorizes.
+    allowed = client.post(
+        "/api/v1/clinic/encounters/",
+        {"queue_entry_id": authorized.id.int, "expected_version": authorized.version},
+        format="json",
+        HTTP_IF_MATCH=f'"{authorized.version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-identifier-form-allowed",
+    )
+    assert allowed.status_code == 201, allowed.data
+    with tenant_atomic(tenant.organisation.id):
+        assert Encounter.objects.filter(queue_entry_id=authorized.id).exists()
+
+
+def test_queue_call_permission_matches_every_serializer_identifier_representation(
+    tenant, enabled_mig002_target
+):
+    from types import SimpleNamespace
+
+    from django.http import QueryDict
+
+    from application.queue.views import QueueCapability
+
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Call Identifier Department",
+            code="CALL_IDENTIFIER",
+        )
+    _, _, authorized = make_entry(tenant, label="Call Identifier Authorized")
+    _, _, hidden = make_entry(
+        tenant,
+        label="Call Identifier Hidden",
+        department=other_department,
+        queue_type="TRIAGE",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        QueueEntry.objects.filter(id=hidden.id).update(id=UUID(int=0))
+    client = scoped_queue_client(
+        tenant, username="s02-call-id-forms", department=tenant.department
+    )
+    user = User.objects.get(username="s02-call-id-forms")
+    permission = QueueCapability()
+    view = SimpleNamespace(queue_capabilities=("queue.call", "queue.serve", "queue.claim"))
+
+    def decision(value):
+        request = SimpleNamespace(
+            method="POST",
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            user=user,
+            parser_context={},
+            query_params=QueryDict(mutable=False),
+            data={"queue_entry_id": value},
+        )
+        with tenant_atomic(tenant.organisation.id):
+            return permission.has_permission(request, view)
+
+    for representation in serializer_uuid_representations(authorized.id):
+        assert decision(representation) is True, representation
+    for representation in serializer_uuid_representations(UUID(int=0)):
+        assert decision(representation) is False, representation
+    assert decision(0) is False
+
+    with tenant_atomic(tenant.organisation.id):
+        hidden_version = QueueEntry.objects.get(id=UUID(int=0)).version
+    denied = client.post(
+        "/api/v1/clinic/queue/call/",
+        {"queue_entry_id": 0, "expected_version": hidden_version},
+        format="json",
+        HTTP_IF_MATCH=f'"{hidden_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-call-identifier-denied",
+    )
+    assert denied.status_code == 403, denied.data
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=UUID(int=0))
+        assert unchanged.state == "WAITING"
+        assert unchanged.version == hidden_version
+        assert not AuditEvent.objects.filter(
+            entity_id=str(unchanged.id), event_code="QUEUE_CALLED"
+        ).exists()
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s02-call-identifier-denied"),
+        ).exists()
+
+    allowed = client.post(
+        "/api/v1/clinic/queue/call/",
+        {"queue_entry_id": authorized.id.int, "expected_version": authorized.version},
+        format="json",
+        HTTP_IF_MATCH=f'"{authorized.version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-call-identifier-allowed",
+    )
+    assert allowed.status_code == 200, allowed.data
+    assert allowed.data["queue_entry_id"] == str(authorized.id)
+    assert QueueEntry.objects.get(id=authorized.id).state == "CALLED"

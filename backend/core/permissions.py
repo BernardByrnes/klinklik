@@ -11,10 +11,25 @@ independent axes: a reader granted TRIAGE in department A and CONSULTATION in
 department B may read neither A's consultation work nor B's triage work.
 """
 
-import uuid
-
 from django.db import models
+from rest_framework import serializers
 from rest_framework.permissions import BasePermission
+
+
+def coerce_queue_identifier(value):
+    """Return the UUID that the request serializers would accept.
+
+    DRF's ``UUIDField`` accepts a UUID instance, an integer, and the hex,
+    compact, braced, or URN string forms. A permission check must accept
+    exactly the same representations: otherwise a valid identifier could reach
+    a command while its department/work-type check was skipped. ``None`` means
+    the value is not a valid identifier.
+    """
+
+    try:
+        return serializers.UUIDField().to_internal_value(value)
+    except (TypeError, ValueError, serializers.ValidationError):
+        return None
 
 
 class TenantAPIViewMixin:
@@ -179,17 +194,17 @@ class QueueScopePermission(BasePermission):
         )
         if not capability:
             return True
-        identifier = self._target_identifier(request)
-        if not identifier:
+        identifier, supplied = self._target_identifier(request)
+        if not supplied:
             # The command owns the missing-identifier contract; nothing is
             # disclosed here.
             return True
-        try:
-            target_id = uuid.UUID(str(identifier))
-        except (AttributeError, TypeError, ValueError):
-            # A malformed identifier is a request-shape problem. Defer to the
-            # command serializer so the caller receives its field-level 400
-            # without a UUID-column lookup or a scope disclosure.
+        target_id = coerce_queue_identifier(identifier)
+        if target_id is None:
+            # A malformed or falsey supplied identifier is a request-shape
+            # problem. Defer to the command serializer so the caller receives
+            # its field-level 400 without a UUID-column lookup or a scope
+            # disclosure.
             return True
         from scheduling.models import QueueEntry
 
@@ -210,12 +225,21 @@ class QueueScopePermission(BasePermission):
 
     @staticmethod
     def _target_identifier(request):
+        """Return ``(value, supplied)`` with the route's own target first.
+
+        Presence is checked explicitly so a falsey supplied value (``0``,
+        ``""``, ``null``) is not mistaken for an absent identifier. The URL
+        target takes precedence for routes scoped by their path.
+        """
+
         parser_context = getattr(request, "parser_context", None) or {}
         kwargs = parser_context.get("kwargs") or {}
         for name in ("pk", "queue_id", "queue_entry_id"):
-            if kwargs.get(name):
-                return kwargs[name]
-        data = getattr(request, "data", None) or {}
-        if hasattr(data, "get"):
-            return data.get("queue_entry_id") or data.get("source_queue_entry_id")
-        return None
+            if name in kwargs and kwargs[name] is not None:
+                return kwargs[name], True
+        data = getattr(request, "data", None)
+        if data is not None and hasattr(data, "__contains__"):
+            for name in ("queue_entry_id", "source_queue_entry_id"):
+                if name in data:
+                    return data.get(name), True
+        return None, False
