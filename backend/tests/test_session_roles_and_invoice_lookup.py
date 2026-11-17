@@ -21,6 +21,8 @@ NURSE_CAPABILITIES = {
     "queue.claim",
     "queue.remove",
     "triage.record",
+    "triage.create",
+    "triage.read",
     "allergy.manage",
 }
 
@@ -85,7 +87,7 @@ def test_login_includes_roles_and_capabilities(tenant):
     assert "billing.payment.record" in session["capabilities"]
     assert "staff.permission.grant" in session["capabilities"]
     assert "patient.link" in session["capabilities"]
-    assert len(session["capabilities"]) == 23
+    assert len(session["capabilities"]) == 27
 
 
 def test_me_includes_roles_and_capabilities(tenant):

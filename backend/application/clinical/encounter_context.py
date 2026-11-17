@@ -14,6 +14,8 @@ from clinical.models import (
 from clinical.queries import query_allergy_projection
 from clinical.concurrency import consultation_note_for_encounter, follow_up_recommendation_for_encounter
 from clinical.diagnosis_state import active_diagnosis_snapshot
+from clinical.triage import completed_summary
+from core.mig003 import target_reads_enabled_mig003
 from laboratory.queries import query_laboratory_projection
 from patients.queries import query_patient_projection
 from pharmacy.queries import query_dispense_projection, query_prescription_projection
@@ -155,6 +157,15 @@ def query_encounter_context(*, organisation, facility, visit, queue_entries=(), 
                 queue_entry_id__in=queue_ids,
             ).values_list("queue_entry_id", "chief_complaint")
         )
+        triage_record_summary = (
+            completed_summary(
+                organisation=organisation,
+                facility=facility,
+                visit_id=visit.id,
+            )
+            if target_reads_enabled_mig003(organisation)
+            else None
+        )
         for encounter in encounters:
             patient_key = str(encounter.patient_id)
             encounter._patient_projection_for_serialization = patient_by_id.get(patient_key)
@@ -177,6 +188,7 @@ def query_encounter_context(*, organisation, facility, visit, queue_entries=(), 
                 if encounter.queue_entry_id
                 else None
             )
+            encounter._triage_record_for_serialization = triage_record_summary
             # Materialize every owner projection before handing the objects to
             # the serializer. QRY-003 serialization is therefore a pure
             # formatting step and cannot issue a lazy PHI query.

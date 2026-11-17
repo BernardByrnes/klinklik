@@ -9,11 +9,19 @@ from dataclasses import dataclass
 from application.contracts import CommandSpec
 from application.queue.commands import queue_start_service, queue_transfer
 from audit.services import record_fact
-from clinical.models import Encounter, TriageAssessment, VitalsObservation
+from clinical import triage as triage_service
+from clinical.models import (
+    Encounter,
+    TriageAssessment,
+    TriageRecord,
+    TriageRecordVersion,
+    VitalsObservation,
+)
 from clinical.services import _reference
 from core.errors import CanonicalError
 from core.services import assert_transaction_active
 from scheduling.models import QueueEntry, Visit
+from tenancy.models import Department
 
 
 CMD_025_SPEC = CommandSpec(
@@ -359,3 +367,277 @@ def triage_complete(*, organisation, facility, actor, queue_entry_id, data, expe
         after={"source_state": source.state, "source_version": source.version, "destination_state": destination.state},
     )
     return TriageCompleteOutcome(assessment=assessment, source=source, destination=destination)
+
+
+@dataclass(frozen=True)
+class TriageRecordStartOutcome:
+    record: TriageRecord
+    queue: QueueEntry
+    created: bool
+
+
+@dataclass(frozen=True)
+class TriageRecordCompleteOutcome:
+    record: TriageRecord
+    version: TriageRecordVersion
+    source: QueueEntry
+    destination: QueueEntry
+
+
+def _require_triage_source(*, organisation, facility, record):
+    source = (
+        QueueEntry.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            visit_id=record.visit_id,
+            queue_type="TRIAGE",
+        )
+        .order_by("queue_time", "id")
+        .first()
+    )
+    if source is None:
+        raise CanonicalError(
+            "PREREQUISITE_MISSING",
+            "The triage source queue entry was not found for this Visit.",
+            status_code=422,
+        )
+    return source
+
+
+def triage_record_start(
+    *, organisation, facility, actor, queue_entry_id, expected_queue_version=None
+):
+    """CMD-025: start the queue stage and create/resume the canonical draft."""
+
+    assert_transaction_active()
+    _require_queue_type(
+        organisation=organisation,
+        facility=facility,
+        queue_entry_id=queue_entry_id,
+        allowed={"TRIAGE"},
+        detail="Only a TRIAGE queue entry can start triage.",
+    )
+    identity = QueueEntry.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        id=queue_entry_id,
+    ).values("department_id").first()
+    if identity is None:
+        raise CanonicalError(
+            "NOT_FOUND", "The queue entry was not found in this facility.", status_code=404
+        )
+    Department.objects.select_for_update().filter(
+        organisation=organisation,
+        facility=facility,
+        id=identity["department_id"],
+    ).first()
+
+    def mark_triage_stage(*, entry, visit):
+        entry.current_stage = "TRIAGE"
+        entry.save(update_fields=["current_stage", "updated_at"])
+
+    queue = queue_start_service(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        queue_entry_id=queue_entry_id,
+        expected_version=expected_queue_version,
+        stage_callback=mark_triage_stage,
+    )
+    visit = Visit.objects.select_for_update().filter(
+        id=queue.visit_id,
+        organisation=organisation,
+        facility=facility,
+    ).first()
+    if visit is None:
+        raise CanonicalError(
+            "PREREQUISITE_MISSING",
+            "Triage requires a linked Visit.",
+            status_code=422,
+        )
+    triage_service.assert_triage_source(queue=queue, visit=visit)
+    record, created = triage_service.get_or_create_draft(
+        organisation=organisation, facility=facility, actor=actor, visit=visit
+    )
+    if not created and record.state == "COMPLETED":
+        raise CanonicalError(
+            "ALREADY_COMPLETED",
+            "Triage is already complete for this Visit; read the existing record.",
+            status_code=409,
+            metadata={"triage_record_id": str(record.id)},
+        )
+    return TriageRecordStartOutcome(record=record, queue=queue, created=created)
+
+
+def triage_record_save(
+    *, organisation, facility, actor, triage_record_id, payload, expected_version=None
+):
+    """CMD-026: save typed draft facts on the current record head."""
+
+    assert_transaction_active()
+    record = TriageRecord.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        id=triage_record_id,
+    ).first()
+    if record is None:
+        raise CanonicalError(
+            "NOT_FOUND", "The triage record was not found in this facility.", status_code=404
+        )
+    return triage_service.save_draft(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        record=record,
+        payload=payload,
+        expected_version=expected_version,
+    )
+
+
+def triage_record_complete(
+    *,
+    organisation,
+    facility,
+    actor,
+    triage_record_id,
+    payload,
+    expected_version,
+    expected_queue_version,
+):
+    """CMD-027: append the completed version and hand off one consultation row."""
+
+    assert_transaction_active()
+    record = TriageRecord.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        id=triage_record_id,
+    ).first()
+    if record is None:
+        raise CanonicalError(
+            "NOT_FOUND", "The triage record was not found in this facility.", status_code=404
+        )
+    if record.state != "DRAFT":
+        raise CanonicalError(
+            "INVALID_STATE",
+            "This triage record is already completed.",
+            status_code=409,
+            metadata={"state": record.state},
+        )
+    if expected_version is not None and record.row_version != expected_version:
+        raise CanonicalError(
+            "VERSION_CONFLICT",
+            "The triage record changed; reload it before completing.",
+            status_code=412,
+            metadata={"current_version": record.row_version},
+        )
+    source = _require_triage_source(
+        organisation=organisation, facility=facility, record=record
+    )
+    Department.objects.select_for_update().filter(
+        organisation=organisation,
+        facility=facility,
+        id=source.department_id,
+    ).first()
+    visit = Visit.objects.select_for_update().filter(
+        id=record.visit_id,
+        organisation=organisation,
+        facility=facility,
+    ).first()
+    if visit is None:
+        raise CanonicalError(
+            "PREREQUISITE_MISSING",
+            "Triage completion requires a linked Visit.",
+            status_code=422,
+        )
+    implicated_ids = list(
+        QueueEntry.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            visit_id=visit.id,
+            queue_type__in=("TRIAGE", "CONSULTATION"),
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    locked = {
+        entry.id: entry
+        for entry in QueueEntry.objects.select_for_update()
+        .filter(organisation=organisation, facility=facility, id__in=implicated_ids)
+        .order_by("id")
+    }
+    source = locked.get(source.id, source)
+    if expected_queue_version is not None and source.version != expected_queue_version:
+        raise CanonicalError(
+            "VERSION_CONFLICT",
+            "The queue entry changed; reload it before completing triage.",
+            status_code=412,
+            metadata={"current_version": source.version},
+        )
+    record, version, observation = triage_service.complete_triage(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        record=record,
+        payload=payload,
+        expected_version=expected_version,
+    )
+    previous_priority = source.priority
+    if previous_priority != record.acuity:
+        source.priority = record.acuity
+        source.priority_reason = "TRIAGE_ACUITY"
+        source.version += 1
+        source.save(
+            update_fields=["priority", "priority_reason", "version", "updated_at"]
+        )
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            event_code="QUEUE_PRIORITY_CHANGED",
+            action="UPDATE",
+            entity_type="QueueEntry",
+            entity_id=source.id,
+            source_ids={"queue_entry_id": source.id, "visit_id": visit.id},
+            before={"priority": previous_priority},
+            after={"priority": source.priority, "reason": "TRIAGE_ACUITY"},
+        )
+    source, destination = queue_transfer(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        source_queue_entry_id=source.id,
+        target_department_id=source.department_id,
+        target_queue_type="CONSULTATION",
+        handoff_note="",
+        reason="TRIAGE_COMPLETED",
+        expected_version=source.version,
+    )
+    # Preserve the legacy source evidence used by MIG-002/MIG-003 readers.
+    source.status = "TRIAGED"
+    source.current_stage = "CONSULTATION"
+    source.save(update_fields=["status", "current_stage", "updated_at"])
+    record_fact(
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        event_code="TRIAGE_COMPLETED",
+        action="UPDATE",
+        entity_type="QueueEntry",
+        entity_id=source.id,
+        source_ids={
+            "queue_entry_id": source.id,
+            "triage_record_id": record.id,
+            "visit_id": visit.id,
+            "consultation_queue_entry_id": destination.id,
+        },
+        after={
+            "source_state": source.state,
+            "source_version": source.version,
+            "destination_state": destination.state,
+            "triage_version": record.current_version,
+            "observation_id": str(observation.id) if observation else None,
+        },
+    )
+    return TriageRecordCompleteOutcome(
+        record=record, version=version, source=source, destination=destination
+    )

@@ -118,6 +118,10 @@ def ensure_default_permissions(organisation):
         ("queue.remove", "Remove pre-service queue work", "T1"),
         ("visit.close_lwbs", "Close a Visit as left without being seen", "T1"),
         ("triage.record", "Record triage", "T1"),
+        ("triage.create", "Create and complete triage records", "T1"),
+        ("triage.read", "Read triage records", "T1"),
+        ("triage.update", "Amend own triage record", "T2"),
+        ("triage.amend_any", "Amend any triage record", "T3"),
         ("clinical.note.create", "Create clinical notes", "T1"),
         ("clinical.note.sign", "Sign clinical notes", "T2"),
         ("allergy.manage", "Manage patient allergy state", "T2"),
@@ -159,6 +163,8 @@ def ensure_default_permissions(organisation):
             "queue.claim",
             "queue.remove",
             "triage.record",
+            "triage.create",
+            "triage.read",
             "allergy.manage",
         ],
         "CLINICIAN": [
@@ -171,6 +177,8 @@ def ensure_default_permissions(organisation):
             "clinical.note.sign",
             "allergy.manage",
             "clinical.note.amend",
+            "triage.create",
+            "triage.read",
         ],
     }
     for template_code, codes in templates.items():

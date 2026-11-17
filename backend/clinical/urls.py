@@ -15,6 +15,9 @@ from clinical.views import (
     EncounterListCreateView,
     EncounterNoteView,
     EncounterSignView,
+    TriageRecordCompleteView,
+    TriageRecordDetailView,
+    TriageRecordStartView,
     TriageView,
 )
 
@@ -22,6 +25,21 @@ from clinical.views import (
 urlpatterns = [
     path("", include("scheduling.urls")),
     path("triage/<uuid:queue_id>/", TriageView.as_view(), name="triage"),
+    path(
+        "triage/<uuid:queue_id>/start/",
+        TriageRecordStartView.as_view(),
+        name="triage-start",
+    ),
+    path(
+        "triage-records/<uuid:pk>/",
+        TriageRecordDetailView.as_view(),
+        name="triage-record",
+    ),
+    path(
+        "triage-records/<uuid:pk>/complete/",
+        TriageRecordCompleteView.as_view(),
+        name="triage-record-complete",
+    ),
     path("encounters/", EncounterListCreateView.as_view(), name="encounter-create"),
     path("encounters/<uuid:pk>/", EncounterDetailView.as_view(), name="encounter-detail"),
     path("encounters/<uuid:pk>/disposition/", EncounterDispositionView.as_view(), name="encounter-disposition"),
