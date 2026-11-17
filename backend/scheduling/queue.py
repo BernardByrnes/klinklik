@@ -927,6 +927,31 @@ def create_or_reuse_destination(
     )
 
 
+def resolve_transfer_destination(*, organisation, facility, target_department_id=None):
+    """Return the effective ``(department_id, work type)`` for a transfer.
+
+    The work type is the requested value or, when omitted, the department's
+    code, which is the same rule ``transfer`` applies when it creates the
+    destination. ``(None, None)`` means the department is not available in
+    this facility, so the command keeps its existing scoped error.
+
+    This is a read-only resolution for authorization; the command still locks
+    the department when it executes.
+    """
+
+    if not target_department_id:
+        return None, None
+    department = Department.objects.filter(
+        organisation_id=_organisation_id(organisation),
+        facility_id=_facility_id(facility),
+        id=target_department_id,
+        is_active=True,
+    ).only("id", "code").first()
+    if department is None:
+        return None, None
+    return department.id, str(department.code).upper()
+
+
 def transfer(
     *,
     organisation,

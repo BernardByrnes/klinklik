@@ -5,6 +5,8 @@ from datetime import date
 
 from django.db import models
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
+from rest_framework.fields import CharField
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 
@@ -41,6 +43,7 @@ from scheduling.operational_queries import (
     supervisor_queue_projection,
 )
 from scheduling.models import QueueEntry
+from scheduling.queue import resolve_transfer_destination
 from tenancy.models import FacilityWorkflowPolicy
 from scheduling.serializers import (
     OperationalQueueEnvelopeSerializer,
@@ -60,6 +63,20 @@ from scheduling.serializers import (
     QueueTakeoverSerializer,
     QueueTransferSerializer,
 )
+
+
+def _coerced_work_type(value):
+    """Return the work type string the request serializers accept, or ``None``.
+
+    DRF's ``CharField`` coerces numbers and rejects blanks, booleans and
+    containers. The Transfer permission must classify the same values the
+    serializer does so a malformed destination cannot become a scope decision.
+    """
+
+    try:
+        return CharField(max_length=40).run_validation(value)
+    except ValidationError:
+        return None
 
 
 class QueueCapability(BasePermission):
@@ -152,7 +169,11 @@ class QueueCapability(BasePermission):
         if request.method in {"POST", "PUT", "PATCH"}:
             target_department = body.get("target_department_id")
             target_type = body.get("target_queue_type")
-            if not target_department:
+            if target_department and getattr(view, "queue_resolves_transfer_destination", False):
+                target_department, target_type = self._resolved_transfer_destination(
+                    request, target_department, target_type
+                )
+            elif not target_department:
                 target_type = target_type or requested_type
 
         source_identifier, source_supplied = self._source_identifier(request, view)
@@ -188,6 +209,40 @@ class QueueCapability(BasePermission):
         if target_department and not scope_allows(scope, target_department, target_type):
             return False
         return True
+
+    @staticmethod
+    def _resolved_transfer_destination(request, target_department, target_type):
+        """Return the destination pair the Transfer command will create.
+
+        The service uses the requested work type or the department's code.
+        Authorization must check that same pair, otherwise a work-type-limited
+        grant would admit the department's default type. The resolved type is
+        shared with the handler so execution creates exactly the checked
+        destination. Malformed fields are left to the serializer's 400.
+        """
+
+        department_id = coerce_queue_identifier(target_department)
+        if department_id is None:
+            # The serializer owns a malformed destination 400.
+            return None, None
+        resolved_department_id, default_type = resolve_transfer_destination(
+            organisation=request.organisation,
+            facility=request.facility,
+            target_department_id=department_id,
+        )
+        if resolved_department_id is None:
+            # An unavailable department keeps the command's existing scoped
+            # error; the raw identifier stays for the ordinary scope check.
+            return target_department, target_type
+        if target_type is None:
+            effective_type = default_type
+        else:
+            effective_type = _coerced_work_type(target_type)
+            if effective_type is None:
+                # The serializer rejects this value before any command runs.
+                return None, None
+        request.queue_resolved_transfer_target = (resolved_department_id, effective_type)
+        return resolved_department_id, effective_type
 
     @staticmethod
     def _source_identifier(request, view):
@@ -241,6 +296,8 @@ class QueueTenantAPIView(TenantAPIView):
     operation_id = None
     # The body field this command's request contract uses as its source row.
     queue_source_field = "queue_entry_id"
+    # Transfer derives its destination work type from the department default.
+    queue_resolves_transfer_destination = False
 
     def resolved_queue_scope(self):
         return QueueCapability.scope_for_request(self.request, self)
@@ -309,6 +366,54 @@ def _expected_version(request, values, *, required=True):
     return resolved
 
 
+def _queue_replay_denial():
+    """Return the canonical denial without row or caller metadata."""
+
+    return CanonicalError(
+        "NOT_FOUND",
+        "The queue entry was not found in this facility.",
+        status_code=404,
+    )
+
+
+def _replay_authorized_queue_result(view, record, *, body_field):
+    """Return a stored queue result only while its row is still in scope.
+
+    The idempotency key is bound to the original request, not to the grants
+    that made it succeed. A caller whose department or work-type grant moved
+    must not receive another department's row, so the saved row is resolved in
+    the request's current organisation and facility and checked here before
+    the stored envelope is returned.
+    """
+
+    body = record.response_body
+    reference = record.result_reference if isinstance(record.result_reference, dict) else {}
+    entry_id = reference.get("entity_id") if reference.get("entity_type") == "QueueEntry" else None
+    if entry_id is None and isinstance(body, dict):
+        entry_id = body.get(body_field)
+    if entry_id is None:
+        # An empty result stays an empty result.
+        return body
+    target_id = coerce_queue_identifier(entry_id)
+    if target_id is None:
+        raise _queue_replay_denial()
+    entry = (
+        QueueEntry.objects.filter(
+            organisation_id=view.request.organisation.id,
+            facility_id=view.request.facility.id,
+            id=target_id,
+        )
+        .values("department_id", "queue_type")
+        .first()
+    )
+    if entry is None:
+        raise _queue_replay_denial()
+    scope = QueueCapability.scope_for_request(view.request, view)
+    if not scope_allows(scope, entry["department_id"], entry["queue_type"]):
+        raise _queue_replay_denial()
+    return body
+
+
 class QueueCallView(QueueTenantAPIView):
     # queue.claim is retained only for the legacy-compatible call command;
     # it is not a substitute grant for assign/transfer/cancel/etc.
@@ -320,49 +425,8 @@ class QueueCallView(QueueTenantAPIView):
     response_serializer_classes_by_status = {"POST": {"200": QueueMutationResponseSerializer}}
 
     def replay_idempotent_response(self, record):
-        """Re-authorize a stored call result against the actor's current scope.
-
-        The key is bound to the original request, not to the grants that made
-        it succeed. A caller whose department or work-type grant moved must not
-        receive another department's row, so the persisted row is resolved and
-        checked here before the saved envelope is returned.
-        """
-
-        body = record.response_body
-        reference = record.result_reference if isinstance(record.result_reference, dict) else {}
-        entry_id = reference.get("entity_id") if reference.get("entity_type") == "QueueEntry" else None
-        if not entry_id and isinstance(body, dict):
-            entry_id = body.get("queue_entry_id")
-        if entry_id is None:
-            # An empty result stays an empty result.
-            return body
-        target_id = coerce_queue_identifier(entry_id)
-        if target_id is None:
-            raise self._replay_denial()
-        entry = (
-            QueueEntry.objects.filter(
-                organisation_id=self.request.organisation.id,
-                facility_id=self.request.facility.id,
-                id=target_id,
-            )
-            .values("department_id", "queue_type")
-            .first()
-        )
-        if entry is None:
-            raise self._replay_denial()
-        scope = QueueCapability.scope_for_request(self.request, self)
-        if not scope_allows(scope, entry["department_id"], entry["queue_type"]):
-            raise self._replay_denial()
-        return body
-
-    @staticmethod
-    def _replay_denial():
-        """Return the canonical denial without row or caller metadata."""
-
-        return CanonicalError(
-            "NOT_FOUND",
-            "The queue entry was not found in this facility.",
-            status_code=404,
+        return _replay_authorized_queue_result(
+            self, record, body_field="queue_entry_id"
         )
 
     def post(self, request, pk=None):
@@ -431,6 +495,7 @@ class QueueAssignView(QueueTenantAPIView):
 class QueueTransferView(QueueTenantAPIView):
     queue_capabilities = ("queue.transfer", "queue.move")
     queue_source_field = "source_queue_entry_id"
+    queue_resolves_transfer_destination = True
     idempotency_operation = "CMD-018"
     requires_idempotency = True
     request_serializer_class = QueueTransferSerializer
@@ -438,7 +503,9 @@ class QueueTransferView(QueueTenantAPIView):
     response_serializer_classes_by_status = {"POST": {"200": QueueMutationResponseSerializer}}
 
     def replay_idempotent_response(self, record):
-        return record.response_body
+        return _replay_authorized_queue_result(
+            self, record, body_field="destination_queue_entry_id"
+        )
 
     def post(self, request, pk=None):
         serializer = QueueTransferSerializer(data=request.data)
@@ -446,13 +513,19 @@ class QueueTransferView(QueueTenantAPIView):
         values = dict(serializer.validated_data)
         source_id = _entry_id(values, path_id=pk)
         expected_version = _expected_version(request, values)
+        # The permission resolved the same effective type before admitting the
+        # request; reuse it so authorization and execution agree.
+        resolved_target = getattr(request, "queue_resolved_transfer_target", None)
+        target_queue_type = values.get("target_queue_type")
+        if target_queue_type is None and resolved_target is not None:
+            target_queue_type = resolved_target[1]
         source, destination = queue_transfer(
             organisation=request.organisation,
             facility=request.facility,
             actor=request.user,
             source_queue_entry_id=source_id,
             target_department_id=values["target_department_id"],
-            target_queue_type=values.get("target_queue_type"),
+            target_queue_type=target_queue_type,
             handoff_note=values.get("handoff_note", ""),
             reason=values.get("reason", ""),
             expected_version=expected_version,

@@ -2337,6 +2337,275 @@ def test_queue_call_permission_matches_every_serializer_identifier_representatio
     assert QueueEntry.objects.get(id=authorized.id).state == "CALLED"
 
 
+def test_transfer_authorizes_the_effective_destination_work_type(
+    tenant, enabled_mig002_target
+):
+    with tenant_atomic(tenant.organisation.id):
+        destination_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Transfer Destination Department",
+            code="DEST_B",
+        )
+    _, _, denied_source = make_entry(tenant, label="Transfer Default Denied")
+    _, _, explicit_source = make_entry(tenant, label="Transfer Explicit Target")
+    _, _, default_source = make_entry(tenant, label="Transfer Default Allowed")
+    with tenant_atomic(tenant.organisation.id):
+        for row in (denied_source, explicit_source, default_source):
+            start_service(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=tenant.user,
+                queue_entry_id=row.id,
+            )
+
+    # The actor holds TRIAGE in both departments. Omitting the work type
+    # resolves to DEST_B, the destination department's code, which the actor
+    # does not hold; only the matching department grant must not admit it.
+    limited_client, _ = queue_scope_client(
+        tenant,
+        username="s02-transfer-default-denied",
+        grants=[
+            (tenant.department, ("queue.transfer:TRIAGE",)),
+            (destination_department, ("queue.transfer:TRIAGE",)),
+        ],
+    )
+    with tenant_atomic(tenant.organisation.id):
+        denied_version = QueueEntry.objects.get(id=denied_source.id).version
+    denied = limited_client.post(
+        "/api/v1/clinic/queue/transfer/",
+        {
+            "source_queue_entry_id": str(denied_source.id),
+            "target_department_id": str(destination_department.id),
+            "expected_version": denied_version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{denied_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-default-denied",
+    )
+    assert denied.status_code == 403, denied.data
+    assert str(denied_source.id) not in str(denied.data)
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=denied_source.id)
+        assert unchanged.state == "IN_SERVICE"
+        assert unchanged.version == denied_version
+        assert not QueueEntry.objects.filter(
+            work_identity=(
+                f"QUEUE-HANDOFF:{denied_source.id}:{destination_department.id}:DEST_B"
+            )
+        ).exists()
+        assert not AuditEvent.objects.filter(
+            entity_id=str(denied_source.id),
+            event_code__in=["QUEUE_HANDOFF", "QUEUE_SERVICE_COMPLETED", "QUEUE_TRANSFERRED"],
+        ).exists()
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s02-transfer-default-denied"),
+        ).exists()
+
+    # Malformed destination fields keep the serializer's normal 400 instead of
+    # becoming a scope decision.
+    for index, (target, queue_type) in enumerate(
+        (("not-a-uuid", None), (destination_department.id, ""))
+    ):
+        malformed = limited_client.post(
+            "/api/v1/clinic/queue/transfer/",
+            {
+                "source_queue_entry_id": str(denied_source.id),
+                "target_department_id": str(target),
+                **({"target_queue_type": queue_type} if queue_type is not None else {}),
+                "expected_version": denied_version,
+            },
+            format="json",
+            HTTP_IF_MATCH=f'"{denied_version}"',
+            HTTP_IDEMPOTENCY_KEY=f"s02-transfer-malformed-target-{index}",
+        )
+        assert malformed.status_code == 400, (target, queue_type, malformed.data)
+    with tenant_atomic(tenant.organisation.id):
+        still_waiting = QueueEntry.objects.get(id=denied_source.id)
+        assert still_waiting.state == "IN_SERVICE"
+        assert still_waiting.version == denied_version
+
+    # A valid explicit destination type in the same department is allowed.
+    with tenant_atomic(tenant.organisation.id):
+        explicit_version = QueueEntry.objects.get(id=explicit_source.id).version
+    explicit = limited_client.post(
+        "/api/v1/clinic/queue/transfer/",
+        {
+            "source_queue_entry_id": str(explicit_source.id),
+            "target_department_id": str(destination_department.id),
+            "target_queue_type": "TRIAGE",
+            "expected_version": explicit_version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{explicit_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-explicit-target",
+    )
+    assert explicit.status_code == 200, explicit.data
+    with tenant_atomic(tenant.organisation.id):
+        destination = QueueEntry.objects.get(
+            id=explicit.data["destination_queue_entry_id"]
+        )
+        assert destination.department_id == destination_department.id
+        assert destination.queue_type == "TRIAGE"
+
+    # A department-wide default the actor does hold is authorized and the
+    # handler creates exactly the checked work type.
+    default_client, _ = queue_scope_client(
+        tenant,
+        username="s02-transfer-default-allowed",
+        grants=[
+            (tenant.department, ("queue.transfer:TRIAGE",)),
+            (tenant.department, ("queue.transfer:OPD",)),
+        ],
+    )
+    with tenant_atomic(tenant.organisation.id):
+        default_version = QueueEntry.objects.get(id=default_source.id).version
+    defaulted = default_client.post(
+        "/api/v1/clinic/queue/transfer/",
+        {
+            "source_queue_entry_id": str(default_source.id),
+            "target_department_id": str(tenant.department.id),
+            "expected_version": default_version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{default_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-default-allowed",
+    )
+    assert defaulted.status_code == 200, defaulted.data
+    with tenant_atomic(tenant.organisation.id):
+        destination = QueueEntry.objects.get(
+            id=defaulted.data["destination_queue_entry_id"]
+        )
+        assert destination.department_id == tenant.department.id
+        assert destination.queue_type == "OPD"
+
+
+def test_transfer_replay_reauthorizes_the_stored_destination(
+    tenant, enabled_mig002_target
+):
+    from types import SimpleNamespace
+
+    from application.queue.views import QueueTransferView
+
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Transfer Replay Department",
+            code="REPLAY_DEST",
+        )
+    _, _, source = make_entry(tenant, label="Transfer Replay Source")
+    with tenant_atomic(tenant.organisation.id):
+        start_service(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            queue_entry_id=source.id,
+        )
+    client, user = queue_scope_client(
+        tenant,
+        username="s02-transfer-replay",
+        grants=[
+            (tenant.department, ("queue.transfer:TRIAGE",)),
+            (tenant.department, ("queue.transfer:OPD",)),
+        ],
+    )
+    with tenant_atomic(tenant.organisation.id):
+        source_version = QueueEntry.objects.get(id=source.id).version
+    body = {
+        "source_queue_entry_id": str(source.id),
+        "target_department_id": str(tenant.department.id),
+        "expected_version": source_version,
+    }
+    first = client.post(
+        "/api/v1/clinic/queue/transfer/",
+        body,
+        format="json",
+        HTTP_IF_MATCH=f'"{source_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-replay",
+    )
+    assert first.status_code == 200, first.data
+    destination_id = first.data["destination_queue_entry_id"]
+
+    replay = client.post(
+        "/api/v1/clinic/queue/transfer/",
+        body,
+        format="json",
+        HTTP_IF_MATCH=f'"{source_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-replay",
+    )
+    assert replay.status_code == 200, replay.data
+    assert replay["Idempotent-Replay"] == "true"
+    assert replay.data == first.data
+    with tenant_atomic(tenant.organisation.id):
+        assert AuditEvent.objects.filter(
+            entity_id=str(source.id), event_code="QUEUE_HANDOFF"
+        ).count() == 1
+        assert QueueEntry.objects.filter(
+            work_identity=f"QUEUE-HANDOFF:{source.id}:{tenant.department.id}:OPD"
+        ).count() == 1
+        record = IdempotencyRecord.objects.get(
+            organisation=tenant.organisation,
+            operation="CMD-018",
+            key_hash=key_hash("s02-transfer-replay"),
+        )
+        assert record.response_body["destination_queue_entry_id"] == destination_id
+
+    # The callback itself still returns the saved outcome while the stored
+    # destination is authorized.
+    view = QueueTransferView()
+    view.request = SimpleNamespace(
+        organisation=tenant.organisation,
+        facility=tenant.facility,
+        user=user,
+    )
+    with tenant_atomic(tenant.organisation.id):
+        assert view.replay_idempotent_response(record) == first.data
+
+    # Move the actor's grants: the request permission now denies the source,
+    # and the callback must independently refuse the stored destination.
+    with tenant_atomic(tenant.organisation.id):
+        UserFacilityRole.objects.filter(
+            organisation=tenant.organisation, user=user
+        ).update(department=other_department)
+    denied = client.post(
+        "/api/v1/clinic/queue/transfer/",
+        body,
+        format="json",
+        HTTP_IF_MATCH=f'"{source_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-replay",
+    )
+    assert denied.status_code == 403, denied.data
+    with tenant_atomic(tenant.organisation.id):
+        assert AuditEvent.objects.filter(
+            entity_id=str(source.id), event_code="QUEUE_HANDOFF"
+        ).count() == 1
+        assert QueueEntry.objects.filter(
+            work_identity=f"QUEUE-HANDOFF:{source.id}:{tenant.department.id}:OPD"
+        ).count() == 1
+        assert IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s02-transfer-replay"),
+        ).exists()
+
+    stored = SimpleNamespace(
+        response_body=record.response_body,
+        result_reference={"entity_type": "QueueEntry", "entity_id": destination_id},
+    )
+    denied_view = QueueTransferView()
+    denied_view.request = SimpleNamespace(
+        organisation=tenant.organisation,
+        facility=tenant.facility,
+        user=user,
+    )
+    with tenant_atomic(tenant.organisation.id):
+        with pytest.raises(CanonicalError) as refused:
+            denied_view.replay_idempotent_response(stored)
+        assert refused.value.code == "NOT_FOUND"
+        assert destination_id not in str(refused.value.detail)
+
+
 def test_transfer_authorizes_the_source_field_its_serializer_declares(
     tenant, enabled_mig002_target
 ):
