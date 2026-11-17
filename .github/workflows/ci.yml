@@ -201,9 +201,10 @@ jobs:
           set -o pipefail
           python -m pytest --reuse-db -v \
             backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
+            backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
             | tee "$RUNNER_TEMP/guard-proof.log"
           if grep -q "SKIPPED" "$RUNNER_TEMP/guard-proof.log"; then
-            echo "The disabled-guard proof was skipped; the S-02 cutover proof is incomplete." >&2
+            echo "A disabled-guard proof was skipped; the cutover proof is incomplete." >&2
             exit 1
           fi
       - name: Run PostgreSQL-only S-00 tests
@@ -215,7 +216,8 @@ jobs:
         run: |
           python -m pytest --reuse-db -q \
             --deselect backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
-            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py
+            --deselect backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
+            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py backend/tests/test_s03_postgres.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -256,6 +258,16 @@ jobs:
           python backend/manage.py mig002 backfill --organisation "$org_id"
           python backend/manage.py mig002 verify --organisation "$org_id"
           python backend/manage.py mig002 cutover --organisation "$org_id"
+      - name: Cut over MIG-003 for the synthetic organisation
+        run: |
+          org_id="$(python backend/manage.py shell -c 'from tenancy.models import Organisation; print(Organisation.objects.get(slug="clinicopus-demo").pk)' | tail -n 1)"
+          test -n "$org_id"
+          python backend/manage.py mig003 inventory --organisation "$org_id"
+          python backend/manage.py mig003 backfill --organisation "$org_id"
+          python backend/manage.py mig003 verify --organisation "$org_id"
+          python backend/manage.py mig003 verify --organisation "$org_id"
+          python backend/manage.py mig003 constrain --organisation "$org_id"
+          python backend/manage.py mig003 cutover --organisation "$org_id"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -265,5 +277,5 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts
+      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts
         working-directory: frontend
