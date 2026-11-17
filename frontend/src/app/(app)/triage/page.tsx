@@ -144,6 +144,7 @@ function TriageWorkspace() {
   const saveKeyRef = useRef<string | null>(null);
   const completeKeyRef = useRef<string | null>(null);
   const openedEntryRef = useRef<string | null>(null);
+  const dirtyRef = useRef(false);
 
   const queue = useQuery({
     queryKey: queueKey,
@@ -165,8 +166,13 @@ function TriageWorkspace() {
     }
   }, [queue.data?.entries, selectedId, preselectedId]);
 
-  function applyRecord(next: TriageRecord) {
+  function applyRecord(next: TriageRecord, { keepFields = false } = {}) {
     setRecord(next);
+    if (keepFields) {
+      // A start/resume response must not erase values the nurse typed while
+      // the request was in flight.
+      return;
+    }
     setChiefComplaint((next.presenting_complaints ?? []).map((item) => item.text).join("\n"));
     setMedications((next.current_medications?.medications ?? []).join("\n"));
     setChronicConditions((next.current_medications?.chronic_conditions ?? []).join(", "));
@@ -190,11 +196,13 @@ function TriageWorkspace() {
     setWeight(next.observation?.weight_kg != null ? String(next.observation.weight_kg) : "");
     setHeight(next.observation?.height_cm != null ? String(next.observation.height_cm) : "");
     setMuac(next.observation?.muac_cm != null ? String(next.observation.muac_cm) : "");
+    dirtyRef.current = false;
     setDirty(false);
     setSaveState("saved");
   }
 
   function markDirty() {
+    dirtyRef.current = true;
     setDirty(true);
     setSaveState("idle");
     saveKeyRef.current = null;
@@ -254,7 +262,7 @@ function TriageWorkspace() {
         }
       ),
     onSuccess: (data) => {
-      applyRecord(normalizeRecord(data.triage_record));
+      applyRecord(normalizeRecord(data.triage_record), { keepFields: dirtyRef.current });
       setQueueVersion(data.queue_entry.version ?? null);
       setError("");
     },
@@ -435,6 +443,7 @@ function TriageWorkspace() {
       setSelectedId(null);
       setRecord(null);
       setQueueVersion(null);
+      dirtyRef.current = false;
       setDirty(false);
       setSaveState("idle");
       setChiefComplaint("");
@@ -469,6 +478,7 @@ function TriageWorkspace() {
     setQueueVersion(entry.version);
     const useLegacy = !canCreate;
     setLegacy(useLegacy);
+    dirtyRef.current = false;
     setDirty(false);
     setSaveState("idle");
     setChiefComplaint("");
