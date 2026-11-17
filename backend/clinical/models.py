@@ -65,7 +65,12 @@ class Encounter(FacilityScopedModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["organisation", "encounter_no"], name="uniq_encounter_org_no")
+            models.UniqueConstraint(fields=["organisation", "encounter_no"], name="uniq_encounter_org_no"),
+            models.UniqueConstraint(
+                fields=["organisation", "visit"],
+                condition=models.Q(visit__isnull=False, status="OPEN"),
+                name="uniq_open_encounter_visit",
+            ),
         ]
 
 
@@ -137,11 +142,17 @@ class ClinicalNoteVersion(OrganisationScopedModel):
     content = models.JSONField(default=dict)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     reason = models.TextField(blank=True)
+    content_hash = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["note", "version_number"], name="uniq_note_version")
+            models.UniqueConstraint(fields=["note", "version_number"], name="uniq_note_version"),
+            models.CheckConstraint(
+                condition=models.Q(content_hash="")
+                | models.Q(content_hash__regex=r"^[0-9a-f]{64}$"),
+                name="note_version_hash_valid",
+            ),
         ]
 
 
