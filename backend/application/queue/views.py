@@ -1,5 +1,6 @@
 """HTTP coordinators for S-02 queue commands and read projections."""
 
+from collections.abc import Mapping
 from datetime import date
 
 from django.db import models
@@ -23,6 +24,7 @@ from core.idempotency import json_safe
 from core.permissions import (
     IsTenantMember,
     coerce_queue_identifier,
+    mapping_value,
     queue_scope_pairs,
     scope_allows,
 )
@@ -100,6 +102,19 @@ class QueueCapability(BasePermission):
         return cls._scope(request, cls._capabilities_for(view))
 
     @staticmethod
+    def _body_mapping(request):
+        """Return the command body as a mapping, or an empty mapping.
+
+        A non-object JSON body is left to the request serializer, which owns
+        the project's normal validation 400.
+        """
+
+        if request.method not in {"POST", "PUT", "PATCH"}:
+            return {}
+        data = request.data
+        return data if isinstance(data, Mapping) else {}
+
+    @staticmethod
     def _requested_scope(request):
         """Resolve the command scope from the values the handler will use.
 
@@ -122,23 +137,25 @@ class QueueCapability(BasePermission):
                 "Command department and queue type filters must be sent in the request body.",
                 status_code=400,
             )
-        return request.data.get("department_id"), request.data.get("queue_type")
+        body = QueueCapability._body_mapping(request)
+        return body.get("department_id"), body.get("queue_type")
 
     def _has_permission(self, request, view, capabilities=None):
         capabilities = tuple(
             capabilities if capabilities is not None else self._capabilities_for(view)
         )
         requested_department, requested_type = self._requested_scope(request)
+        body = self._body_mapping(request)
 
         target_department = None
         target_type = None
         if request.method in {"POST", "PUT", "PATCH"}:
-            target_department = request.data.get("target_department_id")
-            target_type = request.data.get("target_queue_type")
+            target_department = body.get("target_department_id")
+            target_type = body.get("target_queue_type")
             if not target_department:
                 target_type = target_type or requested_type
 
-        source_identifier, source_supplied = self._source_identifier(request)
+        source_identifier, source_supplied = self._source_identifier(request, view)
         source_department = requested_department
         source_type = requested_type
         if source_supplied:
@@ -173,14 +190,16 @@ class QueueCapability(BasePermission):
         return True
 
     @staticmethod
-    def _source_identifier(request):
+    def _source_identifier(request, view):
         """Return ``(value, supplied)`` for the command target, URL first.
 
-        The order matches the handler's own precedence (path, then body), so
-        an ignored identifier can never mask the one the command will act on.
-        Presence is explicit so a falsey supplied value is not mistaken for an
-        absent identifier, and the value is coerced with the serializer's UUID
-        rules before any lookup.
+        The order matches the handler's own precedence: the path ``pk``, then
+        the body field the view's request contract declares. A Transfer names
+        its source ``source_queue_entry_id`` while other commands use
+        ``queue_entry_id``, so an unrelated extra field can never mask the
+        source the command actually acts on. Presence is explicit so a falsey
+        supplied value is not mistaken for an absent identifier, and the value
+        is coerced with the serializer's UUID rules before any lookup.
         """
 
         parser_context = getattr(request, "parser_context", None) or {}
@@ -188,12 +207,8 @@ class QueueCapability(BasePermission):
         if kwargs.get("pk") is not None:
             return kwargs["pk"], True
         if request.method in {"POST", "PUT", "PATCH"}:
-            data = request.data
-            if hasattr(data, "__contains__"):
-                for name in ("queue_entry_id", "source_queue_entry_id"):
-                    if name in data:
-                        return data.get(name), True
-            return None, False
+            source_field = getattr(view, "queue_source_field", None) or "queue_entry_id"
+            return mapping_value(request.data, (source_field,))
         query_params = getattr(request, "query_params", None)
         if query_params is not None and "queue_entry_id" in query_params:
             return query_params.get("queue_entry_id"), True
@@ -224,6 +239,8 @@ class QueueTenantAPIView(TenantAPIView):
     permission_classes = [IsAuthenticated, IsTenantMember, QueueCapability]
     denial_audit_required = False
     operation_id = None
+    # The body field this command's request contract uses as its source row.
+    queue_source_field = "queue_entry_id"
 
     def resolved_queue_scope(self):
         return QueueCapability.scope_for_request(self.request, self)
@@ -413,6 +430,7 @@ class QueueAssignView(QueueTenantAPIView):
 
 class QueueTransferView(QueueTenantAPIView):
     queue_capabilities = ("queue.transfer", "queue.move")
+    queue_source_field = "source_queue_entry_id"
     idempotency_operation = "CMD-018"
     requires_idempotency = True
     request_serializer_class = QueueTransferSerializer

@@ -11,6 +11,8 @@ independent axes: a reader granted TRIAGE in department A and CONSULTATION in
 department B may read neither A's consultation work nor B's triage work.
 """
 
+from collections.abc import Mapping
+
 from django.db import models
 from rest_framework import serializers
 from rest_framework.permissions import BasePermission
@@ -30,6 +32,22 @@ def coerce_queue_identifier(value):
         return serializers.UUIDField().to_internal_value(value)
     except (TypeError, ValueError, serializers.ValidationError):
         return None
+
+
+def mapping_value(data, names):
+    """Return ``(value, supplied)`` for the first present key of a mapping body.
+
+    Only object-shaped bodies have keys. A non-object JSON body (a string, a
+    list, ``null``) must fall through to the serializer's normal validation
+    error instead of being indexed here.
+    """
+
+    if not isinstance(data, Mapping):
+        return None, False
+    for name in names:
+        if name in data:
+            return data.get(name), True
+    return None, False
 
 
 class TenantAPIViewMixin:
@@ -237,9 +255,7 @@ class QueueScopePermission(BasePermission):
         for name in ("pk", "queue_id", "queue_entry_id"):
             if name in kwargs and kwargs[name] is not None:
                 return kwargs[name], True
-        data = getattr(request, "data", None)
-        if data is not None and hasattr(data, "__contains__"):
-            for name in ("queue_entry_id", "source_queue_entry_id"):
-                if name in data:
-                    return data.get(name), True
-        return None, False
+        return mapping_value(
+            getattr(request, "data", None),
+            ("queue_entry_id", "source_queue_entry_id"),
+        )

@@ -2335,3 +2335,185 @@ def test_queue_call_permission_matches_every_serializer_identifier_representatio
     assert allowed.status_code == 200, allowed.data
     assert allowed.data["queue_entry_id"] == str(authorized.id)
     assert QueueEntry.objects.get(id=authorized.id).state == "CALLED"
+
+
+def test_transfer_authorizes_the_source_field_its_serializer_declares(
+    tenant, enabled_mig002_target
+):
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="Transfer Source Department",
+            code="TRANSFER_SOURCE",
+        )
+    _, _, in_scope_decoy = make_entry(
+        tenant, label="Transfer Decoy Source", queue_type="TRIAGE"
+    )
+    _, _, hidden_source = make_entry(
+        tenant,
+        label="Transfer Hidden Source",
+        department=other_department,
+        queue_type="TRIAGE",
+    )
+    _, _, authorized_source = make_entry(
+        tenant, label="Transfer Authorized Source", queue_type="TRIAGE"
+    )
+    _, _, path_source = make_entry(
+        tenant, label="Transfer Path Source", queue_type="TRIAGE"
+    )
+    with tenant_atomic(tenant.organisation.id):
+        for row in (in_scope_decoy, hidden_source, authorized_source, path_source):
+            start_service(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=tenant.user,
+                queue_entry_id=row.id,
+            )
+    client, _ = queue_scope_client(
+        tenant,
+        username="s02-transfer-source",
+        grants=[(tenant.department, ("queue.transfer",))],
+    )
+
+    # The Transfer serializer converts source_queue_entry_id. An unrelated,
+    # in-scope queue_entry_id must not authorize the hidden source the handler
+    # actually moves.
+    with tenant_atomic(tenant.organisation.id):
+        hidden_version = QueueEntry.objects.get(id=hidden_source.id).version
+    denied = client.post(
+        "/api/v1/clinic/queue/transfer/",
+        {
+            "source_queue_entry_id": str(hidden_source.id),
+            "queue_entry_id": str(in_scope_decoy.id),
+            "target_department_id": str(tenant.department.id),
+            "target_queue_type": "CONSULTATION",
+            "reason": "ROUTED_IN_ERROR",
+            "expected_version": hidden_version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{hidden_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-source-denied",
+    )
+    assert denied.status_code == 403, denied.data
+    assert str(hidden_source.id) not in str(denied.data)
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=hidden_source.id)
+        assert unchanged.state == "IN_SERVICE"
+        assert unchanged.version == hidden_version
+        assert QueueEntry.objects.get(id=in_scope_decoy.id).state == "IN_SERVICE"
+        assert not QueueEntry.objects.filter(
+            work_identity=(
+                f"QUEUE-HANDOFF:{hidden_source.id}:{tenant.department.id}:CONSULTATION"
+            )
+        ).exists()
+        assert not AuditEvent.objects.filter(
+            entity_id=str(hidden_source.id),
+            event_code__in=["QUEUE_HANDOFF", "QUEUE_SERVICE_COMPLETED", "QUEUE_TRANSFERRED"],
+        ).exists()
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s02-transfer-source-denied"),
+        ).exists()
+
+    # The declared source field still authorizes and completes a transfer.
+    with tenant_atomic(tenant.organisation.id):
+        authorized_version = QueueEntry.objects.get(id=authorized_source.id).version
+    allowed = client.post(
+        "/api/v1/clinic/queue/transfer/",
+        {
+            "source_queue_entry_id": str(authorized_source.id),
+            "target_department_id": str(tenant.department.id),
+            "target_queue_type": "CONSULTATION",
+            "expected_version": authorized_version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{authorized_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-source-allowed",
+    )
+    assert allowed.status_code == 200, allowed.data
+    assert allowed.data["source_queue_entry_id"] == str(authorized_source.id)
+    with tenant_atomic(tenant.organisation.id):
+        assert QueueEntry.objects.get(id=authorized_source.id).state == "COMPLETED"
+        destination = QueueEntry.objects.get(
+            id=allowed.data["destination_queue_entry_id"]
+        )
+        assert destination.state == "WAITING"
+        assert destination.queue_type == "CONSULTATION"
+
+    # The path target stays authoritative for the path-based route; a body
+    # source naming another row cannot redirect the command.
+    with tenant_atomic(tenant.organisation.id):
+        path_version = QueueEntry.objects.get(id=path_source.id).version
+    precedence = client.post(
+        f"/api/v1/clinic/queue/{path_source.id}/transfer/",
+        {
+            "source_queue_entry_id": str(hidden_source.id),
+            "target_department_id": str(tenant.department.id),
+            "target_queue_type": "CONSULTATION",
+            "expected_version": path_version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{path_version}"',
+        HTTP_IDEMPOTENCY_KEY="s02-transfer-path-precedence",
+    )
+    assert precedence.status_code == 200, precedence.data
+    assert precedence.data["source_queue_entry_id"] == str(path_source.id)
+    with tenant_atomic(tenant.organisation.id):
+        assert QueueEntry.objects.get(id=path_source.id).state == "COMPLETED"
+        assert QueueEntry.objects.get(id=hidden_source.id).state == "IN_SERVICE"
+        assert QueueEntry.objects.get(id=hidden_source.id).version == hidden_version
+
+
+def test_malformed_non_object_bodies_reach_normal_validation(
+    tenant, enabled_mig002_target
+):
+    client = scoped_queue_client(
+        tenant, username="s02-malformed-body", department=tenant.department
+    )
+
+    encounter_bodies = (
+        "queue_entry_id",
+        ["queue_entry_id"],
+        [{"queue_entry_id": "not-a-uuid"}],
+        {"queue_entry_id": None},
+    )
+    for index, body in enumerate(encounter_bodies):
+        response = client.post(
+            "/api/v1/clinic/encounters/",
+            body,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY=f"s02-malformed-body-encounter-{index}",
+        )
+        assert response.status_code == 400, (body, response.data)
+    with tenant_atomic(tenant.organisation.id):
+        assert not Encounter.objects.filter(organisation=tenant.organisation).exists()
+        assert not AuditEvent.objects.filter(
+            organisation=tenant.organisation, event_code="ENCOUNTER_OPENED"
+        ).exists()
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash__in=[
+                key_hash(f"s02-malformed-body-encounter-{index}")
+                for index in range(len(encounter_bodies))
+            ],
+        ).exists()
+
+    # Queue commands use the same mapping guard before the serializer's own
+    # "expected a dictionary" validation.
+    for index, body in enumerate(("queue_entry_id", ["queue_entry_id"])):
+        response = client.post(
+            "/api/v1/clinic/queue/call-next/",
+            body,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY=f"s02-malformed-body-call-{index}",
+        )
+        assert response.status_code == 400, (body, response.data)
+    with tenant_atomic(tenant.organisation.id):
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash__in=[
+                key_hash("s02-malformed-body-call-0"),
+                key_hash("s02-malformed-body-call-1"),
+            ],
+        ).exists()
