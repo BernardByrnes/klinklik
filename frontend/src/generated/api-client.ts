@@ -6,7 +6,6 @@ export type GeneratedApiError = {
   [key: string]: unknown;
 };
 
-export type Adjustment = { batch_id: string; location_id: string; quantity: string; reason_code: string; note?: string; };
 export type AllergyCreate = { substance: string; reaction?: string; severity: "MILD" | "MODERATE" | "SEVERE"; };
 export type AllergyEnteredInError = { reason: string; };
 export type AllergyStateResponse = { patient?: string; allergy?: { id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }; allergy_status: "NOT_RECORDED" | "NKA" | "UNKNOWN" | "RECORDED"; active_allergies: Array<{ id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }>; allergy_revision: number; allergy_state_etag: string; allergies_reviewed_at?: string; allergies_reviewed_revision?: number | null; allergies_review_is_current?: boolean; };
@@ -21,6 +20,7 @@ export type CreditNoteResult = { id: string; credit_no: string; invoice_id: stri
 export type DepartmentEnvelope = { departments: Array<{ id: string; name: string; code: string; is_active?: boolean; facility: string; }>; };
 export type DiagnosisStateResponse = { diagnoses: Array<{ id: string; encounter: string; diagnosis_type: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code: string; label: string; coded: boolean; certainty_note: string; is_primary: boolean; no_diagnosis_reason: string; status: "ACTIVE"; recorded_by: string; created_at: string; updated_at: string; }>; consultation_etag: string; };
 export type DiagnosisWrite = { diagnosis_type?: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code?: string; label?: string; certainty_note?: string; is_primary?: boolean; no_diagnosis_reason?: string; };
+export type Disposal = { batch_id: string; location_id: string; quantity: string; reason: string; source_event_id?: string; };
 export type DispositionResponse = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note: string; consultation_etag: string; encounter_status: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; };
 export type DispositionWrite = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note?: string; };
 export type EncounterCreate = { queue_entry_id: string; expected_version?: number | null; };
@@ -60,6 +60,7 @@ export type ProductDeactivate = { reason: string; expected_version: number; };
 export type ProductPrice = { id: string; product: string; amount: string; pack_price?: string | null; currency?: string; effective_from: string; effective_to?: string | null; version?: number; };
 export type ProductPriceSet = { product_id: string; amount: string; pack_price?: string | null; currency?: string; effective_from: string; effective_to?: string | null; source_event_id?: string; };
 export type PublicBoardRow = { queue_entry_id: string; identity: string; queue_label: string; };
+export type Quarantine = { batch_id: string; location_id: string; quantity: string; reason: string; source_type?: string; source_id?: string; };
 export type QueueAssign = { queue_entry_id?: string; target_user_id: string; expected_version?: number; };
 export type QueueCall = { queue_entry_id?: string; department_id?: string; queue_type?: string; expected_version?: number; ordering_watermark?: string; out_of_order_reason?: string; };
 export type QueueCancel = { queue_entry_id?: string; reason: "LEFT_WITHOUT_BEING_SEEN" | "WRONG_QUEUE" | "DUPLICATE" | "SENT_HOME" | "SENT_ELSEWHERE" | "ROUTED_IN_ERROR" | "OTHER"; lwbs?: boolean; expected_version?: number; };
@@ -81,6 +82,11 @@ export type SessionResponse = { access_token: string; access_expires_at: string;
 export type Shift = { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; };
 export type ShiftClose = { declared_cash: string; reason?: string; };
 export type ShiftOpen = { opening_float?: string; };
+export type StockAdjustmentApprove = { expected_version?: number; };
+export type StockAdjustmentCreate = { batch_id: string; location_id: string; quantity: string; reason_code: string; note?: string; reference?: string; };
+export type StockCountApprove = { expected_version: number; };
+export type StockCountOpen = { location_id: string; };
+export type StockCountSubmit = { expected_version: number; lines: Array<{ line_id: string; counted_qty: string; }>; };
 export type StockLocation = { id: string; code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; version?: number; };
 export type StockLocationWrite = { code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; expected_version?: number; };
 export type StockReceipt = { receipt_no: string; lines: Array<{ product_id: string; location_id: string; batch_no: string; expiry_date: string; quantity: string; unit_cost?: string | null; }>; supplier_id?: string | null; supplier_name?: string; reference?: string; source_event_id?: string; };
@@ -251,13 +257,26 @@ export type CreateTriageRequest = Triage;
 export type CreateTriageResponse = TriageResponse;
 export type CreateTriageRecordStartRequest = TriageRecordStart;
 export type CreateTriageRecordStartResponse = TriageRecordStartResponse;
-export type CreateAdjustmentRequest = Adjustment;
-export type CreateAdjustmentResponse = Adjustment;
+export type ListStockAdjustmentCreatesResponse = Array<StockAdjustmentCreate>;
+export type CreateStockAdjustmentCreateRequest = StockAdjustmentCreate;
+export type CreateStockAdjustmentCreateResponse = StockAdjustmentCreate;
+export type CreateStockAdjustmentApproveRequest = StockAdjustmentApprove;
+export type CreateStockAdjustmentApproveResponse = StockAdjustmentApprove;
 export type ListStockBatchesResponse = Array<unknown>;
 export type CreateCatalogueImportRequest = CatalogueImport;
 export type CreateCatalogueImportResponse = CatalogueImport;
+export type CreateStockCountOpenRequest = StockCountOpen;
+export type CreateStockCountOpenResponse = StockCountOpen;
+export type CreateStockCountApproveRequest = StockCountApprove;
+export type CreateStockCountApproveResponse = StockCountApprove;
+export type CreateStockCountSubmitRequest = StockCountSubmit;
+export type CreateStockCountSubmitResponse = StockCountSubmit;
+export type CreateDisposalRequest = Disposal;
+export type CreateDisposalResponse = Disposal;
 export type CreateFefoRequest = Fefo;
 export type CreateFefoResponse = Fefo;
+export type ListInventoryLedgersResponse = Array<unknown>;
+export type ListInventoryLedgerExportsResponse = Array<unknown>;
 export type ListStockLocationWritesResponse = Array<StockLocation>;
 export type CreateStockLocationWriteRequest = StockLocationWrite;
 export type CreateStockLocationWriteResponse = StockLocation;
@@ -269,6 +288,8 @@ export type CreateProductCreateRequest = ProductCreate;
 export type CreateProductCreateResponse = Product;
 export type CreateProductDeactivateRequest = ProductDeactivate;
 export type CreateProductDeactivateResponse = Product;
+export type CreateQuarantineRequest = Quarantine;
+export type CreateQuarantineResponse = Quarantine;
 export type CreateStockReceiptRequest = StockReceipt;
 export type CreateStockReceiptResponse = StockReceipt;
 export type ListStockSummariesResponse = Array<unknown>;
@@ -316,7 +337,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "d7d6fa9a173c95d172a86ce9fcc496a8f73fe12db62d6bc44c81ecc855eea9e2";
+export const GENERATED_API_CONTRACT_SHA256 = "0c51fc78f883ac3a18156f87cb7cbf19cde2943e3df607c69ae24930799261ff";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -715,9 +736,19 @@ export const GENERATED_API_OPERATIONS = [
     "path": "/api/v1/clinic/triage/{queue_id}/start/"
   },
   {
-    "method": "POST",
-    "operationId": "createAdjustment",
+    "method": "GET",
+    "operationId": "listStockAdjustmentCreates",
     "path": "/api/v1/inventory/adjustments/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createStockAdjustmentCreate",
+    "path": "/api/v1/inventory/adjustments/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createStockAdjustmentApprove",
+    "path": "/api/v1/inventory/adjustments/{id}/approve/"
   },
   {
     "method": "GET",
@@ -731,8 +762,43 @@ export const GENERATED_API_OPERATIONS = [
   },
   {
     "method": "POST",
+    "operationId": "createStockCountOpen",
+    "path": "/api/v1/inventory/counts/open/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveStockCountDetail",
+    "path": "/api/v1/inventory/counts/{id}/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createStockCountApprove",
+    "path": "/api/v1/inventory/counts/{id}/approve/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createStockCountSubmit",
+    "path": "/api/v1/inventory/counts/{id}/submit/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createDisposal",
+    "path": "/api/v1/inventory/disposals/"
+  },
+  {
+    "method": "POST",
     "operationId": "createFefo",
     "path": "/api/v1/inventory/fefo/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listInventoryLedgers",
+    "path": "/api/v1/inventory/ledger/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listInventoryLedgerExports",
+    "path": "/api/v1/inventory/ledger/export/"
   },
   {
     "method": "GET",
@@ -768,6 +834,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createProductDeactivate",
     "path": "/api/v1/inventory/products/{id}/deactivate/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createQuarantine",
+    "path": "/api/v1/inventory/quarantine/"
   },
   {
     "method": "POST",

@@ -58,6 +58,25 @@ type Movement = {
   occurred_at: string;
 };
 
+type CountLine = {
+  id: string;
+  product_name: string;
+  strength: string;
+  batch_no: string;
+  expiry_date: string;
+  counted_qty: string | null;
+  expected_qty?: string;
+  variance_qty?: string | null;
+};
+
+type CountSheet = {
+  id: string;
+  state: string;
+  version: number;
+  blind: boolean;
+  lines: CountLine[];
+};
+
 function errorMessage(error: unknown) {
   if (error instanceof ApiRequestError) {
     const body = error.data as { detail?: string; code?: string; row_errors?: unknown };
@@ -84,6 +103,8 @@ export default function InventoryPage() {
   const [expiryDate, setExpiryDate] = useState("");
   const [quantity, setQuantity] = useState("");
   const [supplierName, setSupplierName] = useState("");
+  const [countSheet, setCountSheet] = useState<CountSheet | null>(null);
+  const [countValues, setCountValues] = useState<Record<string, string>>({});
 
   const stockKey = useProtectedQueryKey("inventory-stock", search);
   const locationsKey = useProtectedQueryKey("inventory-locations");
@@ -148,6 +169,89 @@ export default function InventoryPage() {
       setError("");
       setBatchNo("");
       setQuantity("");
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-stock") });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-movements") });
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const openCount = useMutation({
+    mutationFn: async () => {
+      const location = locationId || defaultLocation;
+      const opened = await apiRequest<{ id: string }>("/api/v1/inventory/counts/open/", {
+        method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-open") },
+        body: JSON.stringify({ location_id: location }),
+      });
+      return apiRequest<CountSheet>(`/api/v1/inventory/counts/${opened.id}/`);
+    },
+    onSuccess: (sheet) => {
+      setCountSheet(sheet);
+      setCountValues(
+        Object.fromEntries(
+          sheet.lines.map((line) => [line.id, line.counted_qty ?? ""]),
+        ),
+      );
+      setNotice("Blind count opened. Enter the observed quantities.");
+      setError("");
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const submitCount = useMutation({
+    mutationFn: () => {
+      if (!countSheet) throw new Error("Open a count first.");
+      return apiRequest<CountSheet>(
+        `/api/v1/inventory/counts/${countSheet.id}/submit/`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-submit") },
+          body: JSON.stringify({
+            expected_version: countSheet.version,
+            lines: countSheet.lines.map((line) => ({
+              line_id: line.id,
+              counted_qty: countValues[line.id] || "0.00",
+            })),
+          }),
+        },
+      );
+    },
+    onSuccess: (count) => {
+      setCountSheet((current) => (current ? { ...current, ...count } : current));
+      setNotice("Count submitted. A separate approver posts the exact variances.");
+      setError("");
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const approveCount = useMutation({
+    mutationFn: async () => {
+      if (!countSheet) throw new Error("Submit a count first.");
+      const approved = await apiRequest<{ id: string; state: string; version: number }>(
+        `/api/v1/inventory/counts/${countSheet.id}/approve/`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-approve") },
+          body: JSON.stringify({ expected_version: countSheet.version }),
+        },
+      );
+      return apiRequest<CountSheet>(
+        `/api/v1/inventory/counts/${approved.id}/?reveal=1`,
+      );
+    },
+    onSuccess: (sheet) => {
+      setCountSheet(sheet);
+      setNotice("Stock count approved. Counter-movements were posted.");
+      setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-stock") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-movements") });
     },
@@ -302,6 +406,79 @@ export default function InventoryPage() {
               <p className="text-[11.5px] font-medium text-muted">
                 Expired batches are refused. Expiry inside 90 days is accepted with a warning.
               </p>
+            </div>
+          </Card>
+
+          <Card>
+            <CardTitleBar title="Blind stock count" />
+            <div className="px-5 py-4 space-y-3">
+              {!countSheet ? (
+                <>
+                  <p className="text-[12.5px] font-medium text-secondary">
+                    Snapshot the selected location without showing the system quantity.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    disabled={openCount.isPending || !(locationId || defaultLocation)}
+                    onClick={() => openCount.mutate()}
+                  >
+                    {openCount.isPending ? "Opening…" : "Open count"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-[12.5px] font-medium text-ink">
+                    State: {countSheet.state}
+                    {countSheet.blind ? " · blind sheet (expected quantities hidden)" : ""}
+                  </p>
+                  <ul className="rounded-[14px] border border-line-soft divide-y divide-line-soft">
+                    {countSheet.lines.map((line) => (
+                      <li key={line.id} className="px-3.5 py-2.5 text-[12.5px]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-medium text-ink">
+                            {line.product_name} {line.strength} · {line.batch_no}
+                          </span>
+                          <span className="text-muted">exp {line.expiry_date}</span>
+                        </div>
+                        {countSheet.state === "DRAFT" ? (
+                          <TextInput
+                            className="mt-2"
+                            inputMode="decimal"
+                            aria-label={`Counted quantity ${line.batch_no}`}
+                            value={countValues[line.id] ?? ""}
+                            onChange={(event) =>
+                              setCountValues((current) => ({
+                                ...current,
+                                [line.id]: event.target.value,
+                              }))
+                            }
+                          />
+                        ) : (
+                          <p className="mt-1 text-secondary">
+                            Counted {line.counted_qty ?? "0.00"}
+                            {line.expected_qty !== undefined
+                              ? ` · expected ${line.expected_qty} · variance ${line.variance_qty}`
+                              : ""}
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  {countSheet.state === "DRAFT" ? (
+                    <Button disabled={submitCount.isPending} onClick={() => submitCount.mutate()}>
+                      {submitCount.isPending ? "Submitting…" : "Submit count"}
+                    </Button>
+                  ) : countSheet.state === "SUBMITTED" && can("inventory.approve") ? (
+                    <Button disabled={approveCount.isPending} onClick={() => approveCount.mutate()}>
+                      {approveCount.isPending ? "Approving…" : "Approve count"}
+                    </Button>
+                  ) : (
+                    <p className="text-[11.5px] font-medium text-muted">
+                      Approved counts are immutable; corrections use a new count or adjustment.
+                    </p>
+                  )}
+                </>
+              )}
             </div>
           </Card>
 
