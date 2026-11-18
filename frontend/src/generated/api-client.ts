@@ -6,12 +6,14 @@ export type GeneratedApiError = {
   [key: string]: unknown;
 };
 
+export type Adjustment = { batch_id: string; location_id: string; quantity: string; reason_code: string; note?: string; };
 export type AllergyCreate = { substance: string; reaction?: string; severity: "MILD" | "MODERATE" | "SEVERE"; };
 export type AllergyEnteredInError = { reason: string; };
 export type AllergyStateResponse = { patient?: string; allergy?: { id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }; allergy_status: "NOT_RECORDED" | "NKA" | "UNKNOWN" | "RECORDED"; active_allergies: Array<{ id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }>; allergy_revision: number; allergy_state_etag: string; allergies_reviewed_at?: string; allergies_reviewed_revision?: number | null; allergies_review_is_current?: boolean; };
 export type AllergyStatusWrite = { status: "NKA" | "UNKNOWN"; };
 export type ArrivalEnquiryResponse = { enquiry_id: string; };
 export type ArrivalEnquiryWrite = { reason_code: "NO_CLINICIAN" | "SERVICE_UNAVAILABLE" | "PRICE" | "REFERRED_OUT" | "OTHER"; source_event_id: string; safe_notes?: string; };
+export type CatalogueImport = { content: string; mode?: "ALL_OR_NOTHING" | "VALID_ROWS_ONLY"; template_version?: string; file_name?: string; file_hash?: string; };
 export type CheckIn = { patient_id: string; department_id?: string; visit_type?: string; notes?: string; };
 export type CreditNote = { id: string; credit_no: string; invoice: string; amount: string; currency?: string; reason: string; status?: "ISSUED" | "VOIDED"; issued_at?: string; issued_by: string; voided_at?: string | null; voided_by?: string | null; version?: number; };
 export type CreditNoteIssue = { amount: string; reason: string; };
@@ -23,6 +25,7 @@ export type DispositionResponse = { disposition: "TREATED_AND_DISCHARGED" | "REV
 export type DispositionWrite = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note?: string; };
 export type EncounterCreate = { queue_entry_id: string; expected_version?: number | null; };
 export type FacilityEnvelope = { facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; };
+export type Fefo = { product_id: string; quantity: string; location_id?: string | null; };
 export type FollowUpStateResponse = { follow_up: { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null; consultation_etag: string; encounter_status: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; };
 export type FollowUpWrite = { recommended_date?: string | null; interval_value?: number | null; interval_unit?: string | null; instructions?: string; };
 export type InvoiceCreate = { patient_id: string; encounter_id?: string; items: Array<{  }>; discount?: string; };
@@ -33,6 +36,7 @@ export type InvoiceReprice = { expected_version: number; price_list_id?: string;
 export type InvoiceRepriceResult = { id: string; invoice_no: string; status: string; before_total: string; after_total: string; line_set_version: number; version: number; payer_binding_id: string; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
+export type Movement = { id: string; product: string; batch: string; batch_no: string; expiry_date: string; location: string; location_name: string; movement_type: "IN_GRN" | "OUT_DISPENSE" | "OUT_SALE" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT" | "WRITE_OFF" | "QUARANTINE" | "REVERSAL" | "OPENING"; quantity: string; source_type: string; source_id: string; reason_code?: string; occurred_at?: string; };
 export type NoteAmend = { content: {  }; reason: string; };
 export type NoteResponse = { note: string; status: string; content: { consultation?: string; presenting_complaint?: string; hpi?: string; past_medical_history?: string; past_surgical_history?: string; family_history?: string; social_history?: string; general_examination?: string; cardiovascular_examination?: string; respiratory_examination?: string; abdominal_examination?: string; neurological_examination?: string; genitourinary_examination?: string; musculoskeletal_examination?: string; treatment_plan?: string; [key: string]: unknown; }; complaints: Array<{ text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; }>; etag: string; saved_at: string; current_version?: number; };
 export type NoteWrite = { content: {  }; complaints?: {  }; };
@@ -50,6 +54,11 @@ export type PaymentMethod = { code: string; label: string; kind: string; referen
 export type PaymentMethodConfigure = { code: string; label: string; kind: "MOBILE_MONEY_MANUAL" | "MANUAL"; reference_required?: boolean; provider_label?: string; is_active?: boolean; };
 export type PaymentResult = { id: string; receipt_no: string; receipt_id: string; amount: string; method: string; status: string; allocations: Array<{ invoice_id: string; invoice_no?: string; amount: string; }>; invoices: Array<{ id: string; status: string; total?: string; balance: string; }>; };
 export type PaymentReverseResult = { id: string; receipt_no: string; status: string; invoices: Array<{ id: string; status: string; total?: string; balance: string; }>; };
+export type Product = { id: string; code: string; generic_name: string; brand_name?: string; dosage_form: "TABLET" | "CAPSULE" | "SYRUP" | "SUSPENSION" | "INJECTION" | "CREAM" | "OINTMENT" | "DROPS" | "INHALER" | "SUPPOSITORY" | "SACHET" | "VIAL" | "TUBE" | "PIECE"; strength?: string; pack_description?: string; dispensing_unit: "TABLET" | "CAPSULE" | "ML" | "BOTTLE" | "SACHET" | "VIAL" | "TUBE" | "PIECE"; category?: "MEDICINE" | "CONSUMABLE" | "SUNDRY"; prescription_only?: boolean; controlled?: boolean; active?: boolean; instructions_template?: string; version?: number; };
+export type ProductCreate = { code: string; generic_name: string; brand_name?: string; dosage_form: string; strength?: string; pack_description?: string; dispensing_unit: string; category?: string; prescription_only?: boolean; controlled?: boolean; active?: boolean; confirm_duplicate?: boolean; };
+export type ProductDeactivate = { reason: string; expected_version: number; };
+export type ProductPrice = { id: string; product: string; amount: string; pack_price?: string | null; currency?: string; effective_from: string; effective_to?: string | null; version?: number; };
+export type ProductPriceSet = { product_id: string; amount: string; pack_price?: string | null; currency?: string; effective_from: string; effective_to?: string | null; source_event_id?: string; };
 export type PublicBoardRow = { queue_entry_id: string; identity: string; queue_label: string; };
 export type QueueAssign = { queue_entry_id?: string; target_user_id: string; expected_version?: number; };
 export type QueueCall = { queue_entry_id?: string; department_id?: string; queue_type?: string; expected_version?: number; ordering_watermark?: string; out_of_order_reason?: string; };
@@ -72,6 +81,14 @@ export type SessionResponse = { access_token: string; access_expires_at: string;
 export type Shift = { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; };
 export type ShiftClose = { declared_cash: string; reason?: string; };
 export type ShiftOpen = { opening_float?: string; };
+export type StockLocation = { id: string; code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; version?: number; };
+export type StockLocationWrite = { code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; expected_version?: number; };
+export type StockReceipt = { receipt_no: string; lines: Array<{ product_id: string; location_id: string; batch_no: string; expiry_date: string; quantity: string; unit_cost?: string | null; }>; supplier_id?: string | null; supplier_name?: string; reference?: string; source_event_id?: string; };
+export type Supplier = { id: string; code: string; name: string; contact_person?: string; phone?: string; notes?: string; active?: boolean; version?: number; };
+export type SupplierWrite = { code: string; name: string; contact_person?: string; phone?: string; notes?: string; active?: boolean; expected_version?: number; };
+export type Threshold = { id: string; product: string; location?: string | null; reorder_level: string; version?: number; };
+export type ThresholdWrite = { product_id: string; location_id?: string | null; reorder_level: string; expected_version?: number; };
+export type Transfer = { batch_id: string; from_location_id: string; to_location_id: string; quantity: string; reason?: string; };
 export type Triage = { expected_version?: number | null; acuity?: "ROUTINE" | "URGENT" | "EMERGENCY"; chief_complaint?: string; observations?: {  }; vitals?: {  }; };
 export type TriageRecordComplete = { expected_version: number; acuity?: "ROUTINE" | "URGENT" | "EMERGENCY" | null; acuity_reason?: string; presenting_complaints?: {  } | null; chief_complaint?: string; current_medications?: {  } | null; observation?: {  } | null; vitals?: {  } | null; expected_queue_version: number; };
 export type TriageRecordCompleteResponse = { triage_record: { id: string; visit_id: string; patient_id: string; state: string; acuity?: "ROUTINE" | "URGENT" | "EMERGENCY" | null; presenting_complaints: {  }; current_medications: {  }; recorded_by_id: string; completed_by_id?: string | null; completed_at?: string | null; current_version: number; version: number; observation?: {  } | null; bmi?: string | null; }; source_queue_entry_id: string; source_state: string; destination_queue_entry_id: string; destination_state: string; };
@@ -234,6 +251,35 @@ export type CreateTriageRequest = Triage;
 export type CreateTriageResponse = TriageResponse;
 export type CreateTriageRecordStartRequest = TriageRecordStart;
 export type CreateTriageRecordStartResponse = TriageRecordStartResponse;
+export type CreateAdjustmentRequest = Adjustment;
+export type CreateAdjustmentResponse = Adjustment;
+export type ListStockBatchesResponse = Array<unknown>;
+export type CreateCatalogueImportRequest = CatalogueImport;
+export type CreateCatalogueImportResponse = CatalogueImport;
+export type CreateFefoRequest = Fefo;
+export type CreateFefoResponse = Fefo;
+export type ListStockLocationWritesResponse = Array<StockLocation>;
+export type CreateStockLocationWriteRequest = StockLocationWrite;
+export type CreateStockLocationWriteResponse = StockLocation;
+export type ListMovementsResponse = Array<Movement>;
+export type CreateProductPriceSetRequest = ProductPriceSet;
+export type CreateProductPriceSetResponse = ProductPrice;
+export type ListProductCreatesResponse = Array<Product>;
+export type CreateProductCreateRequest = ProductCreate;
+export type CreateProductCreateResponse = Product;
+export type CreateProductDeactivateRequest = ProductDeactivate;
+export type CreateProductDeactivateResponse = Product;
+export type CreateStockReceiptRequest = StockReceipt;
+export type CreateStockReceiptResponse = StockReceipt;
+export type ListStockSummariesResponse = Array<unknown>;
+export type ListSupplierWritesResponse = Array<Supplier>;
+export type CreateSupplierWriteRequest = SupplierWrite;
+export type CreateSupplierWriteResponse = Supplier;
+export type ListThresholdWritesResponse = Array<Threshold>;
+export type CreateThresholdWriteRequest = ThresholdWrite;
+export type CreateThresholdWriteResponse = Threshold;
+export type CreateTransferRequest = Transfer;
+export type CreateTransferResponse = Transfer;
 export type ListPatientCreatesResponse = Array<Patient>;
 export type CreatePatientCreateRequest = PatientCreate;
 export type CreatePatientCreateResponse = Patient;
@@ -270,7 +316,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "cc18aa136b22bc9025d5783785a0d93e961016d49204ada465ed91c9d15d4f1b";
+export const GENERATED_API_CONTRACT_SHA256 = "d7d6fa9a173c95d172a86ce9fcc496a8f73fe12db62d6bc44c81ecc855eea9e2";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -667,6 +713,101 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createTriageRecordStart",
     "path": "/api/v1/clinic/triage/{queue_id}/start/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createAdjustment",
+    "path": "/api/v1/inventory/adjustments/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listStockBatches",
+    "path": "/api/v1/inventory/batches/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createCatalogueImport",
+    "path": "/api/v1/inventory/catalogue/import/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createFefo",
+    "path": "/api/v1/inventory/fefo/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listStockLocationWrites",
+    "path": "/api/v1/inventory/locations/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createStockLocationWrite",
+    "path": "/api/v1/inventory/locations/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listMovements",
+    "path": "/api/v1/inventory/movements/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createProductPriceSet",
+    "path": "/api/v1/inventory/prices/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listProductCreates",
+    "path": "/api/v1/inventory/products/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createProductCreate",
+    "path": "/api/v1/inventory/products/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createProductDeactivate",
+    "path": "/api/v1/inventory/products/{id}/deactivate/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createStockReceipt",
+    "path": "/api/v1/inventory/receipts/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLedgerReconcile",
+    "path": "/api/v1/inventory/reconcile/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listStockSummaries",
+    "path": "/api/v1/inventory/stock/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listSupplierWrites",
+    "path": "/api/v1/inventory/suppliers/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createSupplierWrite",
+    "path": "/api/v1/inventory/suppliers/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listThresholdWrites",
+    "path": "/api/v1/inventory/thresholds/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createThresholdWrite",
+    "path": "/api/v1/inventory/thresholds/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createTransfer",
+    "path": "/api/v1/inventory/transfers/"
   },
   {
     "method": "GET",

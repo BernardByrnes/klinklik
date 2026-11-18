@@ -43,6 +43,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/triage", label: "Triage", icon: IconTriage, capability: "triage.record" },
   { href: "/consultations", label: "Consultations", icon: IconConsultation, capability: "clinical.note.create" },
   { href: "/billing", label: "Billing & Payments", icon: IconBilling, capability: "billing.invoice.create" },
+  { href: "/inventory", label: "Inventory", icon: IconBilling, capability: "inventory.read" },
 ];
 
 function useQueueBadge(enabled: boolean) {
