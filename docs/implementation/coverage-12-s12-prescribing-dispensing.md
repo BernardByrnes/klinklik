@@ -7,7 +7,7 @@ Base: `4f3bb9af350e42378e5a146a46427d684002583a` (accepted S-11). Every row belo
 - Rows: 108 (RX/PHM 40; DSP 68).
 - COVERED: 55; PARTIAL: 32; BLOCKED: 21.
 - Files: `backend/pharmacy/dispensing.py`, `backend/pharmacy/{models,serializers,views,urls}.py`, `backend/pharmacy/migrations/0003_s12_prescribing_dispensing.py`, `backend/clinical/services.py` (sign hook), `backend/accounts/services.py` (four capabilities), `frontend/src/app/(app)/pharmacy/page.tsx`, `frontend/tests/s12-dispensing.spec.ts`.
-- Test files (exact per-file counts): `backend/tests/test_s12_dispensing.py` — 19; `backend/tests/test_s12_postgres.py` — 5; `frontend/tests/s12-dispensing.spec.ts` — 1.
+- Test files (exact per-file counts): `backend/tests/test_s12_dispensing.py` — 19; `backend/tests/test_s12_postgres.py` — 6; `frontend/tests/s12-dispensing.spec.ts` — 1.
 
 ## Per-AC map
 

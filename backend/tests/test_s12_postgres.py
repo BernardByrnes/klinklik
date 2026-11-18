@@ -336,3 +336,81 @@ def test_pg_s12_evidence_guards_refuse_direct_rewrites(
                     "UPDATE pharmacy_prescriptionitem SET quantity = quantity + 1 WHERE id = %s",
                     [str(item.id)],
                 )
+
+
+def test_pg_s12_dispense_and_payment_serialise_on_the_invoice(
+    tenant, authed_client, enabled_mig001_target
+):
+    stock, prescription, checked_in = _active(tenant, authed_client)
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        claim_prescription(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+        )
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+        dispense = prepare_dispense(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            lines=[{"prescription_item_id": str(item.id), "quantity": "10.00"}],
+        )
+    organisation = tenant.organisation
+    facility = tenant.facility
+    invoice_id = checked_in["invoice_id"]
+
+    def handover():
+        close_old_connections()
+        try:
+            with tenant_atomic(organisation.id):
+                actor = User.objects.get(id=tenant.user.id)
+                confirm_dispense(
+                    organisation=organisation,
+                    facility=facility,
+                    actor=actor,
+                    dispense_id=dispense.id,
+                )
+                return ("ok", "dispense")
+        except CanonicalError as exc:
+            return ("error", exc.code)
+        finally:
+            close_old_connections()
+
+    def payment():
+        close_old_connections()
+        try:
+            with tenant_atomic(organisation.id):
+                from billing.services import confirm_payment
+
+                actor = User.objects.get(id=tenant.user.id)
+                confirm_payment(
+                    organisation=organisation,
+                    facility=facility,
+                    actor=actor,
+                    amount="30000.00",
+                    method="CASH",
+                    invoice_id=invoice_id,
+                )
+                return ("ok", "payment")
+        except CanonicalError as exc:
+            return ("error", exc.code)
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda fn: fn(), [handover, payment]))
+    assert all(result[0] == "ok" for result in results), results
+    with tenant_atomic(organisation.id):
+        from billing.models import Invoice
+
+        invoice = Invoice.objects.get(id=invoice_id)
+        assert invoice.total == Decimal("35000.00")
+        assert invoice.amount_paid == Decimal("30000.00")
+        assert invoice.balance == Decimal("5000.00")
+        assert invoice.items.filter(source_type="DISPENSE_LINE").count() == 1
+        assert (
+            StockMovement.objects.filter(source_type="DispenseLine").count() == 1
+        )
