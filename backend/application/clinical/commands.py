@@ -21,6 +21,7 @@ from clinical.models import (
 from clinical.services import _reference, sign_note
 from core.errors import CanonicalError
 from core.services import assert_transaction_active
+from pharmacy.dispensing import activate_for_encounter
 from scheduling.models import QueueEntry, Visit
 from tenancy.models import Department
 
@@ -318,6 +319,9 @@ def encounter_sign(
         expected_etag=expected_etag,
         request=request,
     )
+    # The application layer owns the cross-domain seam: signing is durable in
+    # this transaction before the pharmacy activation runs.
+    activate_for_encounter(encounter=encounter, actor=actor, request=request)
     if queue is not None:
         queue = queue_complete(
             organisation=organisation,
