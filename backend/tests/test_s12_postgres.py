@@ -336,6 +336,25 @@ def test_pg_s12_evidence_guards_refuse_direct_rewrites(
                     "UPDATE pharmacy_prescriptionitem SET quantity = quantity + 1 WHERE id = %s",
                     [str(item.id)],
                 )
+    with tenant_atomic(tenant.organisation.id):
+        from pharmacy.models import DispenseLine, OTCSaleLine
+
+        dispense_line_id = str(DispenseLine.objects.get(dispense_id=dispense.id).id)
+        sale_line_id = str(OTCSaleLine.objects.get(sale_id=sale.id).id)
+    with pytest.raises(DatabaseError):
+        with tenant_atomic(tenant.organisation.id):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE pharmacy_dispenseline SET quantity = quantity + 1 WHERE id = %s",
+                    [dispense_line_id],
+                )
+    with pytest.raises(DatabaseError):
+        with tenant_atomic(tenant.organisation.id):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE pharmacy_otcsaleline SET quantity = quantity + 1 WHERE id = %s",
+                    [sale_line_id],
+                )
 
 
 def test_pg_s12_dispense_and_payment_serialise_on_the_invoice(
