@@ -27,11 +27,16 @@ class ServiceCatalogSerializer(serializers.ModelSerializer):
 
 
 class InvoiceItemSerializer(serializers.ModelSerializer):
+    is_current = serializers.SerializerMethodField()
+
+    def get_is_current(self, obj):
+        return obj.line_set_version == obj.invoice.current_line_set_version
+
     class Meta:
         model = InvoiceItem
         fields = [
             "id", "service", "description", "quantity", "unit_price", "amount",
-            "line_set_version", "source_type", "source_id", "source_version",
+            "line_set_version", "is_current", "source_type", "source_id", "source_version",
             "source_line_identity", "state", "void_reason", "voided_at", "voided_by",
             "manual_reason",
         ]
@@ -274,3 +279,22 @@ class ZReportSerializer(serializers.Serializer):
     expected_cash = serializers.CharField(allow_null=True)
     variance = serializers.CharField(allow_null=True)
     variance_reason = serializers.CharField(allow_blank=True)
+
+
+class InvoiceRepriceSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(min_value=1)
+    price_list_id = serializers.UUIDField(required=False)
+    payer_type = serializers.ChoiceField(
+        choices=["CASH", "SELF_PAY_MOMO"], required=False
+    )
+
+
+class InvoiceRepriceResultSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    invoice_no = serializers.CharField()
+    status = serializers.CharField()
+    before_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    after_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    line_set_version = serializers.IntegerField()
+    version = serializers.IntegerField()
+    payer_binding_id = serializers.UUIDField()

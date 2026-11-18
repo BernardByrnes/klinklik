@@ -14,6 +14,8 @@ from billing.serializers import (
     InvoiceLineCreateSerializer,
     InvoiceLineVoidSerializer,
     InvoiceMutationSerializer,
+    InvoiceRepriceResultSerializer,
+    InvoiceRepriceSerializer,
     InvoiceSerializer,
     PaymentCreateSerializer,
     PaymentMethodConfigureSerializer,
@@ -44,6 +46,7 @@ from billing.services import (
     receipt_by_identity,
     receipt_payload,
     reprint_receipt,
+    reprice_invoice,
     reverse_payment,
     shift_z_report,
     void_credit_note,
@@ -630,4 +633,47 @@ class ShiftZReportView(TenantAPIView):
                 facility=request.facility,
                 shift=shift,
             )
+        )
+
+
+class InvoiceRepriceView(TenantAPIView):
+    capability = "visit.payer_reprice"
+    serializer_class = InvoiceRepriceSerializer
+    response_serializer_class = InvoiceRepriceResultSerializer
+    idempotency_operation = "CMD-003"
+    requires_idempotency = True
+
+    def post(self, request, pk):
+        serializer = InvoiceRepriceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        etag = request.headers.get("If-Match", "").strip().strip('"')
+        if etag and etag != str(data["expected_version"]):
+            raise CanonicalError(
+                "VERSION_CONFLICT",
+                "The If-Match version does not match the requested version.",
+                status_code=409,
+            )
+        invoice, binding, before_total = reprice_invoice(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            invoice_id=pk,
+            expected_version=data["expected_version"],
+            price_list_id=data.get("price_list_id"),
+            payer_type=data.get("payer_type"),
+            request=request,
+        )
+        return Response(
+            {
+                "id": str(invoice.id),
+                "invoice_no": invoice.invoice_no,
+                "status": invoice.status,
+                "before_total": str(before_total),
+                "after_total": str(invoice.total),
+                "line_set_version": invoice.current_line_set_version,
+                "version": invoice.version,
+                "payer_binding_id": str(binding.id),
+            },
+            status=status.HTTP_200_OK,
         )

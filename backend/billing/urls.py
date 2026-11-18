@@ -11,6 +11,7 @@ from billing.views import (
     InvoiceListCreateView,
     InvoicePaymentView,
     InvoiceReceiptView,
+    InvoiceRepriceView,
     PaymentMethodListView,
     PaymentReverseView,
     ReceiptByNumberView,
@@ -36,6 +37,7 @@ urlpatterns = [
     path("invoices/<uuid:pk>/payments/", InvoiceCanonicalPaymentView.as_view(), name="invoice-payment-create"),
     path("invoices/<uuid:pk>/receipt/", InvoiceReceiptView.as_view(), name="invoice-receipt"),
     path("invoices/<uuid:pk>/lines/", InvoiceLineCreateView.as_view(), name="invoice-line-create"),
+    path("invoices/<uuid:pk>/reprice/", InvoiceRepriceView.as_view(), name="invoice-reprice"),
     path(
         "invoices/<uuid:pk>/lines/<uuid:line_id>/void/",
         InvoiceLineVoidView.as_view(),

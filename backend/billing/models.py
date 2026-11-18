@@ -150,6 +150,10 @@ class Invoice(FacilityScopedModel):
                 condition=models.Q(visit__isnull=False) & ~models.Q(status__in=["VOID", "VOIDED"]),
                 name="uniq_active_visit_invoice",
             ),
+            models.CheckConstraint(
+                condition=models.Q(current_line_set_version__gt=0),
+                name="invoice_current_line_set_positive",
+            ),
         ]
 
 
@@ -197,6 +201,10 @@ class InvoiceItem(OrganisationScopedModel):
             models.CheckConstraint(
                 condition=models.Q(amount__gte=0) & models.Q(quantity__gt=0),
                 name="invoice_item_amounts_valid",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(line_set_version__gt=0),
+                name="invoice_item_line_set_positive",
             ),
         ]
 

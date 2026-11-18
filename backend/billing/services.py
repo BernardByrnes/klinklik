@@ -156,6 +156,7 @@ def issue_exact_source_lines(*, organisation, facility, actor, visit, service, p
             source_id=visit.id,
             source_line_identity=source_line_identity,
             state="ACTIVE",
+            line_set_version=existing.current_line_set_version,
         ).first()
         if line is not None:
             return existing, False
@@ -422,7 +423,10 @@ def recompute_invoice_projection(invoice):
     subtotal = sum(
         (
             line.amount
-            for line in invoice.items.filter(state="ACTIVE")
+            for line in invoice.items.filter(
+                state="ACTIVE",
+                line_set_version=invoice.current_line_set_version,
+            )
         ),
         Decimal("0.00"),
     ).quantize(Decimal("0.01"))
@@ -1259,10 +1263,13 @@ def void_invoice_line(
     if invoice is None:
         raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
     line = InvoiceItem.objects.select_for_update().filter(
-        id=line_id, invoice=invoice, organisation=organisation
+        id=line_id,
+        invoice=invoice,
+        organisation=organisation,
+        line_set_version=invoice.current_line_set_version,
     ).first()
     if line is None:
-        raise CanonicalError("INVOICE_LINE_NOT_FOUND", "Invoice line was not found.", status_code=404)
+        raise CanonicalError("INVOICE_LINE_NOT_FOUND", "A current invoice line was not found.", status_code=404)
     if line.state != "ACTIVE":
         return line, invoice, False
     if effective_allocation_total(invoice=invoice) > 0:
@@ -1684,3 +1691,198 @@ def shift_z_report(*, organisation, facility, shift):
         "variance": str(shift.variance) if shift.variance is not None else None,
         "variance_reason": shift.close_reason,
     }
+
+
+@transaction.atomic
+def reprice_invoice(
+    *,
+    organisation,
+    facility,
+    actor,
+    invoice_id,
+    expected_version,
+    price_list_id=None,
+    payer_type=None,
+    request=None,
+):
+    """CMD-003: atomic ISSUED-to-ISSUED complete line-set repricing.
+
+    Prior line sets are retained unchanged. Only an entirely unpaid ISSUED
+    invoice with no credit/refund evidence is eligible.
+    """
+
+    assert_transaction_active()
+    invoice = Invoice.objects.select_for_update().filter(
+        id=invoice_id, organisation=organisation, facility=facility
+    ).first()
+    if invoice is None:
+        raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
+    if invoice.version != expected_version:
+        raise CanonicalError(
+            "VERSION_CONFLICT",
+            "The invoice changed; refresh and review the new values.",
+            status_code=409,
+        )
+    if (
+        invoice.status != "ISSUED"
+        or invoice.amount_paid > 0
+        or effective_allocation_total(invoice=invoice) > 0
+    ):
+        raise CanonicalError(
+            "PAYER_LOCKED",
+            "A paid or partially paid invoice cannot be repriced.",
+            status_code=409,
+        )
+    if CreditNote.objects.filter(invoice=invoice).exists() or Refund.objects.filter(
+        invoice=invoice
+    ).exists():
+        raise CanonicalError(
+            "INVOICE_NOT_ELIGIBLE",
+            "An invoice with financial corrections cannot be repriced.",
+            status_code=409,
+        )
+    if invoice.visit_id is None:
+        raise CanonicalError(
+            "INVOICE_NOT_ELIGIBLE",
+            "Only a Visit invoice can be repriced through this path.",
+            status_code=409,
+        )
+    visit = Visit.objects.select_for_update().filter(
+        id=invoice.visit_id, organisation=organisation, facility=facility
+    ).first()
+    if visit is None or visit.state in {"CLOSED", "CANCELLED_ERROR"}:
+        raise CanonicalError(
+            "INVOICE_NOT_ELIGIBLE",
+            "The Visit is not open for repricing.",
+            status_code=409,
+        )
+    binding = VisitPayerBinding.objects.select_for_update().filter(
+        organisation=organisation,
+        facility=facility,
+        visit=visit,
+        active=True,
+    ).first()
+    if binding is None:
+        raise CanonicalError(
+            "PAYER_BINDING_MISSING",
+            "The Visit has no active payer binding.",
+            status_code=409,
+        )
+    new_payer_type = payer_type or binding.payer_type
+    if new_payer_type not in {choice[0] for choice in PriceList.PAYER_TYPE_CHOICES}:
+        raise CanonicalError("PAYER_TYPE_INVALID", "Select a valid payer type.", status_code=400)
+    new_list = select_price_list(
+        organisation=organisation,
+        payer_type=new_payer_type,
+        price_list_id=price_list_id,
+    )
+    if new_list is None:
+        raise CanonicalError(
+            "NO_PRICE_LIST",
+            "No active price list is available for this payer.",
+            status_code=422,
+        )
+    if new_list.id == binding.price_list_id and new_payer_type == binding.payer_type:
+        raise CanonicalError(
+            "REPRICE_NO_CHANGE",
+            "The selected payer and price list already apply to this Visit.",
+            status_code=409,
+        )
+    current_lines = list(
+        InvoiceItem.objects.select_for_update()
+        .filter(
+            invoice=invoice,
+            state="ACTIVE",
+            line_set_version=invoice.current_line_set_version,
+        )
+        .order_by("id")
+    )
+    if not current_lines:
+        raise CanonicalError(
+            "INVOICE_NOT_ELIGIBLE", "The current line set is empty.", status_code=409
+        )
+    today = local_service_date()
+    priced = []
+    for line in current_lines:
+        if line.service_id is None:
+            raise CanonicalError(
+                "SERVICE_NOT_PRICED",
+                "A manual line has no catalogue price to reprice.",
+                status_code=422,
+            )
+        price = ServicePrice.objects.select_for_update().filter(
+            organisation=organisation,
+            facility=facility,
+            service_id=line.service_id,
+            price_list=new_list,
+            is_active=True,
+            active=True,
+            effective_from__lte=today,
+        ).filter(
+            models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=today)
+        ).order_by("-effective_from", "-created_at", "id").first()
+        if price is None:
+            raise CanonicalError(
+                "SERVICE_NOT_PRICED",
+                "An affected service is not priced in the selected list.",
+                status_code=422,
+                metadata={"service_id": str(line.service_id)},
+            )
+        priced.append((line, price))
+    new_set_version = invoice.current_line_set_version + 1
+    before_total = invoice.total
+    for line, price in priced:
+        InvoiceItem.objects.create(
+            organisation=organisation,
+            invoice=invoice,
+            facility=facility,
+            service_id=line.service_id,
+            description=line.description,
+            quantity=line.quantity,
+            unit_price=price.amount,
+            amount=(price.amount * line.quantity).quantize(Decimal("0.01")),
+            line_set_version=new_set_version,
+            source_type=line.source_type,
+            source_id=line.source_id,
+            source_version=price.source_version,
+            source_line_identity=line.source_line_identity,
+            created_by=actor,
+        )
+    binding.active = False
+    binding.save(update_fields=["active", "updated_at"])
+    new_binding = VisitPayerBinding.objects.create(
+        organisation=organisation,
+        facility=facility,
+        visit=visit,
+        price_list=new_list,
+        payer_type=new_payer_type,
+        binding_version=binding.binding_version + 1,
+        bound_by=actor,
+        supersedes=binding,
+        source_event_id=f"INVOICE:{invoice.id}:REPRICE",
+    )
+    invoice.current_line_set_version = new_set_version
+    invoice.save(update_fields=["current_line_set_version", "updated_at"])
+    invoice = recompute_invoice_projection(invoice)
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="REPRICE",
+        entity_type="Invoice",
+        entity_id=invoice.id,
+        before={"total": str(before_total), "line_set_version": new_set_version - 1},
+        after={
+            "total": str(invoice.total),
+            "line_set_version": new_set_version,
+            "payer_binding_id": str(new_binding.id),
+            "payer_type": new_payer_type,
+        },
+        event_code="INVOICE_REPRICED",
+        source_ids={
+            "invoice_id": str(invoice.id),
+            "payer_binding_id": str(new_binding.id),
+        },
+    )
+    return invoice, new_binding, before_total
