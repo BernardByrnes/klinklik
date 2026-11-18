@@ -956,6 +956,25 @@ def confirm_payment(
             status_code=400,
         )
 
+    # LOCK-01: Visit before its Invoices before QueueEntries. Closure holds
+    # Visit -> Invoice -> Queue; payment must take the same order to avoid a
+    # cross-command deadlock while releasing a payment gate.
+    visit_ids = list(
+        Invoice.objects.filter(
+            id__in=list(specs),
+            organisation=organisation,
+            facility=facility,
+            visit__isnull=False,
+        )
+        .values_list("visit_id", flat=True)
+        .distinct()
+    )
+    if visit_ids:
+        list(
+            Visit.objects.select_for_update()
+            .filter(id__in=visit_ids)
+            .order_by("id")
+        )
     invoices = list(
         Invoice.objects.select_for_update()
         .filter(
@@ -995,6 +1014,12 @@ def confirm_payment(
                 "This invoice cannot accept a payment.",
                 status_code=400,
             )
+        if invoice.visit_id:
+            from scheduling.services import assert_visit_open
+
+            visit = Visit.objects.filter(id=invoice.visit_id).first()
+            if visit is not None:
+                assert_visit_open(visit=visit, action="accept a payment")
         allocation_amount = specs[str(invoice.id)]
         if allocation_amount > invoice.balance:
             raise CanonicalError(
@@ -1034,6 +1059,27 @@ def confirm_payment(
     ]
     for invoice in invoices:
         recompute_invoice_projection(invoice)
+    for visit_id in sorted(
+        {invoice.visit_id for invoice in invoices if invoice.visit_id is not None}
+    ):
+        outstanding = Invoice.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            visit_id=visit_id,
+            balance__gt=0,
+        ).exclude(status__in=("VOID", "VOIDED"))
+        if outstanding.exists():
+            continue
+        from scheduling.queue import release_ordinary_payment_gate
+
+        visit = Visit.objects.filter(id=visit_id).first()
+        if visit is not None and visit.state in Visit.ACTIVE_STATES:
+            release_ordinary_payment_gate(
+                organisation=organisation,
+                facility=facility,
+                visit=visit,
+                actor=actor,
+            )
     receipt = PaymentReceipt.objects.create(
         organisation=organisation,
         facility=facility,
@@ -1165,6 +1211,12 @@ def add_invoice_line(
         raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
     if invoice.status in {"VOID", "VOIDED"}:
         raise CanonicalError("INVOICE_NOT_EDITABLE", "A voided invoice cannot accept a line.", status_code=409)
+    if invoice.visit_id:
+        from scheduling.services import assert_visit_open
+
+        visit = Visit.objects.filter(id=invoice.visit_id).first()
+        if visit is not None:
+            assert_visit_open(visit=visit, action="accept a new invoice line")
     quantity = Decimal(str(quantity))
     if quantity <= 0:
         raise CanonicalError("INVOICE_LINE_QUANTITY_INVALID", "Quantity must be positive.", status_code=400)
@@ -1262,6 +1314,12 @@ def void_invoice_line(
     ).first()
     if invoice is None:
         raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
+    if invoice.visit_id:
+        from scheduling.services import assert_visit_open
+
+        visit = Visit.objects.filter(id=invoice.visit_id).first()
+        if visit is not None:
+            assert_visit_open(visit=visit, action="change its invoice")
     line = InvoiceItem.objects.select_for_update().filter(
         id=line_id,
         invoice=invoice,

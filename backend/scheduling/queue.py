@@ -2192,3 +2192,56 @@ queue_lwbs = lwbs
 queue_takeover = takeover
 queue_expire_sweep = expire_sweep
 remove = cancel
+
+
+def release_ordinary_payment_gate(
+    *, organisation, facility, visit, actor, reason_code="PAYMENT_CONFIRMED"
+):
+    """Release the ordinary WAITING_PAYMENT stage after the exact charge settles.
+
+    The caller owns the outer transaction and has already recomputed the money
+    projection. An override is deliberately not implemented here; the lab and
+    pharmacy override branches remain fenced.
+    """
+
+    assert_transaction_active()
+    entries = list(
+        QueueEntry.objects.select_for_update()
+        .filter(
+            organisation=organisation,
+            facility=facility,
+            visit=visit,
+            state="WAITING_PAYMENT",
+        )
+        .order_by("id")
+    )
+    released = []
+    for entry in entries:
+        before_state = entry.state
+        entry.state = "WAITING"
+        entry.status = "WAITING"
+        entry.current_stage = "RECEPTION"
+        entry.version += 1
+        entry.save(
+            update_fields=[
+                "state",
+                "status",
+                "current_stage",
+                "version",
+                "updated_at",
+            ]
+        )
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            event_code="PAYMENT_GATE_RELEASED",
+            action="UPDATE",
+            entity_type="QueueEntry",
+            entity_id=entry.id,
+            source_ids={"visit_id": str(visit.id)},
+            before={"state": before_state},
+            after={"state": entry.state, "reason_code": reason_code},
+        )
+        released.append(entry)
+    return released

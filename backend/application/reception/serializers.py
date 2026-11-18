@@ -294,6 +294,25 @@ class VisitCloseLwbsResponseSerializer(serializers.Serializer):
     visit_version = serializers.IntegerField(required=True)
 
 
+class VisitCloseSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(min_value=1, required=False)
+    closure_path = serializers.ChoiceField(
+        choices=["NORMAL", "DEBT", "CREDIT", "WAIVER", "OPS", "OD22"],
+        required=False,
+        default="NORMAL",
+    )
+
+
+class VisitCloseResponseSerializer(serializers.Serializer):
+    visit_id = serializers.UUIDField()
+    state = serializers.CharField()
+    closure_reason = serializers.CharField(allow_blank=True)
+    version = serializers.IntegerField()
+    closed = serializers.BooleanField()
+    already_closed = serializers.BooleanField()
+    blockers = serializers.ListField(child=serializers.DictField())
+
+
 class PatientCheckInPatientSerializer(serializers.ModelSerializer):
     display_name = serializers.ReadOnlyField()
 
@@ -341,6 +360,8 @@ __all__ = [
     "VisitContextResponseSerializer",
     "VisitCancelErrorResponseSerializer",
     "VisitCloseLwbsResponseSerializer",
+    "VisitCloseSerializer",
+    "VisitCloseResponseSerializer",
     "PatientCheckInSummarySerializer",
     "PatientCheckInPatientSerializer",
     "CheckInVisitSummarySerializer",

@@ -599,3 +599,44 @@ queue_cancel = cancel
 queue_lwbs = lwbs
 queue_takeover = takeover
 queue_expire_sweep = expire_sweep
+
+
+def assert_visit_open(*, visit, action="attach a record"):
+    """Closed Visits keep their history immutable; new attachments are refused."""
+
+    if visit.state not in Visit.ACTIVE_STATES:
+        from core.errors import CanonicalError
+
+        raise CanonicalError(
+            "VISIT_CLOSED",
+            f"The Visit is closed; it cannot {action}.",
+            status_code=409,
+        )
+    return visit
+
+
+def close_visit_state(*, actor, visit, reason="COMPLETED"):
+    """Apply the state-bearing Visit closure after the caller locked it.
+
+    Blocker checks and the durable audit belong to the application command.
+    """
+
+    assert_transaction_active()
+    assert_visit_open(visit=visit, action="be closed again")
+    closed_at = now()
+    visit.state = "CLOSED"
+    visit.closure_reason = reason
+    visit.closed_at = closed_at
+    visit.closed_by = actor
+    visit.version += 1
+    visit.save(
+        update_fields=[
+            "state",
+            "closure_reason",
+            "closed_at",
+            "closed_by",
+            "version",
+            "updated_at",
+        ]
+    )
+    return visit

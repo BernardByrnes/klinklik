@@ -134,7 +134,21 @@ class TenantAPIView(APIView):
         except UncommittedResponse as exc:
             response = exc.response
         except CanonicalError as exc:
-            response = Response(safe_error_payload(exc), status=exc.status_code)
+            if getattr(exc, "audit_denial", False) and self.denial_audit_required:
+                try:
+                    self._write_denial_evidence(drf_request, exc)
+                except Exception:
+                    response = Response(
+                        {
+                            "code": "DENIAL_AUDIT_UNAVAILABLE",
+                            "detail": "The refusal could not be recorded safely; retry.",
+                        },
+                        status=503,
+                    )
+                else:
+                    response = Response(safe_error_payload(exc), status=exc.status_code)
+            else:
+                response = Response(safe_error_payload(exc), status=exc.status_code)
         except Exception as exc:
             if isinstance(exc, PermissionDenied) and self.denial_audit_required:
                 try:
@@ -166,25 +180,37 @@ class TenantAPIView(APIView):
         response = self.finalize_response(drf_request, response, *args, **kwargs)
         return response
 
-    def _write_denial_evidence(self, request):
+    def _write_denial_evidence(self, request, error=None):
         if not getattr(request, "organisation", None):
             return
         from audit.services import write_denial_audit
 
+        blockers = list(getattr(error, "denial_blockers", []) or [])
+        targets = {
+            key: str(value)
+            for key, value in getattr(self, "kwargs", {}).items()
+        }
+        targets.update(getattr(error, "denial_targets", {}) or {})
+        for index, code in enumerate(blockers[:10], start=1):
+            targets[f"blocker_{index}"] = str(code)
         write_denial_audit(
             organisation=request.organisation,
             actor_id=getattr(request.user, "id", None),
             facility_id=getattr(getattr(request, "facility", None), "id", None),
             capability=getattr(self, "capability", None) or "permission",
             action=request.method,
-            blocker_type="PERMISSION",
-            opaque_ref=hashlib.sha256(request.path.encode("utf-8")).hexdigest()[:32],
+            blocker_type=(blockers[0] if blockers else "PERMISSION"),
+            opaque_ref=hashlib.sha256(
+                (request.path + ":" + getattr(error, "code", "")).encode("utf-8")
+            ).hexdigest()[:32],
             request_fingerprint=self._request_fingerprint,
             operation=self._idempotency_operation,
             authority_epoch=getattr(request.user, "authority_epoch", 0),
             idempotency_key=self._idempotency_key,
-            target_identifiers={
-                key: str(value)
-                for key, value in getattr(self, "kwargs", {}).items()
+            target_identifiers=targets,
+            denial_event_code=getattr(error, "denial_event_code", None),
+            extra_source_ids={
+                f"blocker_{index}": str(code)
+                for index, code in enumerate(blockers[:10], start=1)
             },
         )

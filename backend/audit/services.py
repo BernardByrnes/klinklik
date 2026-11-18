@@ -318,6 +318,7 @@ def write_denial_audit(
     denial_request_identity=None,
     event_code="AUTHORIZATION_DENIED",
     denial_event_code=None,
+    extra_source_ids=None,
 ):
     """Persist denial evidence only in a separate post-rollback tenant transaction."""
 
@@ -336,6 +337,11 @@ def write_denial_audit(
     safe_target_identifiers = _safe_metadata(
         target_identifiers or {},
         label="target_identifiers",
+        allow_identifier_keys=True,
+    )
+    safe_extra_source_ids = _safe_metadata(
+        extra_source_ids or {},
+        label="extra_source_ids",
         allow_identifier_keys=True,
     )
     request_identity = denial_request_identity or idempotency_key or f"opaque:{opaque_ref}"
@@ -386,7 +392,7 @@ def write_denial_audit(
                 action="READ",
                 entity_type="Authorization",
                 entity_id=opaque_ref[:80],
-                source_ids={"opaque_ref": opaque_ref},
+                source_ids={"opaque_ref": opaque_ref, **safe_extra_source_ids},
                 reason_code=blocker_type,
                 denial_identity=denial_identity,
                 denial_fingerprint=denial_fingerprint,

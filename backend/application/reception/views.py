@@ -10,6 +10,7 @@ from application.reception.commands import (
     visit_referral_source_record,
 )
 from application.reception.audited_reads import audit_clinical_projection
+from application.reception.closure import visit_close
 from application.reception.visit_query import (
     get_clinical_projection,
     get_patient_checkin_projection,
@@ -30,6 +31,8 @@ from application.reception.serializers import (
     VisitCancelErrorResponseSerializer,
     VisitCloseLwbsResponseSerializer,
     VisitCloseLwbsSerializer,
+    VisitCloseResponseSerializer,
+    VisitCloseSerializer,
     VisitContextResponseSerializer,
     VisitCheckInResponseSerializer,
     VisitSerializer,
@@ -461,6 +464,58 @@ class VisitCloseLwbsView(TenantAPIView):
         response["ETag"] = f'"{outcome.visit.version}"'
         _store_exact_idempotent_response(response, stored_body=body)
         response.result_reference = {"entity_type": "QueueEntry", "entity_id": str(outcome.queue_entry.id)}
+        return response
+
+
+class VisitCloseView(TenantAPIView):
+    """CMD-008: close a Visit or return the exact blocker checklist."""
+
+    capability = "visit.close"
+    idempotency_operation = "CMD-008"
+    requires_idempotency = True
+    denial_audit_required = True
+    serializer_class = VisitCloseSerializer
+    response_serializer_class = VisitCloseResponseSerializer
+
+    def replay_idempotent_response(self, record):
+        return record.response_body
+
+    def post(self, request, pk):
+        serializer = VisitCloseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        expected_version = _strong_if_match_version(request, values.get("expected_version"))
+        if expected_version is None:
+            raise CanonicalError(
+                "PRECONDITION_REQUIRED",
+                "A current Visit version is required in If-Match or expected_version.",
+                status_code=428,
+            )
+        outcome = visit_close(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            visit_id=pk,
+            expected_version=expected_version,
+            closure_path=values.get("closure_path", "NORMAL"),
+            request=request,
+        )
+        body = {
+            "visit_id": str(outcome.visit.id),
+            "state": outcome.visit.state,
+            "closure_reason": outcome.visit.closure_reason,
+            "version": outcome.visit.version,
+            "closed": outcome.closed,
+            "already_closed": outcome.already_closed,
+            "blockers": outcome.blockers,
+        }
+        response = Response(body)
+        response["ETag"] = f'"{outcome.visit.version}"'
+        _store_exact_idempotent_response(response, stored_body=body)
+        response.result_reference = {
+            "entity_type": "Visit",
+            "entity_id": str(outcome.visit.id),
+        }
         return response
 
 
