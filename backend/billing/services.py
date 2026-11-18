@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from audit.services import record_event
 from billing.models import (
     CashierShift,
@@ -628,12 +628,20 @@ def open_shift(*, organisation, facility, actor, opening_float=Decimal("0.00"), 
             "This cashier already has an open shift.",
             status_code=409,
         )
-    shift = CashierShift.objects.create(
-        organisation=organisation,
-        facility=facility,
-        cashier=actor,
-        opening_float=opening_float,
-    )
+    try:
+        with transaction.atomic():
+            shift = CashierShift.objects.create(
+                organisation=organisation,
+                facility=facility,
+                cashier=actor,
+                opening_float=opening_float,
+            )
+    except IntegrityError as exc:
+        raise CanonicalError(
+            "SHIFT_ALREADY_OPEN",
+            "This cashier already has an open shift.",
+            status_code=409,
+        ) from exc
     record_event(
         request=request,
         organisation=organisation,
@@ -974,7 +982,6 @@ def confirm_payment(
     period = local_service_date().isoformat()
     sequence = allocate_sequence(
         organisation=organisation,
-        facility=facility,
         sequence_type="RECEIPT",
         period_key=period,
     )

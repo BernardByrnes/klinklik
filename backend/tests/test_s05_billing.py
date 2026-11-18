@@ -487,6 +487,41 @@ def test_s05_manual_line_and_void_protect_paid_invoices(tenant, authed_client):
         assert InvoiceItem.objects.filter(invoice_id=invoice_id, state="ACTIVE").count() == 1
 
 
+def test_s05_catalogue_line_reopens_a_paid_invoice_with_audit(tenant, authed_client):
+    patient_id = register(authed_client, "s05-register-catalogue")
+    checked_in = check_in(authed_client, patient_id, tenant, "s05-checkin-catalogue")
+    invoice_id = checked_in["invoice_id"]
+
+    added = authed_client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/lines/",
+        {"service_id": str(tenant.service.id), "quantity": "1.00"},
+        format="json",
+    )
+    assert added.status_code == 201, added.data
+    assert added.data["total"] == "60000.00"
+    assert added.data["balance"] == "60000.00"
+
+    open_shift(authed_client)
+    paid = pay(authed_client, invoice_id, "60000.00", "s05-pay-catalogue")
+    assert paid.status_code == 201
+    assert paid.data["invoices"][0]["status"] == "PAID"
+
+    reopened = authed_client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/lines/",
+        {"service_id": str(tenant.service.id), "quantity": "1.00"},
+        format="json",
+    )
+    assert reopened.status_code == 201, reopened.data
+    assert reopened.data["status"] == "PARTIALLY_PAID"
+    assert reopened.data["total"] == "90000.00"
+    assert reopened.data["balance"] == "30000.00"
+    with tenant_atomic(tenant.organisation.id):
+        assert (
+            AuditEvent.objects.filter(event_code="INVOICE_LINE_ADDED").count() == 2
+        )
+        assert InvoiceItem.objects.filter(invoice_id=invoice_id, state="ACTIVE").count() == 3
+
+
 def test_s05_reprint_is_idempotent_and_audited(tenant, authed_client):
     patient_id = register(authed_client, "s05-register-reprint")
     checked_in = check_in(authed_client, patient_id, tenant, "s05-checkin-reprint")

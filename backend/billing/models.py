@@ -295,7 +295,7 @@ class Payment(FacilityScopedModel):
         blank=True,
         related_name="payments",
     )
-    receipt_no = models.CharField(max_length=50, unique=True)
+    receipt_no = models.CharField(max_length=50)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     method = models.CharField(max_length=30, choices=METHOD_CHOICES)
     reference = models.CharField(max_length=120, blank=True)
@@ -322,6 +322,10 @@ class Payment(FacilityScopedModel):
 
     class Meta:
         constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "receipt_no"],
+                name="uniq_payment_org_receipt_no",
+            ),
             models.CheckConstraint(
                 condition=models.Q(amount__gt=0),
                 name="payment_amount_positive",
