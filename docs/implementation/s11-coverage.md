@@ -129,3 +129,26 @@ Candidate worktree: `K:/klinklik-s11-lab` (`codex/s-11-lab`).
 - LAB-005 payable-before-collection gates, cashier/LAB queue integration, patient-facing labels/worksheets and external/reception notification are not built.
 - Laboratory print reports/reprints, dashboards/REP reports, late-result addenda (LAB-023), external orders (LAB-024) and referral-out ageing (LAB-025) remain fenced.
 - Released result values are immutable; corrections append a new version with reason and dual-hash audit. No interpretation, advice or suggested action is generated.
+
+## Verification results
+
+| Lane | Result |
+| --- | --- |
+| Full merged SQLite | 406 passed, 83 skipped |
+| PostgreSQL as `clinicopus_app`, all families (S-00/auth/S-01..S-11) | 80 passed, 0 failed |
+| S-11 PostgreSQL lane | 2 passed, 0 skipped |
+| Disabled-guard proofs (S-02/S-03/S-04) | 3 passed |
+| Browser, all fourteen specs | 23 passed |
+| Static gates (check, migration drift, generated client, lint/typecheck/build, diff check) | pass |
+| `check_rls --require-postgres` | enforced: true |
+
+Red proof on base `ae4880f`: the S-11 test module cannot import `laboratory.models` before this candidate exists; green here.
+
+## Hard invariants
+
+- Every order is linked to an open Encounter and charged through billing-owned source lines; no duplicate line on replay.
+- Results are entered against defined analytes with units and applied ranges stored on the immutable result version.
+- Unvalidated ranges never authorize interpretation; no interpretive text or advice is generated.
+- Self-verification defaults false; a different verifier releases unless the facility explicitly enables it.
+- Released values are immutable; corrections append a new version with reason and dual-hash audit.
+- All new laboratory tables have FORCE RLS and tenant policies.
