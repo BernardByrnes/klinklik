@@ -23,6 +23,8 @@ export type FacilityEnvelope = { facilities: Array<{ id: string; name: string; c
 export type FollowUpStateResponse = { follow_up: { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null; consultation_etag: string; encounter_status: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; };
 export type FollowUpWrite = { recommended_date?: string | null; interval_value?: number | null; interval_unit?: string | null; instructions?: string; };
 export type InvoiceCreate = { patient_id: string; encounter_id?: string; items: Array<{  }>; discount?: string; };
+export type InvoiceLineCreate = { service_id?: string; description?: string; quantity?: string; amount?: string; reason?: string; manual?: boolean; };
+export type InvoiceLineVoid = { reason: string; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type NoteAmend = { content: {  }; reason: string; };
@@ -35,11 +37,19 @@ export type PatientLink = { target_patient_id: string; link_type: "SUSPECTED_DUP
 export type PatientLinkResponse = { id: string; status: string; };
 export type PatientRegister = { first_name: string; middle_name?: string; last_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth?: string | null; phone?: string; email?: string; address?: string; village?: string; parish?: string; sub_county?: string; district?: string; next_of_kin_name?: string; next_of_kin_phone?: string; estimated_age_years?: number | null; estimated_age_months?: number | null; dob_estimated?: boolean; identifier?: {  }; next_of_kin?: {  }; duplicate_resolution?: {  }; duplicate_override?: {  }; duplicate_override_reason?: string; };
 export type PatientRegisterResponse = { patient_id: string; next_action: "CHECK_IN"; };
-export type PaymentCreate = { amount: string; method: "CASH" | "MOBILE_MONEY" | "CARD" | "BANK"; reference?: string; };
+export type PaymentCreate = { amount: string; method: string; reference?: string; allocations?: Array<{ invoice_id: string; amount: string; }>; };
+export type PaymentMethod = { code: string; label: string; kind: string; reference_required: boolean; provider_label: string; is_active: boolean; configured: boolean; };
+export type PaymentMethodConfigure = { code: string; label: string; kind: "MOBILE_MONEY_MANUAL" | "MANUAL"; reference_required?: boolean; provider_label?: string; is_active?: boolean; };
+export type PaymentResult = { id: string; receipt_no: string; receipt_id: string; amount: string; method: string; status: string; allocations: Array<{ invoice_id: string; invoice_no?: string; amount: string; }>; invoices: Array<{ id: string; status: string; total?: string; balance: string; }>; };
+export type PaymentReverseResult = { id: string; receipt_no: string; status: string; invoices: Array<{ id: string; status: string; total?: string; balance: string; }>; };
+export type ReceiptReprint = { id: string; receipt_no: string; print_count: number; last_printed_at: string | null; };
 export type ReferralSource = { source_type: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; source_name?: string; expected_version?: number | null; };
 export type ReferralSourceResponse = { visit_id: string; version: number; };
 export type ServiceCatalog = { id: string; code: string; name: string; category?: string; description?: string; is_active?: boolean; prices: Array<{ id: string; price_list: string; amount: string; currency?: string; effective_from: string; effective_to?: string | null; is_active?: boolean; active?: boolean; source_version?: string; }>; };
 export type SessionResponse = { access_token: string; access_expires_at: string; user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
+export type Shift = { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; };
+export type ShiftClose = { declared_cash: string; reason?: string; };
+export type ShiftOpen = { opening_float?: string; };
 export type Triage = { acuity?: "ROUTINE" | "URGENT" | "EMERGENCY"; chief_complaint?: string; observations?: {  }; vitals?: {  }; };
 export type TriageResponse = { id: string; queue_entry: { id: string; visit?: string | null; queue_label: string; patient: string; patient_name: string; department: string; department_name: string; queue_date: string; sequence: number; queue_type?: string; work_identity?: string; hold_reason?: string; priority?: string; priority_changed_at?: string | null; priority_reason?: string; visit_type?: string; status?: "WAITING" | "WAITING_PAYMENT" | "ON_HOLD" | "READY_TO_RESUME" | "CALLED" | "IN_TRIAGE" | "TRIAGED" | "IN_CONSULTATION" | "COMPLETED" | "CANCELLED"; current_stage?: string; arrival_at: string; queue_time?: string; called_at?: string | null; claimed_by?: string | null; claimed_at?: string | null; completed_at?: string | null; notes?: string; source_event_id?: string; version?: number; }; acuity: "ROUTINE" | "URGENT" | "EMERGENCY"; chief_complaint: string; observations: {  }; };
 export type VisitCancelError = { reason: string; expected_version?: number | null; };
@@ -59,14 +69,14 @@ export type Encounter = { id: string; encounter_no: string; patient: string; pat
 export type EncounterDisposition = "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER";
 export type Facility = { id: string; name: string; code: string; mode: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone: string; is_active: boolean; };
 export type FollowUpRecommendation = { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null;
-export type Invoice = { id: string; invoice_no: string; patient: string; patient_name: string; visit: string | null; encounter: string | null; status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID" | "VOIDED"; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; issued_at: string | null; items: Array<{ id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; }>; payments: Array<{ id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "CARD" | "BANK"; reference: string; status: "POSTED" | "REVERSED"; received_by: string; received_at: string; }>; voided_at: string | null; voided_by: string | null; current_line_set_version: number; version: number; };
-export type InvoiceItem = { id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; };
+export type Invoice = { id: string; invoice_no: string; patient: string; patient_name: string; visit: string | null; encounter: string | null; status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID" | "VOIDED"; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; issued_at: string | null; items: Array<{ id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; }>; payments: Array<{ id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; }>; voided_at: string | null; voided_by: string | null; current_line_set_version: number; version: number; };
+export type InvoiceItem = { id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; };
 export type Patient = { id: string; patient_no: string; display_name: string; first_name: string; middle_name: string; last_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth: string | null; phone: string; email: string; address: string; village: string; parish: string; sub_county: string; district: string; next_of_kin_name: string; next_of_kin_phone: string; estimated_age_years: number | null; estimated_age_months: number | null; dob_estimated: boolean; identity_status: "ACTIVE" | "PROVISIONAL" | "MERGED"; status: "ACTIVE" | "DECEASED" | "ARCHIVED"; last_seen_at: string | null; version: number; identifiers: Array<{ id: string; identifier_type: "NATIONAL_ID" | "PASSPORT" | "INSURANCE" | "OTHER"; value: string; verified: boolean; is_primary: boolean; }>; contacts: Array<{ id: string; relationship: string; name: string; phone: string; is_primary: boolean; }>; created_at: string; updated_at: string; };
 export type PatientDuplicateCandidate = { id: string; patient_no: string; display_name: string; match_score: number; last_visit_date: string | null; last_seen_at: string | null; };
-export type Payment = { id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "CARD" | "BANK"; reference: string; status: "POSTED" | "REVERSED"; received_by: string; received_at: string; };
+export type Payment = { id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; };
 export type PresentingComplaint = { text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; };
 export type QueueEntry = { id: string; visit: string | null; queue_label: string; patient: string; patient_name: string; department: string; department_name: string; queue_date: string; sequence: number; queue_type: string; work_identity: string; hold_reason: string; priority: string; priority_changed_at: string | null; priority_reason: string; visit_type: string; status: "WAITING" | "WAITING_PAYMENT" | "ON_HOLD" | "READY_TO_RESUME" | "CALLED" | "IN_TRIAGE" | "TRIAGED" | "IN_CONSULTATION" | "COMPLETED" | "CANCELLED"; current_stage: string; arrival_at: string; queue_time: string; called_at: string | null; claimed_by: string | null; claimed_at: string | null; completed_at: string | null; notes: string; source_event_id: string; version: number; };
-export type Receipt = { receipt_no: string; invoice_no: string; patient_name: string; patient_no: string; amount: string; currency: string; method: string; reference: string | null; received_at: string; invoice_total: string; invoice_balance: string; printable_text: string; };
+export type Receipt = { id: string; receipt_no: string; payment_id: string; invoice_id: string; invoice_no: string; patient_name: string; patient_no: string; amount: string; currency: string; method: string; reference: string; received_at: string; status: string; invoice_total: string; invoice_balance: string; allocations: Array<{ invoice_id: string; invoice_no: string; amount: string; }>; print_count: number; last_printed_at: string | null; content_hash: string; printable_text: string; };
 export type Service = { id: string; code: string; name: string; category: string; description: string; is_active: boolean; prices: Array<{ id: string; price_list: string; amount: string; currency: string; effective_from: string; effective_to: string | null; is_active: boolean; active: boolean; source_version: string; }>; };
 export type Visit = { id: string; patient: string; patient_name: string; facility: string; local_service_date: string; visit_type: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; state: "OPEN" | "IN_PROGRESS" | "CLOSED" | "CANCELLED_ERROR"; closure_reason: string; reason_for_visit: string; opened_at: string; opened_by: string; in_progress_at: string | null; closed_at: string | null; closed_by: string | null; payer_binding_id: string | null; legacy_source_key: string | null; emergency_setup_pending: boolean; related_visit: string | null; slip_print_count: number; referral_source_type: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; referral_source_name: string; results_review: boolean; version: number; };
 export type CreateLoginRequest = Login;
@@ -78,10 +88,28 @@ export type CreateInvoiceCreateRequest = InvoiceCreate;
 export type CreateInvoiceCreateResponse = Invoice;
 export type RetrieveVisitInvoiceResponse = Invoice;
 export type RetrieveInvoiceDetailResponse = Invoice;
-export type CreatePaymentCreateRequest = PaymentCreate;
-export type CreatePaymentCreateResponse = Payment;
-export type ListInvoiceReceiptsResponse = Receipt;
+export type CreateInvoiceLineCreateRequest = InvoiceLineCreate;
+export type CreateInvoiceLineCreateResponse = Invoice;
+export type CreateInvoiceLineVoidRequest = InvoiceLineVoid;
+export type CreateInvoiceLineVoidResponse = Invoice;
+export type CreateInvoicePaymentLegacyRequest = PaymentCreate;
+export type CreateInvoicePaymentLegacyResponse = Payment;
+export type CreateInvoicePaymentRequest = PaymentCreate;
+export type CreateInvoicePaymentResponse = PaymentResult;
+export type ListInvoiceReceiptsResponse = Array<Receipt>;
+export type ListPaymentMethodConfiguresResponse = Array<PaymentMethod>;
+export type CreatePaymentMethodConfigureRequest = PaymentMethodConfigure;
+export type CreatePaymentMethodConfigureResponse = Array<PaymentMethod>;
+export type CreatePaymentReverseResponse = PaymentReverseResult;
+export type RetrieveReceiptByNumberResponse = Receipt;
+export type RetrieveReceiptDetailResponse = Receipt;
+export type CreateReceiptReprintResponse = ReceiptReprint;
 export type ListServiceCatalogsResponse = Array<ServiceCatalog>;
+export type ListShiftCurrentsResponse = Array<Shift>;
+export type CreateShiftOpenRequest = ShiftOpen;
+export type CreateShiftOpenResponse = Shift;
+export type CreateShiftCloseRequest = ShiftClose;
+export type CreateShiftCloseResponse = Shift;
 export type CreateCheckInRequest = CheckIn;
 export type CreateCheckInResponse = QueueEntry;
 export type CreateEncounterCreateRequest = EncounterCreate;
@@ -149,7 +177,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "9180577d2e3bbed2b6196353aa379b97635d49f314fdcfbffeecd42e9eb6cb42";
+export const GENERATED_API_CONTRACT_SHA256 = "1271343c7f07309f4fbe4cfd755daadfc5fa7acbedeb4dde77024934d396530c";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -194,8 +222,23 @@ export const GENERATED_API_OPERATIONS = [
   },
   {
     "method": "POST",
-    "operationId": "createPaymentCreate",
+    "operationId": "createInvoiceLineCreate",
+    "path": "/api/v1/billing/invoices/{id}/lines/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createInvoiceLineVoid",
+    "path": "/api/v1/billing/invoices/{id}/lines/{line_id}/void/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createInvoicePaymentLegacy",
     "path": "/api/v1/billing/invoices/{id}/pay/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createInvoicePayment",
+    "path": "/api/v1/billing/invoices/{id}/payments/"
   },
   {
     "method": "GET",
@@ -204,8 +247,53 @@ export const GENERATED_API_OPERATIONS = [
   },
   {
     "method": "GET",
+    "operationId": "listPaymentMethodConfigures",
+    "path": "/api/v1/billing/payment-methods/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createPaymentMethodConfigure",
+    "path": "/api/v1/billing/payment-methods/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createPaymentReverse",
+    "path": "/api/v1/billing/payments/{id}/reverse/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveReceiptByNumber",
+    "path": "/api/v1/billing/receipts/by-number/{receipt_no}/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveReceiptDetail",
+    "path": "/api/v1/billing/receipts/{id}/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createReceiptReprint",
+    "path": "/api/v1/billing/receipts/{id}/reprint/"
+  },
+  {
+    "method": "GET",
     "operationId": "listServiceCatalogs",
     "path": "/api/v1/billing/services/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listShiftCurrents",
+    "path": "/api/v1/billing/shifts/current/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createShiftOpen",
+    "path": "/api/v1/billing/shifts/open/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createShiftClose",
+    "path": "/api/v1/billing/shifts/{id}/close/"
   },
   {
     "method": "POST",

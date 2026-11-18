@@ -123,6 +123,9 @@ def ensure_default_permissions(organisation):
         ("billing.invoice.create", "Create invoices", "T1"),
         ("billing.payment.record", "Record payments", "T1"),
         ("billing.receipt.print", "Print receipts", "T1"),
+        ("billing.manual_line", "Add manual invoice lines", "T2"),
+        ("billing.payment.reverse", "Reverse payments", "T3"),
+        ("billing.payment_method.configure", "Configure payment methods", "T3"),
         ("audit.log.view", "View audit logs", "T3"),
         ("staff.permission.grant", "Grant permissions", "T3"),
     ]
@@ -147,6 +150,7 @@ def ensure_default_permissions(organisation):
             "billing.invoice.create",
             "billing.payment.record",
             "billing.receipt.print",
+            "billing.manual_line",
         ],
         "NURSE_TRIAGE": [
             "patient.view",

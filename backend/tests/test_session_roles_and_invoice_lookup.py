@@ -84,7 +84,7 @@ def test_login_includes_roles_and_capabilities(tenant):
     assert "billing.payment.record" in session["capabilities"]
     assert "staff.permission.grant" in session["capabilities"]
     assert "patient.link" in session["capabilities"]
-    assert len(session["capabilities"]) == 21
+    assert len(session["capabilities"]) == 24
 
 
 def test_me_includes_roles_and_capabilities(tenant):
