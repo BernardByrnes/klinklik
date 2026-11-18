@@ -557,7 +557,7 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
 
     assert_transaction_active()
     dispense = (
-        Dispense.objects.select_for_update()
+        Dispense.objects.select_for_update(of=("self",))
         .filter(id=dispense_id, organisation=organisation, facility=facility)
         .select_related("prescription", "visit")
         .first()
