@@ -81,7 +81,7 @@ class ProductPrice(FacilityScopedModel):
     currency = models.CharField(max_length=3, default="UGX")
     effective_from = models.DateField()
     effective_to = models.DateField(null=True, blank=True)
-    source_event_id = models.CharField(max_length=120, unique=True)
+    source_event_id = models.CharField(max_length=120)
     created_by = models.ForeignKey(
         "accounts.User", on_delete=models.PROTECT, related_name="created_product_prices"
     )
@@ -96,5 +96,9 @@ class ProductPrice(FacilityScopedModel):
                 condition=models.Q(effective_to__isnull=True)
                 | models.Q(effective_to__gte=models.F("effective_from")),
                 name="product_price_dates_valid",
+            ),
+            models.UniqueConstraint(
+                fields=["organisation", "source_event_id"],
+                name="uniq_product_price_org_source",
             ),
         ]
