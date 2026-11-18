@@ -1770,6 +1770,20 @@ def reprice_invoice(
     """
 
     assert_transaction_active()
+    # LOCK-01: lock the Visit before its Invoice. Payment and closure take the
+    # same order; locking the Invoice first here would deadlock against them.
+    visit_id = (
+        Invoice.objects.filter(
+            id=invoice_id,
+            organisation=organisation,
+            facility=facility,
+            visit__isnull=False,
+        )
+        .values_list("visit_id", flat=True)
+        .first()
+    )
+    if visit_id is not None:
+        Visit.objects.select_for_update().filter(id=visit_id).first()
     invoice = Invoice.objects.select_for_update().filter(
         id=invoice_id, organisation=organisation, facility=facility
     ).first()

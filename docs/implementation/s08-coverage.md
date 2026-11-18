@@ -43,3 +43,21 @@ Candidate worktree: `K:/klinklik-s08-closure` (`codex/s-08-closure`).
 ## Denial audit
 
 `write_denial_audit` now accepts safe extra source identifiers; the closure view persists `blocker_1..n` codes alongside the stable opaque reference. No patient name, clinical content, or tender detail is written.
+
+## Verification results
+
+| Lane | Result |
+| --- | --- |
+| Full merged SQLite | 387 passed, 75 skipped |
+| PostgreSQL as `clinicopus_app`, both families (S-00/auth/S-01..S-08) | 72 passed, 0 skipped |
+| Disabled-guard proofs (S-02/S-03/S-04) | 3 passed |
+| Browser, all eleven specs | 20 passed |
+| Static gates (check, migration drift, generated client, lint/typecheck/build, diff check) | pass |
+| `check_rls --require-postgres` | enforced: true |
+
+Red proof on the accepted integration tip `027935c`: the blocked and successful closure tests fail with `404` at `/api/v1/reception/visits/{id}/close/` before the S-08 command exists; green on this candidate.
+
+## Lock-order correction
+
+Payment confirmation now pre-locks the affected Visit before its Invoices, and repricing does the same, matching closure's Visit → Invoice → QueueEntry order. This prevents cross-command deadlocks in the PG close-vs-payment, gate-vs-close and reprice-vs-payment races; no observable behavior changed.
+
