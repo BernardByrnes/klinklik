@@ -88,3 +88,25 @@ Statuses: **COVERED** implemented and asserted; **PARTIAL** the supplied path wo
 - Controlled/Class A medicines: refused in baseline V1 at product-receipt and movement boundaries; no partial controlled workflow.
 - Pharmacy go-live, dispensing, FEFO deviation reporting, stock counts, supplier/consumption reports, adjustment approval thresholds and CSV exports remain fenced on their owning slices.
 - Stock quantities are only written through `append_movement`; PostgreSQL rejects movement/receipt/price edits; expired stock never becomes usable.
+
+## Verification results
+
+| Lane | Result |
+| --- | --- |
+| Full merged SQLite | 395 passed, 78 skipped |
+| PostgreSQL as `clinicopus_app`, all families (S-00/auth/S-01..S-09) | 74 passed; 1 failed on the known independent S-01 pricing 40P01 race (23P01 expected) |
+| S-09 PostgreSQL lane | 3 passed, 0 skipped |
+| Disabled-guard proofs (S-02/S-03/S-04) | 3 passed |
+| Browser, all twelve specs | 21 passed |
+| Static gates (check, migration drift, generated client, lint/typecheck/build, diff check) | pass |
+| `check_rls --require-postgres` | enforced: true |
+
+Red proof on base `1a04012`: the S-09 test module cannot import `inventory.models` (ModuleNotFoundError) before this candidate exists; green on this candidate.
+
+## Hard invariants
+
+- Stock quantities are written only by `append_movement`; no route edits a balance.
+- Receipt/movement rows and product prices are immutable under PostgreSQL triggers; balances permit only quantity/version changes.
+- Expired batches are never usable: receiving refuses them, FEFO excludes them, positive movements refuse them, transfers permit quarantine only.
+- Controlled products are created inactive and refused at receiving/movement boundaries in baseline V1.
+- FORCE RLS and tenant policies cover every new tenant table.
