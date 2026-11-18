@@ -3,10 +3,12 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from django.db import close_old_connections, connection
+from django.db import close_old_connections, connection, transaction
+from django.db.utils import DatabaseError
 
 from accounts.models import User
 from core.errors import CanonicalError
@@ -101,6 +103,11 @@ def test_pg_s09_force_rls_and_append_only_guards(tenant, authed_client):
             "klin_klink_balance_guard",
             "klin_klink_product_price_immutable",
         } <= triggers
+    with tenant_atomic(tenant.organisation.id):
+        movement = StockMovement.objects.first()
+        with pytest.raises(DatabaseError):
+            with transaction.atomic():
+                StockMovement.objects.filter(id=movement.id).update(quantity=Decimal("1.00"))
 
 
 def test_pg_s09_concurrent_receipts_serialize_the_balance(tenant, authed_client):

@@ -125,11 +125,16 @@ def test_s09_receive_creates_exact_ledger_and_idempotent_receipt(tenant, authed_
     assert movements.status_code == 200
     assert len(movements.data) == 1
     assert movements.data[0]["movement_type"] == "IN_GRN"
+    batches = authed_client.get("/api/v1/inventory/batches/")
+    assert batches.status_code == 200
+    assert batches.data[0]["batch_no"]
+    assert batches.data[0]["locations"][0]["quantity"] == "100.00"
     with tenant_atomic(tenant.organisation.id):
         assert StockReceipt.objects.count() == 1
         assert StockMovement.objects.count() == 1
         assert BatchLocationBalance.objects.get(product_id=product["id"]).quantity == Decimal("100.00")
         assert AuditEvent.objects.filter(event_code="STOCK_RECEIVED").count() == 1
+        assert AuditEvent.objects.filter(event_code="MEDICATION_PRODUCT_CREATED").count() == 1
 
 
 def test_s09_expired_receipt_is_refused_without_partial_records(tenant, authed_client):
@@ -230,6 +235,7 @@ def test_s09_transfer_and_expired_quarantine_rules(tenant, authed_client):
         assert BatchLocationBalance.objects.get(
             batch_id=batch_id, location_id=locations[0]["id"]
         ).quantity == Decimal("80.00")
+        assert AuditEvent.objects.filter(event_code="STOCK_TRANSFERRED").count() == 1
         batch.expiry_date = TODAY - timedelta(days=1)
         batch.save(update_fields=["expiry_date"])
     refused = authed_client.post(
@@ -289,6 +295,8 @@ def test_s09_adjustment_reconcile_and_threshold(tenant, authed_client):
     row = next(item for item in stock.data if item["product_id"] == product["id"])
     assert row["usable_quantity"] == "95.00"
     assert row["status"] == "LOW"
+    with tenant_atomic(tenant.organisation.id):
+        assert AuditEvent.objects.filter(event_code="STOCK_ADJUSTED").count() == 1
 
     passed = authed_client.post(
         "/api/v1/inventory/reconcile/", {}, format="json",
