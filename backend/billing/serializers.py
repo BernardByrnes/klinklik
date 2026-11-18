@@ -68,7 +68,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
         model = Invoice
         fields = [
             "id", "invoice_no", "patient", "patient_name", "visit", "encounter", "status", "currency",
-            "subtotal", "discount", "total", "amount_paid", "balance", "issued_at", "items", "payments",
+            "subtotal", "discount", "total", "amount_paid", "balance",
+            "credit_total", "refunded_total", "refundable_credit",
+            "issued_at", "items", "payments",
             "voided_at", "voided_by", "current_line_set_version", "version",
         ]
 
@@ -221,3 +223,54 @@ class InvoiceLineCreateSerializer(serializers.Serializer):
 
 class InvoiceLineVoidSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=240)
+
+
+class CreditNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        from billing.models import CreditNote
+
+        model = CreditNote
+        fields = [
+            "id", "credit_no", "invoice", "amount", "currency", "reason",
+            "status", "issued_at", "issued_by", "voided_at", "voided_by", "version",
+        ]
+
+
+class CreditNoteResultSerializer(serializers.Serializer):
+    """PHI-minimal command result."""
+
+    id = serializers.UUIDField()
+    credit_no = serializers.CharField()
+    invoice_id = serializers.UUIDField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    status = serializers.CharField()
+    credit_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    balance = serializers.DecimalField(max_digits=14, decimal_places=2)
+    refundable_credit = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
+class CreditNoteIssueSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    reason = serializers.CharField(max_length=240, allow_blank=True)
+
+
+class ReasonSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=240)
+
+
+class ZReportSerializer(serializers.Serializer):
+    shift_id = serializers.UUIDField()
+    status = serializers.CharField()
+    opened_at = serializers.DateTimeField()
+    closed_at = serializers.DateTimeField(allow_null=True)
+    opening_float = serializers.CharField()
+    tenders = serializers.ListField(child=serializers.DictField())
+    payment_count = serializers.IntegerField()
+    reversed_count = serializers.IntegerField()
+    refund_count = serializers.IntegerField()
+    refund_total = serializers.CharField()
+    discount_total = serializers.CharField()
+    declared_cash = serializers.CharField(allow_null=True)
+    expected_cash = serializers.CharField(allow_null=True)
+    variance = serializers.CharField(allow_null=True)
+    variance_reason = serializers.CharField(allow_blank=True)

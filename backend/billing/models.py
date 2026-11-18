@@ -126,6 +126,9 @@ class Invoice(FacilityScopedModel):
     total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    credit_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    refunded_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    refundable_credit = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     issued_at = models.DateTimeField(null=True, blank=True)
     voided_at = models.DateTimeField(null=True, blank=True)
     voided_by = models.ForeignKey(
@@ -380,6 +383,115 @@ class PaymentAllocation(OrganisationScopedModel):
             models.UniqueConstraint(
                 fields=["payment", "invoice"],
                 name="uniq_payment_allocation_invoice",
+            ),
+        ]
+
+
+class CreditNote(FacilityScopedModel):
+    """FIN-002: an immutable negative-value correction to an issued invoice.
+
+    The amount is stored as a positive magnitude; the document is the credit.
+    """
+
+    STATUS_CHOICES = [("ISSUED", "Issued"), ("VOIDED", "Voided")]
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="credit_notes")
+    credit_no = models.CharField(max_length=50)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3, default="UGX")
+    reason = models.CharField(max_length=240)
+    reason_hash = models.CharField(max_length=64)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ISSUED")
+    issued_at = models.DateTimeField(default=now)
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="issued_credit_notes"
+    )
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="voided_credit_notes",
+    )
+    void_reason_hash = models.CharField(max_length=64, blank=True)
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "credit_no"], name="uniq_credit_note_org_no"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0), name="credit_note_amount_positive"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reason_hash__regex=r"^[0-9a-f]{64}$"),
+                name="credit_note_reason_hash_valid",
+            ),
+        ]
+
+
+class Refund(FacilityScopedModel):
+    """Outward correction referencing the original payment and credit note.
+
+    Issuance is fenced on canonical §973 privileged MFA; the state record and
+    approval flow are complete so the gate can be enabled without redesign.
+    """
+
+    STATUS_CHOICES = [
+        ("REQUESTED", "Requested"),
+        ("APPROVED", "Approved"),
+        ("REJECTED", "Rejected"),
+        ("CANCELLED", "Cancelled"),
+    ]
+
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="refunds")
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="refunds")
+    credit_note = models.ForeignKey(CreditNote, on_delete=models.PROTECT, related_name="refunds")
+    shift = models.ForeignKey(
+        "billing.CashierShift", on_delete=models.PROTECT, related_name="refunds"
+    )
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    reason = models.CharField(max_length=240)
+    reason_hash = models.CharField(max_length=64)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="REQUESTED")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="requested_refunds"
+    )
+    requested_at = models.DateTimeField(default=now)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="approved_refunds",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="rejected_refunds",
+    )
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    terminal_reason_hash = models.CharField(max_length=64, blank=True)
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment"],
+                condition=models.Q(status="REQUESTED"),
+                name="uniq_open_refund_payment",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0), name="refund_amount_positive"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reason_hash__regex=r"^[0-9a-f]{64}$"),
+                name="refund_reason_hash_valid",
             ),
         ]
 

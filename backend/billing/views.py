@@ -5,8 +5,11 @@ from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from billing.models import Invoice, Payment, PaymentReceipt, ServiceCatalogItem
+from billing.models import CashierShift, CreditNote, Invoice, Payment, PaymentReceipt, ServiceCatalogItem
 from billing.serializers import (
+    CreditNoteIssueSerializer,
+    CreditNoteResultSerializer,
+    CreditNoteSerializer,
     InvoiceCreateSerializer,
     InvoiceLineCreateSerializer,
     InvoiceLineVoidSerializer,
@@ -18,12 +21,14 @@ from billing.serializers import (
     PaymentResultSerializer,
     PaymentReverseResultSerializer,
     PaymentSerializer,
+    ReasonSerializer,
     ReceiptReprintSerializer,
     ReceiptSerializer,
     ServiceCatalogSerializer,
     ShiftCloseSerializer,
     ShiftOpenSerializer,
     ShiftSerializer,
+    ZReportSerializer,
 )
 from billing.services import (
     add_invoice_line,
@@ -32,6 +37,7 @@ from billing.services import (
     confirm_payment,
     create_invoice,
     current_shift,
+    issue_credit_note,
     open_shift,
     payment_method_options,
     post_payment,
@@ -39,6 +45,8 @@ from billing.services import (
     receipt_payload,
     reprint_receipt,
     reverse_payment,
+    shift_z_report,
+    void_credit_note,
     void_invoice_line,
 )
 from core.errors import CanonicalError
@@ -509,3 +517,117 @@ class InvoiceLineVoidView(TenantAPIView):
             request=request,
         )
         return Response(InvoiceMutationSerializer(invoice).data)
+
+
+def _credit_result(credit, invoice):
+    return {
+        "id": str(credit.id),
+        "credit_no": credit.credit_no,
+        "invoice_id": str(invoice.id),
+        "amount": str(credit.amount),
+        "status": credit.status,
+        "credit_total": str(invoice.credit_total),
+        "balance": str(invoice.balance),
+        "refundable_credit": str(invoice.refundable_credit),
+    }
+
+
+class InvoiceCreditNoteView(TenantAPIView):
+    capability = "billing.credit_note.issue"
+    serializer_class = CreditNoteIssueSerializer
+    response_serializer_class = CreditNoteResultSerializer
+    idempotency_operation = "CMD-077"
+    requires_idempotency = True
+
+    def post(self, request, pk):
+        serializer = CreditNoteIssueSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        credit, invoice = issue_credit_note(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            invoice_id=pk,
+            request=request,
+            **serializer.validated_data,
+        )
+        return Response(_credit_result(credit, invoice), status=status.HTTP_201_CREATED)
+
+
+class CreditNoteDetailView(TenantAPIView):
+    capability = "billing.invoice.create"
+    response_serializer_class = CreditNoteSerializer
+
+    def get(self, request, pk):
+        credit = get_object_or_404(
+            CreditNote.objects.select_related("invoice"),
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+        return Response(CreditNoteSerializer(credit).data)
+
+
+class CreditNoteVoidView(TenantAPIView):
+    capability = "billing.credit_note.void"
+    serializer_class = ReasonSerializer
+    response_serializer_class = CreditNoteResultSerializer
+    idempotency_operation = "CMD-086"
+    requires_idempotency = True
+
+    def post(self, request, pk):
+        serializer = ReasonSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        credit, invoice, _changed = void_credit_note(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            credit_note_id=pk,
+            reason=serializer.validated_data["reason"],
+            request=request,
+        )
+        return Response(_credit_result(credit, invoice))
+
+
+class RefundFencedView(TenantAPIView):
+    """Refund issuance is recorded but fenced on canonical §973 MFA."""
+
+    capability = "billing.refund.request"
+    idempotency_operation = "CMD-078"
+    requires_idempotency = True
+
+    def post(self, request, *args, **kwargs):
+        raise CanonicalError(
+            "REFUND_ISSUANCE_DISABLED",
+            "Refund issuance is disabled until privileged MFA is available.",
+            status_code=503,
+        )
+
+
+class RefundApproveFencedView(RefundFencedView):
+    capability = "billing.refund.approve"
+    idempotency_operation = "CMD-079"
+
+
+class RefundRejectFencedView(RefundFencedView):
+    capability = "billing.refund.approve"
+
+
+class ShiftZReportView(TenantAPIView):
+    capability = "billing.receipt.print"
+    response_serializer_class = ZReportSerializer
+    operation_id = "retrieveShiftZReport"
+
+    def get(self, request, pk):
+        shift = get_object_or_404(
+            CashierShift,
+            id=pk,
+            organisation=request.organisation,
+            facility=request.facility,
+        )
+        return Response(
+            shift_z_report(
+                organisation=request.organisation,
+                facility=request.facility,
+                shift=shift,
+            )
+        )

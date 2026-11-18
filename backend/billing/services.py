@@ -9,6 +9,7 @@ from django.db import IntegrityError, models, transaction
 from audit.services import record_event
 from billing.models import (
     CashierShift,
+    CreditNote,
     Invoice,
     InvoiceItem,
     Payment,
@@ -16,6 +17,7 @@ from billing.models import (
     PaymentMethodConfig,
     PaymentReceipt,
     PriceList,
+    Refund,
     ServiceCatalogItem,
     ServicePrice,
     VisitPayerBinding,
@@ -427,13 +429,32 @@ def recompute_invoice_projection(invoice):
     discount = min(invoice.discount, subtotal).quantize(Decimal("0.01"))
     total = (subtotal - discount).quantize(Decimal("0.01"))
     applied = effective_allocation_total(invoice=invoice)
-    if applied > total:
+    credit_total = sum(
+        (
+            credit.amount
+            for credit in CreditNote.objects.filter(invoice=invoice, status="ISSUED")
+        ),
+        Decimal("0.00"),
+    ).quantize(Decimal("0.01"))
+    refunded_total = sum(
+        (
+            refund.amount
+            for refund in Refund.objects.filter(invoice=invoice, status="APPROVED")
+        ),
+        Decimal("0.00"),
+    ).quantize(Decimal("0.01"))
+    if credit_total > total:
         raise CanonicalError(
-            "INVOICE_OVERPAID",
-            "The effective allocations exceed the invoice total.",
+            "INVOICE_OVERCREDITED",
+            "Credit notes exceed the invoice total.",
             status_code=409,
         )
-    balance = (total - applied).quantize(Decimal("0.01"))
+    balance = max(Decimal("0.00"), total - credit_total - applied).quantize(Decimal("0.01"))
+    refundable = max(
+        Decimal("0.00"),
+        min(credit_total, max(Decimal("0.00"), applied + credit_total - total))
+        - refunded_total,
+    ).quantize(Decimal("0.01"))
     if total > 0 and balance == 0:
         status = "PAID"
     elif applied > 0:
@@ -445,6 +466,9 @@ def recompute_invoice_projection(invoice):
     invoice.total = total
     invoice.amount_paid = applied
     invoice.balance = balance
+    invoice.credit_total = credit_total
+    invoice.refunded_total = refunded_total
+    invoice.refundable_credit = refundable
     invoice.status = status
     invoice.version += 1
     invoice.save(
@@ -454,6 +478,9 @@ def recompute_invoice_projection(invoice):
             "total",
             "amount_paid",
             "balance",
+            "credit_total",
+            "refunded_total",
+            "refundable_credit",
             "status",
             "version",
             "updated_at",
@@ -706,13 +733,7 @@ def close_shift(
         shift=shift,
         statuses=Payment.EFFECTIVE_STATUSES,
     )
-    reversed_total = _confirmed_cash_total(
-        organisation=organisation,
-        facility=facility,
-        shift=shift,
-        statuses=("REVERSED",),
-    )
-    expected = (shift.opening_float + confirmed - reversed_total).quantize(Decimal("0.01"))
+    expected = (shift.opening_float + confirmed).quantize(Decimal("0.01"))
     shift.declared_cash = declared
     shift.expected_cash = expected
     shift.variance = (declared - expected).quantize(Decimal("0.01"))
@@ -1270,3 +1291,396 @@ def void_invoice_line(
         event_code="INVOICE_LINE_VOIDED",
     )
     return line, invoice, True
+
+
+def _reason_hash(reason):
+    return hashlib.sha256(reason.strip().encode("utf-8")).hexdigest()
+
+
+@transaction.atomic
+def issue_credit_note(
+    *, organisation, facility, actor, invoice_id, amount, reason, request=None
+):
+    """FIN-002: append an immutable credit without rewriting paid history."""
+
+    assert_transaction_active()
+    if not (reason or "").strip():
+        raise CanonicalError(
+            "CREDIT_NOTE_REASON_REQUIRED",
+            "A reason is required to issue a credit note.",
+            status_code=400,
+        )
+    amount = _money(amount)
+    if amount <= 0:
+        raise CanonicalError(
+            "CREDIT_NOTE_AMOUNT_INVALID", "The credit amount must be positive.", 400
+        )
+    invoice = Invoice.objects.select_for_update().filter(
+        id=invoice_id, organisation=organisation, facility=facility
+    ).first()
+    if invoice is None:
+        raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
+    if invoice.status in {"VOID", "VOIDED"} or invoice.issued_at is None:
+        raise CanonicalError(
+            "CREDIT_NOTE_INVOICE_NOT_ELIGIBLE",
+            "Only a finalised, non-void invoice can be credited.",
+            status_code=409,
+        )
+    existing = CreditNote.objects.filter(invoice=invoice, status="ISSUED").aggregate(
+        total=models.Sum("amount")
+    )["total"] or Decimal("0.00")
+    if (existing + amount).quantize(Decimal("0.01")) > invoice.total:
+        raise CanonicalError(
+            "CREDIT_NOTE_EXCEEDS_CREDITABLE",
+            "The credit exceeds the remaining creditable value.",
+            status_code=409,
+        )
+    period = local_service_date().isoformat()
+    sequence = allocate_sequence(
+        organisation=organisation,
+        sequence_type="CREDIT_NOTE",
+        period_key=period,
+    )
+    credit = CreditNote.objects.create(
+        organisation=organisation,
+        facility=facility,
+        invoice=invoice,
+        credit_no=f"CN-{period.replace('-', '')}-{sequence:06d}",
+        amount=amount,
+        currency=invoice.currency,
+        reason=reason.strip()[:240],
+        reason_hash=_reason_hash(reason),
+        issued_by=actor,
+    )
+    invoice = recompute_invoice_projection(invoice)
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="ISSUE",
+        entity_type="CreditNote",
+        entity_id=credit.id,
+        after={
+            "credit_no": credit.credit_no,
+            "invoice_id": str(invoice.id),
+            "amount": str(credit.amount),
+            "reason_hash": credit.reason_hash,
+        },
+        event_code="CREDIT_NOTE_ISSUED",
+        source_ids={"credit_note_id": str(credit.id), "invoice_id": str(invoice.id)},
+    )
+    return credit, invoice
+
+
+@transaction.atomic
+def void_credit_note(
+    *, organisation, facility, actor, credit_note_id, reason, request=None
+):
+    """Void an unrefunded credit note; the original document stays retained."""
+
+    assert_transaction_active()
+    if not (reason or "").strip():
+        raise CanonicalError(
+            "CREDIT_NOTE_VOID_REASON_REQUIRED", "A reason is required.", status_code=400
+        )
+    credit = CreditNote.objects.select_for_update().filter(
+        id=credit_note_id, organisation=organisation, facility=facility
+    ).first()
+    if credit is None:
+        raise CanonicalError("CREDIT_NOTE_NOT_FOUND", "Credit note was not found.", status_code=404)
+    if credit.status == "VOIDED":
+        return credit, credit.invoice, False
+    if Refund.objects.filter(
+        credit_note=credit, status__in=("REQUESTED", "APPROVED")
+    ).exists():
+        raise CanonicalError(
+            "CREDIT_NOTE_REFUNDED",
+            "A refund references this credit note; it cannot be voided.",
+            status_code=409,
+        )
+    invoice = Invoice.objects.select_for_update().get(id=credit.invoice_id)
+    credit.status = "VOIDED"
+    credit.voided_at = now()
+    credit.voided_by = actor
+    credit.void_reason_hash = _reason_hash(reason)
+    credit.version += 1
+    credit.save(
+        update_fields=[
+            "status",
+            "voided_at",
+            "voided_by",
+            "void_reason_hash",
+            "version",
+            "updated_at",
+        ]
+    )
+    invoice = recompute_invoice_projection(invoice)
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="VOID",
+        entity_type="CreditNote",
+        entity_id=credit.id,
+        after={"credit_no": credit.credit_no, "reason_hash": credit.void_reason_hash},
+        event_code="CREDIT_NOTE_VOIDED",
+    )
+    return credit, invoice, True
+
+
+@transaction.atomic
+def request_refund(
+    *, organisation, facility, actor, payment_id, credit_note_id, amount, reason, request=None
+):
+    """Record an outward correction request against a payment and credit note."""
+
+    assert_transaction_active()
+    if not (reason or "").strip():
+        raise CanonicalError(
+            "REFUND_REASON_REQUIRED", "A reason is required to request a refund.", 400
+        )
+    amount = _money(amount)
+    if amount <= 0:
+        raise CanonicalError("REFUND_AMOUNT_INVALID", "The refund amount must be positive.", status_code=400)
+    shift = CashierShift.objects.select_for_update().filter(
+        organisation=organisation,
+        facility=facility,
+        cashier=actor,
+        status="OPEN",
+    ).first()
+    if shift is None:
+        raise CanonicalError(
+            "OPEN_SHIFT_REQUIRED", "Open a cashier shift before requesting a refund.", 409
+        )
+    payment = Payment.objects.select_for_update().filter(
+        id=payment_id, organisation=organisation, facility=facility
+    ).first()
+    if payment is None:
+        raise CanonicalError("PAYMENT_NOT_FOUND", "Payment was not found.", status_code=404)
+    if payment.status not in Payment.EFFECTIVE_STATUSES:
+        raise CanonicalError(
+            "REFUND_PAYMENT_NOT_EFFECTIVE",
+            "Only an effective payment can be refunded.",
+            status_code=409,
+        )
+    credit = CreditNote.objects.select_for_update().filter(
+        id=credit_note_id,
+        organisation=organisation,
+        facility=facility,
+        status="ISSUED",
+    ).first()
+    if credit is None:
+        raise CanonicalError("CREDIT_NOTE_NOT_FOUND", "Credit note was not found.", status_code=404)
+    invoice = Invoice.objects.select_for_update().filter(
+        id=credit.invoice_id, organisation=organisation, facility=facility
+    ).first()
+    if invoice is None:
+        raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
+    if not PaymentAllocation.objects.filter(payment=payment, invoice=invoice).exists():
+        raise CanonicalError(
+            "REFUND_PAYMENT_NOT_ALLOCATED",
+            "The payment is not allocated to this invoice.",
+            status_code=409,
+        )
+    if Refund.objects.filter(payment=payment, status="REQUESTED").exists():
+        raise CanonicalError(
+            "REFUND_ALREADY_REQUESTED",
+            "This payment already has an open refund request.",
+            status_code=409,
+        )
+    invoice = recompute_invoice_projection(invoice)
+    if amount > invoice.refundable_credit:
+        raise CanonicalError(
+            "REFUND_EXCEEDS_REFUNDABLE",
+            "The refund exceeds the current refundable credit.",
+            status_code=409,
+        )
+    refund = Refund.objects.create(
+        organisation=organisation,
+        facility=facility,
+        payment=payment,
+        invoice=invoice,
+        credit_note=credit,
+        shift=shift,
+        amount=amount,
+        reason=reason.strip()[:240],
+        reason_hash=_reason_hash(reason),
+        requested_by=actor,
+    )
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="REQUEST",
+        entity_type="Refund",
+        entity_id=refund.id,
+        after={
+            "payment_id": str(payment.id),
+            "credit_note_id": str(credit.id),
+            "amount": str(refund.amount),
+            "reason_hash": refund.reason_hash,
+        },
+        event_code="REFUND_REQUESTED",
+    )
+    return refund
+
+
+@transaction.atomic
+def approve_refund(
+    *, organisation, facility, actor, refund_id, mfa_verified=False, request=None
+):
+    """Approve a refund. Fenced by canonical §973 privileged MFA."""
+
+    assert_transaction_active()
+    if not mfa_verified:
+        raise CanonicalError(
+            "MFA_REQUIRED",
+            "Refund issuance requires privileged MFA verification.",
+            status_code=403,
+        )
+    refund = Refund.objects.select_for_update().filter(
+        id=refund_id, organisation=organisation, facility=facility
+    ).first()
+    if refund is None:
+        raise CanonicalError("REFUND_NOT_FOUND", "Refund was not found.", status_code=404)
+    if refund.status != "REQUESTED":
+        raise CanonicalError(
+            "REFUND_NOT_PENDING", "This refund is not awaiting approval.", status_code=409
+        )
+    if refund.requested_by_id == getattr(actor, "id", actor):
+        raise CanonicalError(
+            "REFUND_SELF_APPROVAL",
+            "The requester cannot approve their own refund.",
+            status_code=403,
+        )
+    shift = CashierShift.objects.select_for_update().filter(
+        id=refund.shift_id, status="OPEN"
+    ).first()
+    if shift is None:
+        raise CanonicalError(
+            "OPEN_SHIFT_REQUIRED", "The refund shift is not open.", status_code=409
+        )
+    invoice = Invoice.objects.select_for_update().get(id=refund.invoice_id)
+    refund.status = "APPROVED"
+    refund.approved_by = actor
+    refund.approved_at = now()
+    refund.version += 1
+    refund.save(
+        update_fields=["status", "approved_by", "approved_at", "version", "updated_at"]
+    )
+    invoice = recompute_invoice_projection(invoice)
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="APPROVE",
+        entity_type="Refund",
+        entity_id=refund.id,
+        after={
+            "payment_id": str(refund.payment_id),
+            "amount": str(refund.amount),
+            "approved_by": str(actor.id),
+        },
+        event_code="REFUND_APPROVED",
+    )
+    return refund, invoice
+
+
+@transaction.atomic
+def reject_refund(*, organisation, facility, actor, refund_id, reason, request=None):
+    assert_transaction_active()
+    if not (reason or "").strip():
+        raise CanonicalError(
+            "REFUND_REJECTION_REASON_REQUIRED", "A reason is required.", status_code=400
+        )
+    refund = Refund.objects.select_for_update().filter(
+        id=refund_id, organisation=organisation, facility=facility
+    ).first()
+    if refund is None:
+        raise CanonicalError("REFUND_NOT_FOUND", "Refund was not found.", status_code=404)
+    if refund.status != "REQUESTED":
+        raise CanonicalError(
+            "REFUND_NOT_PENDING", "This refund is not awaiting a decision.", status_code=409
+        )
+    refund.status = "REJECTED"
+    refund.rejected_by = actor
+    refund.rejected_at = now()
+    refund.terminal_reason_hash = _reason_hash(reason)
+    refund.version += 1
+    refund.save(
+        update_fields=[
+            "status",
+            "rejected_by",
+            "rejected_at",
+            "terminal_reason_hash",
+            "version",
+            "updated_at",
+        ]
+    )
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="REJECT",
+        entity_type="Refund",
+        entity_id=refund.id,
+        after={"reason_hash": refund.terminal_reason_hash},
+        event_code="REFUND_REJECTED",
+    )
+    return refund
+
+
+def shift_z_report(*, organisation, facility, shift):
+    """Committed per-shift totals; no fiscal claim is made."""
+
+    assert_transaction_active()
+    payments = Payment.objects.filter(organisation=organisation, facility=facility, shift=shift)
+    refunds = Refund.objects.filter(organisation=organisation, facility=facility, shift=shift)
+    tenders = {}
+    for payment in payments.filter(status__in=Payment.EFFECTIVE_STATUSES):
+        key = payment.method
+        bucket = tenders.setdefault(key, {"method": key, "count": 0, "amount": Decimal("0.00")})
+        bucket["count"] += 1
+        bucket["amount"] += payment.amount
+    return {
+        "shift_id": str(shift.id),
+        "status": shift.status,
+        "opened_at": shift.opened_at,
+        "closed_at": shift.closed_at,
+        "opening_float": str(shift.opening_float),
+        "tenders": [
+            {"method": item["method"], "count": item["count"], "amount": str(item["amount"])}
+            for item in sorted(tenders.values(), key=lambda entry: entry["method"])
+        ],
+        "payment_count": payments.filter(status__in=Payment.EFFECTIVE_STATUSES).count(),
+        "reversed_count": payments.filter(status="REVERSED").count(),
+        "refund_count": refunds.filter(status="APPROVED").count(),
+        "refund_total": str(
+            sum(
+                (refund.amount for refund in refunds.filter(status="APPROVED")),
+                Decimal("0.00"),
+            )
+        ),
+        "discount_total": str(
+            sum(
+                (
+                    invoice.discount
+                    for invoice in Invoice.objects.filter(
+                        organisation=organisation,
+                        facility=facility,
+                        created_at__gte=shift.opened_at,
+                    )
+                ),
+                Decimal("0.00"),
+            )
+        ),
+        "declared_cash": str(shift.declared_cash) if shift.declared_cash is not None else None,
+        "expected_cash": str(shift.expected_cash) if shift.expected_cash is not None else None,
+        "variance": str(shift.variance) if shift.variance is not None else None,
+        "variance_reason": shift.close_reason,
+    }

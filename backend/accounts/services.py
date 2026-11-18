@@ -126,6 +126,10 @@ def ensure_default_permissions(organisation):
         ("billing.manual_line", "Add manual invoice lines", "T2"),
         ("billing.payment.reverse", "Reverse payments", "T3"),
         ("billing.payment_method.configure", "Configure payment methods", "T3"),
+        ("billing.credit_note.issue", "Issue credit notes", "T3"),
+        ("billing.credit_note.void", "Void credit notes", "T3"),
+        ("billing.refund.request", "Request refunds", "T3"),
+        ("billing.refund.approve", "Approve refunds", "T3"),
         ("audit.log.view", "View audit logs", "T3"),
         ("staff.permission.grant", "Grant permissions", "T3"),
     ]

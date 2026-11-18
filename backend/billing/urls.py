@@ -1,8 +1,10 @@
 from django.urls import path
 
 from billing.views import (
+    CreditNoteDetailView,
     InvoiceByVisitView,
     InvoiceCanonicalPaymentView,
+    InvoiceCreditNoteView,
     InvoiceDetailView,
     InvoiceLineCreateView,
     InvoiceLineVoidView,
@@ -14,10 +16,14 @@ from billing.views import (
     ReceiptByNumberView,
     ReceiptDetailView,
     ReceiptReprintView,
+    RefundApproveFencedView,
+    RefundFencedView,
+    RefundRejectFencedView,
     ServiceCatalogView,
     ShiftCloseView,
     ShiftCurrentView,
     ShiftOpenView,
+    ShiftZReportView,
 )
 
 
@@ -34,6 +40,28 @@ urlpatterns = [
         "invoices/<uuid:pk>/lines/<uuid:line_id>/void/",
         InvoiceLineVoidView.as_view(),
         name="invoice-line-void",
+    ),
+    path(
+        "invoices/<uuid:pk>/credit-notes/",
+        InvoiceCreditNoteView.as_view(),
+        name="invoice-credit-note-create",
+    ),
+    path("credit-notes/<uuid:pk>/", CreditNoteDetailView.as_view(), name="credit-note-detail"),
+    path("refunds/", RefundFencedView.as_view(), name="refund-request"),
+    path(
+        "refunds/<uuid:pk>/approve/",
+        RefundApproveFencedView.as_view(),
+        name="refund-approve",
+    ),
+    path(
+        "refunds/<uuid:pk>/reject/",
+        RefundRejectFencedView.as_view(),
+        name="refund-reject",
+    ),
+    path(
+        "shifts/<uuid:pk>/z-report/",
+        ShiftZReportView.as_view(),
+        name="shift-z-report",
     ),
     path("payments/<uuid:pk>/reverse/", PaymentReverseView.as_view(), name="payment-reverse"),
     path("receipts/<uuid:pk>/", ReceiptDetailView.as_view(), name="receipt-detail"),
