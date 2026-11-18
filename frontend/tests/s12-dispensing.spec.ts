@@ -191,6 +191,9 @@ test("S-12 prescribes, signs, dispenses and charges one exact handover", async (
   await page.getByRole("tab", { name: "History", exact: true }).click();
   await steadyFill(page, "Presenting complaint", "Synthetic S12 chest pain");
 
+  // The UI sign-in rotates the browser session; refresh the API token before
+  // the synthetic prescription command.
+  session = await apiLogin(page);
   const draft = await page.request.patch(
     `${API}/api/v1/pharmacy/prescriptions/draft/`,
     {
