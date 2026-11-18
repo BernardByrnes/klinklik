@@ -293,7 +293,7 @@ def queue(*, organisation, facility):
         dispensed = sum(
             1 for item in items if item.state in {"DISPENSED", "PARTIALLY_DISPENSED"}
         )
-        age_days = (today - prescription.created_at.date()).days
+        age_days = (today - local_service_date(prescription.created_at)).days
         row = {
             "prescription_id": str(prescription.id),
             "patient_name": prescription.patient.display_name,
