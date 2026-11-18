@@ -40,3 +40,25 @@ Candidate worktree: `K:/klinklik-s10-counts` (`codex/s-10-counts`).
 - Disposal certificates, compliance exports and REP-012 are V1.1 after pharmacist/regulatory validation.
 - Dispensing-at-location flags and the pharmacy count integration await the dispensing owner slice.
 - Adjustment threshold is configured on `FacilityWorkflowPolicy.stock_adjustment_approval_threshold`; no default is invented and an unset threshold refuses with `PREREQUISITE_MISSING`.
+
+## Verification results
+
+| Lane | Result |
+| --- | --- |
+| Full merged SQLite | 401 passed, 81 skipped |
+| PostgreSQL as `clinicopus_app`, all families (S-00/auth/S-01..S-10) | 78 passed, 0 failed |
+| S-10 PostgreSQL lane | 3 passed, 0 skipped |
+| Disabled-guard proofs (S-02/S-03/S-04) | 3 passed |
+| Browser, all thirteen specs | 22 passed |
+| Static gates (check, migration drift, generated client, lint/typecheck/build, diff check) | pass |
+| `check_rls --require-postgres` | enforced: true |
+
+Red proof on base `436ced4`: the S-10 module cannot import `DisposalRecord`/count models before this candidate exists; green here.
+
+## Hard invariants
+
+- Count snapshots never mutate stock; approval appends exact counter-movements through `append_movement`.
+- Above-threshold counts/adjustments require a distinct FACILITY_ADMIN; OD-T3 waiver is inactive.
+- Count lines freeze after submission; posted counts and adjustments are immutable under PG triggers.
+- Quarantine remains on the books until disposal; expired stock is never credited as usable.
+- Every new tenant table has FORCE RLS and the tenant policy.

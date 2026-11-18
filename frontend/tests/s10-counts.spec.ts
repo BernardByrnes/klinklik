@@ -64,10 +64,14 @@ test("S-10 blind count submits, approves and posts the exact correction", async 
       effective_from: new Date().toISOString().slice(0, 10),
     },
   });
-  const locations = (await (
-    await page.request.get(`${API}/api/v1/inventory/locations/`, { headers })
-  ).json()) as Array<{ id: string; is_default: boolean }>;
-  const locationId = locations.find((item) => item.is_default)?.id ?? locations[0].id;
+  await page.request.get(`${API}/api/v1/inventory/locations/`, { headers });
+  const locationResponse = await page.request.post(`${API}/api/v1/inventory/locations/`, {
+    headers,
+    data: { code: `S10-LOC-${suffix}`, name: `S10 Store ${suffix}`, location_type: "STORE" },
+  });
+  expect(locationResponse.ok(), await locationResponse.text()).toBeTruthy();
+  const location = (await locationResponse.json()) as { id: string };
+  const locationId = location.id;
   const receipt = await page.request.post(`${API}/api/v1/inventory/receipts/`, {
     headers: { ...headers, "Idempotency-Key": `s10-receipt-${suffix}` },
     data: {
@@ -89,6 +93,7 @@ test("S-10 blind count submits, approves and posts the exact correction", async 
 
   await page.goto("/inventory");
   await expect(page.getByText("Blind stock count", { exact: true })).toBeVisible();
+  await page.getByLabel("Location", { exact: true }).selectOption(locationId);
   const sheetLoaded = page.waitForResponse(
     (response) =>
       /\/api\/v1\/inventory\/counts\/[0-9a-f-]+\/$/.test(response.url()) &&
