@@ -9,6 +9,7 @@ Candidate worktree: `K:/klinklik-s07-repricing` (`codex/s-07-repricing`).
 | --- | --- | --- |
 | `backend/tests/test_s07_repricing.py` | 2 | atomic reprice/retention/replay, stale/paid/no-change refusals |
 | `backend/tests/test_s07_postgres.py` | 3 | RLS/prior-version immutability, concurrent reprice, reprice-vs-payment |
+| `frontend/tests/s07-repricing.spec.ts` | 1 | payer/reprice conflict surface and unchanged invoice |
 | `backend/tests/test_s05_billing.py` | 9 | PRIOR money regression after current-set filtering |
 | `backend/tests/test_s06_corrections.py` | 5 | PRIOR correction regression |
 | `backend/tests/test_s06_mig010.py` | 2 | PRIOR MIG-010 regression |
