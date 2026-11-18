@@ -17,10 +17,23 @@ from inventory.models import (
 )
 from inventory.services import append_movement
 from pharmacy.models import MedicationProduct, ProductPrice
+from tenancy.models import FacilityWorkflowPolicy
 
 pytestmark = pytest.mark.django_db
 
 TODAY = date.today()
+
+
+def _threshold(tenant, value="1000000.00"):
+    with tenant_atomic(tenant.organisation.id):
+        FacilityWorkflowPolicy.objects.update_or_create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            defaults={
+                "stock_adjustment_approval_threshold": Decimal(value),
+                "updated_by": tenant.user,
+            },
+        )
 
 
 def _locations(client):
@@ -266,6 +279,7 @@ def test_s09_transfer_and_expired_quarantine_rules(tenant, authed_client):
 
 
 def test_s09_adjustment_reconcile_and_threshold(tenant, authed_client):
+    _threshold(tenant)
     location = _locations(authed_client)[0]
     product = _product(authed_client)
     _receive(authed_client, product["id"], location["id"], quantity="100.00")
@@ -357,6 +371,7 @@ def test_s09_catalogue_import_is_atomic_and_controlled_rows_are_inactive(
 
 
 def test_s09_product_deactivation_requires_zero_stock(tenant, authed_client):
+    _threshold(tenant)
     location = _locations(authed_client)[0]
     product = _product(authed_client)
     _receive(authed_client, product["id"], location["id"], quantity="10.00")

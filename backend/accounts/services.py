@@ -138,6 +138,7 @@ def ensure_default_permissions(organisation):
         ("inventory.adjust", "Adjust or write off stock", "T2"),
         ("inventory.configure", "Configure stock locations, suppliers and thresholds", "T2"),
         ("inventory.reconcile", "Run stock ledger reconciliation", "T3"),
+        ("inventory.approve", "Approve counts and stock adjustments", "T3"),
         ("catalogue.manage", "Manage the medicine catalogue and prices", "T2"),
         ("catalogue.import", "Import a starter catalogue", "T3"),
         ("billing.payment_method.configure", "Configure payment methods", "T3"),

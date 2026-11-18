@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from uuid import uuid4
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, models, transaction
@@ -498,7 +499,7 @@ def transfer_stock(
         raise CanonicalError(
             "EXPIRED_BATCH", "Expired stock may only transfer to quarantine.", status_code=422
         )
-    transaction_key = f"{batch.id}:{source.id}:{destination.id}:{now().timestamp()}"
+    transaction_key = str(uuid4())
     out = append_movement(
         organisation=organisation,
         facility=facility,
@@ -869,3 +870,94 @@ def reconcile_ledger(*, organisation, facility, actor, request=None):
         },
     )
     return fact, discrepancies
+
+
+def product_ledger(*, organisation, facility, product_id, date_from=None, date_to=None, batch_id=None, movement_type=None):
+    """Chronological ledger with a running balance recomputed from zero."""
+
+    assert_transaction_active()
+    movements = StockMovement.objects.filter(
+        organisation=organisation, facility=facility, product_id=product_id
+    )
+    if date_from:
+        movements = movements.filter(occurred_at__date__gte=date_from)
+    if date_to:
+        movements = movements.filter(occurred_at__date__lte=date_to)
+    if batch_id:
+        movements = movements.filter(batch_id=batch_id)
+    if movement_type:
+        movements = movements.filter(movement_type=str(movement_type).upper())
+    running = Decimal("0.00")
+    rows = []
+    for movement in movements.select_related("batch", "location").order_by("occurred_at", "id"):
+        running = (running + movement.quantity).quantize(Decimal("0.01"))
+        rows.append(
+            {
+                "id": str(movement.id),
+                "occurred_at": movement.occurred_at,
+                "movement_type": movement.movement_type,
+                "quantity": str(movement.quantity),
+                "running_balance": str(running),
+                "batch_id": str(movement.batch_id),
+                "batch_no": movement.batch.batch_no,
+                "location_id": str(movement.location_id),
+                "location_name": movement.location.name,
+                "source_type": movement.source_type,
+                "source_id": movement.source_id,
+                "actor_id": str(movement.actor_id),
+                "reason_code": movement.reason_code,
+            }
+        )
+    return rows
+
+
+def export_movements_csv(*, organisation, facility, actor, request=None, **filters):
+    import csv
+    import io
+
+    rows = product_ledger(
+        organisation=organisation, facility=facility, **filters
+    )
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "occurred_at",
+            "movement_type",
+            "quantity",
+            "running_balance",
+            "batch_no",
+            "location",
+            "source_type",
+            "source_id",
+            "actor_id",
+            "reason_code",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row["occurred_at"].isoformat(),
+                row["movement_type"],
+                row["quantity"],
+                row["running_balance"],
+                row["batch_no"],
+                row["location_name"],
+                row["source_type"],
+                row["source_id"],
+                row["actor_id"],
+                row["reason_code"],
+            ]
+        )
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="EXPORT",
+        entity_type="StockLedger",
+        entity_id=str(facility.id),
+        after={"row_count": len(rows)},
+        event_code="INVENTORY_LEDGER_EXPORTED",
+    )
+    return buffer.getvalue()

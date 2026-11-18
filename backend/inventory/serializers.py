@@ -182,3 +182,51 @@ class FefoSerializer(serializers.Serializer):
     product_id = serializers.UUIDField()
     quantity = serializers.DecimalField(max_digits=14, decimal_places=2)
     location_id = serializers.UUIDField(required=False, allow_null=True)
+
+
+class StockCountOpenSerializer(serializers.Serializer):
+    location_id = serializers.UUIDField()
+
+
+class StockCountLineCountSerializer(serializers.Serializer):
+    line_id = serializers.UUIDField()
+    counted_qty = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
+class StockCountSubmitSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(min_value=1)
+    lines = StockCountLineCountSerializer(many=True)
+
+
+class StockCountApproveSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(min_value=1)
+
+
+class StockAdjustmentCreateSerializer(serializers.Serializer):
+    batch_id = serializers.UUIDField()
+    location_id = serializers.UUIDField()
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=2)
+    reason_code = serializers.CharField(max_length=40)
+    note = serializers.CharField(required=False, allow_blank=True, default="")
+    reference = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class StockAdjustmentApproveSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(required=False, min_value=1)
+
+
+class QuarantineSerializer(serializers.Serializer):
+    batch_id = serializers.UUIDField()
+    location_id = serializers.UUIDField()
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=2)
+    reason = serializers.CharField(max_length=240)
+    source_type = serializers.CharField(required=False, allow_blank=True, default="MANUAL")
+    source_id = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class DisposalSerializer(serializers.Serializer):
+    batch_id = serializers.UUIDField()
+    location_id = serializers.UUIDField()
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=2)
+    reason = serializers.CharField(max_length=240)
+    source_event_id = serializers.CharField(required=False, allow_blank=True, default="")

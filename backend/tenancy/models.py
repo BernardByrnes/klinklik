@@ -124,6 +124,12 @@ class FacilityWorkflowPolicy(FacilityScopedModel):
         null=True,
         blank=True,
     )
+    stock_adjustment_approval_threshold = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     cashier_shift_stale_after_minutes = models.PositiveIntegerField(null=True, blank=True)
     cashier_variance_alert_threshold = models.DecimalField(
         max_digits=12,
@@ -176,6 +182,11 @@ class FacilityWorkflowPolicy(FacilityScopedModel):
                 condition=models.Q(cashier_variance_alert_threshold__isnull=True)
                 | models.Q(cashier_variance_alert_threshold__gte=0),
                 name="workflow_policy_variance_threshold_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(stock_adjustment_approval_threshold__isnull=True)
+                | models.Q(stock_adjustment_approval_threshold__gte=0),
+                name="workflow_policy_stock_threshold_nonnegative",
             ),
         ]
 

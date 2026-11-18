@@ -238,3 +238,215 @@ class InventoryThreshold(FacilityScopedModel):
                 name="threshold_reorder_nonnegative",
             ),
         ]
+
+
+class StockCount(FacilityScopedModel):
+    STATE_CHOICES = [
+        ("DRAFT", "Draft"),
+        ("SUBMITTED", "Submitted"),
+        ("PENDING_APPROVAL", "Pending approval"),
+        ("POSTED", "Posted"),
+    ]
+
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="counts"
+    )
+    state = models.CharField(max_length=30, choices=STATE_CHOICES, default="DRAFT")
+    snapshot_movement_watermark = models.UUIDField()
+    opened_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="opened_stock_counts"
+    )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="submitted_stock_counts",
+    )
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="approved_stock_counts",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_reason = models.CharField(max_length=240, blank=True)
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "facility", "location"],
+                condition=models.Q(state__in=["DRAFT", "SUBMITTED", "PENDING_APPROVAL"]),
+                name="uniq_open_stock_count_location",
+            )
+        ]
+
+
+class StockCountLine(FacilityScopedModel):
+    count = models.ForeignKey(StockCount, on_delete=models.PROTECT, related_name="lines")
+    product = models.ForeignKey(
+        "pharmacy.MedicationProduct", on_delete=models.PROTECT, related_name="count_lines"
+    )
+    batch = models.ForeignKey(StockBatch, on_delete=models.PROTECT, related_name="count_lines")
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="count_lines"
+    )
+    expected_qty = models.DecimalField(max_digits=14, decimal_places=2)
+    counted_qty = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    variance_qty = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
+    source_line_identity = models.CharField(max_length=120)
+    counted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="counted_stock_lines",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["count", "batch", "location"], name="uniq_stock_count_batch_location"
+            )
+        ]
+
+
+class StockAdjustment(FacilityScopedModel):
+    STATE_CHOICES = [
+        ("PENDING_APPROVAL", "Pending approval"),
+        ("POSTED", "Posted"),
+        ("REJECTED", "Rejected"),
+    ]
+    REASON_CODES = [
+        "EXPIRY_DISPOSAL",
+        "DAMAGE",
+        "BREAKAGE",
+        "THEFT_LOSS",
+        "COUNT_CORRECTION",
+        "RETURN_TO_SUPPLIER",
+        "DONATION_OUT",
+        "OTHER",
+    ]
+
+    count = models.ForeignKey(
+        StockCount,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="adjustments",
+    )
+    product = models.ForeignKey(
+        "pharmacy.MedicationProduct", on_delete=models.PROTECT, related_name="adjustments"
+    )
+    batch = models.ForeignKey(
+        StockBatch, on_delete=models.PROTECT, related_name="adjustments"
+    )
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="adjustments"
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=2)
+    reason_code = models.CharField(max_length=40, choices=[(code, code) for code in REASON_CODES])
+    note = models.CharField(max_length=240, blank=True)
+    reference = models.CharField(max_length=120, blank=True)
+    state = models.CharField(
+        max_length=30, choices=STATE_CHOICES, default="PENDING_APPROVAL"
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="requested_stock_adjustments"
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="approved_stock_adjustments",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    source_event_id = models.CharField(max_length=120)
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "source_event_id"],
+                name="uniq_stock_adjustment_source",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(quantity=0), name="stock_adjustment_quantity_nonzero"
+            ),
+        ]
+
+
+class QuarantineRecord(FacilityScopedModel):
+    product = models.ForeignKey(
+        "pharmacy.MedicationProduct", on_delete=models.PROTECT, related_name="quarantine_records"
+    )
+    batch = models.ForeignKey(
+        StockBatch, on_delete=models.PROTECT, related_name="quarantine_records"
+    )
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="quarantine_records"
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=2)
+    reason = models.CharField(max_length=240)
+    source_type = models.CharField(max_length=40)
+    source_id = models.CharField(max_length=120)
+    source_line_identity = models.CharField(max_length=120)
+    quarantined_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="quarantined_stock"
+    )
+    quarantined_at = models.DateTimeField(default=now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "source_type", "source_id", "source_line_identity"],
+                name="uniq_quarantine_source",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0), name="quarantine_quantity_positive"
+            ),
+        ]
+
+
+class DisposalRecord(FacilityScopedModel):
+    product = models.ForeignKey(
+        "pharmacy.MedicationProduct", on_delete=models.PROTECT, related_name="disposal_records"
+    )
+    batch = models.ForeignKey(
+        StockBatch, on_delete=models.PROTECT, related_name="disposal_records"
+    )
+    location = models.ForeignKey(
+        StockLocation, on_delete=models.PROTECT, related_name="disposal_records"
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=2)
+    reason = models.CharField(max_length=240)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="approved_disposals",
+    )
+    disposed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="disposed_stock"
+    )
+    disposed_at = models.DateTimeField(default=now)
+    source_event_id = models.CharField(max_length=120)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "source_event_id"], name="uniq_disposal_source"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0), name="disposal_quantity_positive"
+            ),
+        ]

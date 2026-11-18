@@ -1,3 +1,4 @@
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
@@ -9,6 +10,7 @@ from core.tenant_api import TenantAPIView
 from inventory.models import (
     BatchLocationBalance,
     InventoryThreshold,
+    StockAdjustment,
     StockBatch,
     StockLocation,
     StockReceipt,
@@ -17,6 +19,7 @@ from inventory.models import (
 from inventory.serializers import (
     AdjustmentSerializer,
     CatalogueImportSerializer,
+    DisposalSerializer,
     FefoSerializer,
     MovementSerializer,
     ProductCreateSerializer,
@@ -24,6 +27,12 @@ from inventory.serializers import (
     ProductPriceSerializer,
     ProductPriceSetSerializer,
     ProductSerializer,
+    QuarantineSerializer,
+    StockAdjustmentApproveSerializer,
+    StockAdjustmentCreateSerializer,
+    StockCountApproveSerializer,
+    StockCountOpenSerializer,
+    StockCountSubmitSerializer,
     StockLocationSerializer,
     StockLocationWriteSerializer,
     StockReceiptSerializer,
@@ -32,6 +41,16 @@ from inventory.serializers import (
     ThresholdSerializer,
     ThresholdWriteSerializer,
     TransferSerializer,
+)
+from inventory.counts import (
+    approve_adjustment,
+    approve_count,
+    count_sheet,
+    create_adjustment,
+    dispose_stock,
+    open_count,
+    quarantine_stock,
+    submit_count,
 )
 from inventory.services import (
     adjust_stock,
@@ -43,6 +62,8 @@ from inventory.services import (
     reconcile_ledger,
     stock_batches,
     stock_summary,
+    product_ledger,
+    export_movements_csv,
     transfer_stock,
     upsert_supplier,
     upsert_threshold,
@@ -326,14 +347,33 @@ class StockTransferView(TenantAPIView):
 
 class StockAdjustmentView(TenantAPIView):
     capability = "inventory.adjust"
-    serializer_class = AdjustmentSerializer
-    idempotency_operation = "inventory.stock_adjustment"
+    serializer_class = StockAdjustmentCreateSerializer
+    idempotency_operation = "CMD-067"
     requires_idempotency = True
 
+    def get(self, request):
+        adjustments = StockAdjustment.objects.filter(
+            organisation=request.organisation, facility=request.facility
+        ).order_by("-created_at")
+        return Response(
+            [
+                {
+                    "id": str(item.id),
+                    "batch_id": str(item.batch_id),
+                    "location_id": str(item.location_id),
+                    "quantity": str(item.quantity),
+                    "reason_code": item.reason_code,
+                    "state": item.state,
+                    "version": item.version,
+                }
+                for item in adjustments[:100]
+            ]
+        )
+
     def post(self, request):
-        serializer = AdjustmentSerializer(data=request.data)
+        serializer = StockAdjustmentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        movement = adjust_stock(
+        adjustment = create_adjustment(
             organisation=request.organisation,
             facility=request.facility,
             actor=request.user,
@@ -341,7 +381,172 @@ class StockAdjustmentView(TenantAPIView):
             **serializer.validated_data,
         )
         return Response(
-            {"movement_id": str(movement.id), "quantity": str(movement.quantity)},
+            {
+                "id": str(adjustment.id),
+                "state": adjustment.state,
+                "quantity": str(adjustment.quantity),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StockAdjustmentApproveView(TenantAPIView):
+    capability = "inventory.approve"
+    serializer_class = StockAdjustmentApproveSerializer
+    idempotency_operation = "CMD-131"
+    requires_idempotency = True
+
+    def post(self, request, pk):
+        adjustment = approve_adjustment(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            adjustment_id=pk,
+            approver_is_facility_admin=request.user.has_capability(
+                "inventory.approve", request.facility
+            ),
+            request=request,
+        )
+        return Response({"id": str(adjustment.id), "state": adjustment.state})
+
+
+class StockCountOpenView(TenantAPIView):
+    capability = "inventory.adjust"
+    serializer_class = StockCountOpenSerializer
+    idempotency_operation = "CMD-065"
+    requires_idempotency = True
+
+    def post(self, request):
+        serializer = StockCountOpenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        count = open_count(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            request=request,
+            location_id=serializer.validated_data["location_id"],
+        )
+        return Response(
+            {"id": str(count.id), "state": count.state, "version": count.version},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StockCountDetailView(TenantAPIView):
+    capability = "inventory.read"
+
+    def get(self, request, pk):
+        from inventory.models import StockCount
+
+        count = StockCount.objects.filter(
+            id=pk, organisation=request.organisation, facility=request.facility
+        ).first()
+        if count is None:
+            raise CanonicalError("NOT_FOUND", "Stock count was not found.", 404)
+        reveal = request.query_params.get("reveal", "").lower() in {"1", "true", "yes"}
+        if reveal and not request.user.has_capability("inventory.approve", request.facility):
+            reveal = False
+        return Response(
+            count_sheet(
+                organisation=request.organisation,
+                facility=request.facility,
+                count=count,
+                reveal_expected=reveal or None,
+            )
+        )
+
+
+class StockCountSubmitView(TenantAPIView):
+    capability = "inventory.adjust"
+    serializer_class = StockCountSubmitSerializer
+    idempotency_operation = "CMD-065"
+    requires_idempotency = True
+
+    def post(self, request, pk):
+        serializer = StockCountSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        count = submit_count(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            count_id=pk,
+            expected_version=serializer.validated_data["expected_version"],
+            line_counts=serializer.validated_data["lines"],
+            request=request,
+        )
+        return Response({"id": str(count.id), "state": count.state, "version": count.version})
+
+
+class StockCountApproveView(TenantAPIView):
+    capability = "inventory.approve"
+    serializer_class = StockCountApproveSerializer
+    idempotency_operation = "CMD-066"
+    requires_idempotency = True
+
+    def post(self, request, pk):
+        serializer = StockCountApproveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        count, adjustments = approve_count(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            count_id=pk,
+            expected_version=serializer.validated_data["expected_version"],
+            approver_is_facility_admin=request.user.has_capability(
+                "inventory.approve", request.facility
+            ),
+            request=request,
+        )
+        return Response(
+            {
+                "id": str(count.id),
+                "state": count.state,
+                "adjustment_count": len(adjustments),
+                "version": count.version,
+            }
+        )
+
+
+class QuarantineView(TenantAPIView):
+    capability = "inventory.adjust"
+    serializer_class = QuarantineSerializer
+    idempotency_operation = "CMD-068"
+    requires_idempotency = True
+
+    def post(self, request):
+        serializer = QuarantineSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        record = quarantine_stock(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            request=request,
+            **serializer.validated_data,
+        )
+        return Response(
+            {"id": str(record.id), "quantity": str(record.quantity)},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class DisposalView(TenantAPIView):
+    capability = "inventory.adjust"
+    serializer_class = DisposalSerializer
+    idempotency_operation = "CMD-069"
+    requires_idempotency = True
+
+    def post(self, request):
+        serializer = DisposalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        record = dispose_stock(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            request=request,
+            **serializer.validated_data,
+        )
+        return Response(
+            {"id": str(record.id), "quantity": str(record.quantity)},
             status=status.HTTP_201_CREATED,
         )
 
@@ -392,3 +597,48 @@ class LedgerReconcileView(TenantAPIView):
                 "discrepancies": discrepancies[:20],
             }
         )
+
+
+def _ledger_filters(request):
+    return {
+        "product_id": request.query_params.get("product_id"),
+        "date_from": request.query_params.get("date_from") or None,
+        "date_to": request.query_params.get("date_to") or None,
+        "batch_id": request.query_params.get("batch_id") or None,
+        "movement_type": request.query_params.get("movement_type") or None,
+    }
+
+
+class InventoryLedgerView(TenantAPIView):
+    capability = "inventory.read"
+
+    def get(self, request):
+        filters = _ledger_filters(request)
+        if not filters["product_id"]:
+            raise CanonicalError("INVALID_INPUT", "A product is required.", 400)
+        return Response(
+            product_ledger(
+                organisation=request.organisation,
+                facility=request.facility,
+                **filters,
+            )
+        )
+
+
+class InventoryLedgerExportView(TenantAPIView):
+    capability = "inventory.read"
+
+    def get(self, request):
+        filters = _ledger_filters(request)
+        if not filters["product_id"]:
+            raise CanonicalError("INVALID_INPUT", "A product is required.", 400)
+        content = export_movements_csv(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            request=request,
+            **filters,
+        )
+        response = HttpResponse(content, content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="stock-ledger.csv"'
+        return response

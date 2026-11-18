@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -10,7 +12,7 @@ from core.services import tenant_atomic
 from patients.models import Patient
 from scheduling.models import QueueEntry
 from scheduling.services import check_in_patient
-from tenancy.models import Department, Facility, FacilityModule, Module, Organisation
+from tenancy.models import Department, Facility, FacilityModule, FacilityWorkflowPolicy, Module, Organisation
 from tenancy.services import DEFAULT_MODULES
 
 
@@ -125,6 +127,14 @@ class Command(BaseCommand):
                 facility=facility,
                 role=roles["OWNER_ADMIN"],
                 defaults={"department": departments["OPD"], "status": "ACTIVE", "valid_until": None},
+            )
+            FacilityWorkflowPolicy.objects.update_or_create(
+                organisation=organisation,
+                facility=facility,
+                defaults={
+                    "stock_adjustment_approval_threshold": Decimal("100000.00"),
+                    "updated_by": users["demo"],
+                },
             )
             UserCredential.objects.update_or_create(
                 organisation=organisation,
