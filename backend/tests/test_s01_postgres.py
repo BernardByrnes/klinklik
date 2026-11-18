@@ -818,10 +818,19 @@ def test_pg_price_contracts_fail_closed_and_keep_referenced_history(tenant):
             payer_type="CASH",
             bound_by=tenant.user,
         )
+        # S-07 permits only the supersession transition; every financial or
+        # identity field remains append-only, and reactivation is forbidden.
+        VisitPayerBinding.objects.filter(id=binding.id).update(active=False)
         with pytest.raises(DatabaseError) as binding_update:
             with transaction.atomic():
-                VisitPayerBinding.objects.filter(id=binding.id).update(active=False)
+                VisitPayerBinding.objects.filter(id=binding.id).update(
+                    payer_type="SELF_PAY_MOMO"
+                )
         assert _sqlstate(binding_update) == "55006"
+        with pytest.raises(DatabaseError) as binding_reactivate:
+            with transaction.atomic():
+                VisitPayerBinding.objects.filter(id=binding.id).update(active=True)
+        assert _sqlstate(binding_reactivate) == "55006"
 
 
 def test_pg_concurrent_overlapping_service_prices_have_one_database_winner(tenant):

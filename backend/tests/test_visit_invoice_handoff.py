@@ -23,6 +23,7 @@ from core.errors import CanonicalError
 from core.services import tenant_atomic
 from patients.models import Patient
 from scheduling.models import QueueEntry, Visit
+from scheduling.queue import create_or_reuse_destination
 from tenancy.models import Department, Facility, Organisation
 from tests.clinical_test_helpers import (
     establish_synthetic_final_diagnosis,
@@ -90,12 +91,45 @@ def check_in(client, patient_id, tenant, key, **overrides):
     return response.data
 
 
-def signed_encounter_for(client, queue_id):
-    """Start and sign the consultation that belongs to a canonical check-in."""
+def signed_encounter_for(client, queue_id, tenant):
+    """Start and sign the consultation that belongs to a canonical check-in.
+
+    S-04 restricts Encounter opening to a CONSULTATION queue entry, so the
+    billing handoff proof creates the consultation destination before opening
+    the same Visit's Encounter.
+    """
+
+    with tenant_atomic(tenant.organisation.id):
+        source = QueueEntry.objects.get(id=queue_id)
+        consultation_department, _created = Department.objects.get_or_create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            code="CONS",
+            defaults={"name": "Consultation"},
+        )
+        UserFacilityRole.objects.get_or_create(
+            organisation=tenant.organisation,
+            user=tenant.user,
+            role=Role.objects.get(
+                organisation=tenant.organisation, template_code="OWNER_ADMIN"
+            ),
+            facility=tenant.facility,
+            department=consultation_department,
+        )
+        consultation, _created = create_or_reuse_destination(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            visit=source.visit,
+            department=consultation_department,
+            queue_type="CONSULTATION",
+            source_stage=source.current_stage or "TRIAGE",
+        )
+        consultation_id = consultation.id
 
     created = client.post(
         "/api/v1/clinic/encounters/",
-        {"queue_entry_id": str(queue_id)},
+        {"queue_entry_id": str(consultation_id)},
         format="json",
     )
     assert created.status_code == 201, created.data
@@ -215,7 +249,7 @@ def test_signed_consultation_refuses_a_second_invoice_for_the_visit(tenant, auth
         assert original.visit_id == Visit.objects.get(id=visit_id).id
         assert original.items.filter(source_type="CONSULTATION", state="ACTIVE").count() == 1
 
-    encounter_id = signed_encounter_for(authed_client, checked_in["queue_id"])
+    encounter_id = signed_encounter_for(authed_client, checked_in["queue_id"], tenant)
 
     # The service refuses before pricing, invoice creation, lines, or audit.
     with tenant_atomic(tenant.organisation.id):

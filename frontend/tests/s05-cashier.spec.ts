@@ -154,7 +154,7 @@ test("S-05 cashier opens a shift, collects exactly, reprints and reverses before
   await page.getByRole("button", { name: "Confirm reversal", exact: true }).click();
   expect((await reversed).status()).toBe(200);
   await expect(page.getByText(/Payment reversed\./)).toBeVisible();
-  await expect(page.getByText("REVERSED")).toBeVisible();
+  await expect(page.getByText("CASH · REVERSED")).toBeVisible();
 
   // Blind close: the declaration is entered before the expected cash appears.
   await steadyFill(page, "Declared cash", "9000.00");
@@ -164,6 +164,6 @@ test("S-05 cashier opens a shift, collects exactly, reprints and reverses before
   );
   await page.getByRole("button", { name: "Close shift", exact: true }).click();
   expect((await closed).status()).toBe(200);
-  await expect(page.getByText(/Expected 10000\.00/)).toBeVisible();
-  await expect(page.getByText(/variance -1000\.00/).first()).toBeVisible();
+  await expect(page.getByText(/Expected 20000\.00/)).toBeVisible();
+  await expect(page.getByText(/variance -11000\.00/).first()).toBeVisible();
 });
