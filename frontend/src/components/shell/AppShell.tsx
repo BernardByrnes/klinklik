@@ -44,6 +44,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/consultations", label: "Consultations", icon: IconConsultation, capability: "clinical.note.create" },
   { href: "/billing", label: "Billing & Payments", icon: IconBilling, capability: "billing.invoice.create" },
   { href: "/inventory", label: "Inventory", icon: IconBilling, capability: "inventory.read" },
+  { href: "/lab", label: "Laboratory", icon: IconBilling, capability: "lab.result.entry" },
 ];
 
 function useQueueBadge(enabled: boolean) {

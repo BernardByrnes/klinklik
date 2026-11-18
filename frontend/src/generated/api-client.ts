@@ -34,6 +34,13 @@ export type InvoiceLineVoid = { reason: string; };
 export type InvoiceMutation = { id: string; invoice_no: string; status: string; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; version: number; };
 export type InvoiceReprice = { expected_version: number; price_list_id?: string; payer_type?: "CASH" | "SELF_PAY_MOMO"; };
 export type InvoiceRepriceResult = { id: string; invoice_no: string; status: string; before_total: string; after_total: string; line_set_version: number; version: number; payer_binding_id: string; };
+export type LabAmend = { values: Array<{  }>; comments?: string; reason: string; };
+export type LabCancel = { reason: string; };
+export type LabOrderCreate = { encounter_id: string; test_ids: Array<string>; priority?: "ROUTINE" | "URGENT"; clinical_notes?: string; source_event_id?: string; };
+export type LabReject = { reason: string; };
+export type LabResultSave = { values: Array<{  }>; comments?: string; complete?: boolean; };
+export type LabTest = { id: string; code: string; name: string; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; service?: string | null; turnaround_minutes?: number; coded_options?: {  }; text_template?: string; active?: boolean; definition_version?: number; version?: number; analytes: Array<{ id: string; code: string; name: string; unit?: string; result_type?: string; sequence?: number; coded_options?: {  }; }>; };
+export type LabTestConfigure = { code: string; name: string; service_id?: string | null; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; turnaround_minutes?: number; coded_options?: Array<string>; analytes?: Array<{  }>; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Movement = { id: string; product: string; batch: string; batch_no: string; expiry_date: string; location: string; location_name: string; movement_type: "IN_GRN" | "OUT_DISPENSE" | "OUT_SALE" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT" | "WRITE_OFF" | "QUARANTINE" | "REVERSAL" | "OPENING"; quantity: string; source_type: string; source_id: string; reason_code?: string; occurred_at?: string; };
@@ -301,6 +308,21 @@ export type CreateThresholdWriteRequest = ThresholdWrite;
 export type CreateThresholdWriteResponse = Threshold;
 export type CreateTransferRequest = Transfer;
 export type CreateTransferResponse = Transfer;
+export type ListLabEncounterResultsResponse = Array<unknown>;
+export type CreateLabAmendRequest = LabAmend;
+export type CreateLabAmendResponse = LabAmend;
+export type CreateLabCancelRequest = LabCancel;
+export type CreateLabCancelResponse = LabCancel;
+export type CreateLabRejectRequest = LabReject;
+export type CreateLabRejectResponse = LabReject;
+export type CreateLabResultSaveRequest = LabResultSave;
+export type CreateLabResultSaveResponse = LabResultSave;
+export type CreateLabOrderCreateRequest = LabOrderCreate;
+export type CreateLabOrderCreateResponse = LabOrderCreate;
+export type ListLabTestConfiguresResponse = Array<LabTest>;
+export type CreateLabTestConfigureRequest = LabTestConfigure;
+export type CreateLabTestConfigureResponse = LabTest;
+export type ListLabWorklistsResponse = Array<unknown>;
 export type ListPatientCreatesResponse = Array<Patient>;
 export type CreatePatientCreateRequest = PatientCreate;
 export type CreatePatientCreateResponse = Patient;
@@ -337,7 +359,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "0c51fc78f883ac3a18156f87cb7cbf19cde2943e3df607c69ae24930799261ff";
+export const GENERATED_API_CONTRACT_SHA256 = "3848f0aa16fbbfa673378cc8e1ffe86fe3e5dc3c14db158885f739fe19644aac";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -879,6 +901,61 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createTransfer",
     "path": "/api/v1/inventory/transfers/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listLabEncounterResults",
+    "path": "/api/v1/lab/encounters/{encounter_id}/results/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabAmend",
+    "path": "/api/v1/lab/items/{id}/amend/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabCancel",
+    "path": "/api/v1/lab/items/{id}/cancel/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabItemCollect",
+    "path": "/api/v1/lab/items/{id}/collect/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabReject",
+    "path": "/api/v1/lab/items/{id}/reject/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabResultRelease",
+    "path": "/api/v1/lab/items/{id}/release/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabResultSave",
+    "path": "/api/v1/lab/items/{id}/results/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabOrderCreate",
+    "path": "/api/v1/lab/orders/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listLabTestConfigures",
+    "path": "/api/v1/lab/tests/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createLabTestConfigure",
+    "path": "/api/v1/lab/tests/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listLabWorklists",
+    "path": "/api/v1/lab/worklist/"
   },
   {
     "method": "GET",
