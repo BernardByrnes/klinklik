@@ -13,6 +13,9 @@ export type AllergyStatusWrite = { status: "NKA" | "UNKNOWN"; };
 export type ArrivalEnquiryResponse = { enquiry_id: string; };
 export type ArrivalEnquiryWrite = { reason_code: "NO_CLINICIAN" | "SERVICE_UNAVAILABLE" | "PRICE" | "REFERRED_OUT" | "OTHER"; source_event_id: string; safe_notes?: string; };
 export type CheckIn = { patient_id: string; department_id?: string; visit_type?: string; notes?: string; };
+export type CreditNote = { id: string; credit_no: string; invoice: string; amount: string; currency?: string; reason: string; status?: "ISSUED" | "VOIDED"; issued_at?: string; issued_by: string; voided_at?: string | null; voided_by?: string | null; version?: number; };
+export type CreditNoteIssue = { amount: string; reason: string; };
+export type CreditNoteResult = { id: string; credit_no: string; invoice_id: string; amount: string; status: string; credit_total: string; balance: string; refundable_credit: string; };
 export type DepartmentEnvelope = { departments: Array<{ id: string; name: string; code: string; is_active?: boolean; facility: string; }>; };
 export type DiagnosisStateResponse = { diagnoses: Array<{ id: string; encounter: string; diagnosis_type: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code: string; label: string; coded: boolean; certainty_note: string; is_primary: boolean; no_diagnosis_reason: string; status: "ACTIVE"; recorded_by: string; created_at: string; updated_at: string; }>; consultation_etag: string; };
 export type DiagnosisWrite = { diagnosis_type?: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code?: string; label?: string; certainty_note?: string; is_primary?: boolean; no_diagnosis_reason?: string; };
@@ -58,6 +61,7 @@ export type VisitCancelErrorResponse = { visit_id: string; state: string; };
 export type VisitCheckIn = { patient_id: string; department_id?: string | null; visit_type?: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; payer_type?: "CASH" | "SELF_PAY_MOMO"; reason_for_visit?: string; referral_source_type?: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; referral_source_name?: string; price_list_id?: string | null; arrival_enquiry_id?: string | null; arrival_enquiry_version?: number | null; notes?: string; };
 export type VisitCheckInResponse = { visit_id: string; queue_id: string | null; invoice_id: string | null; patient_id: string; arrival_enquiry_id: string | null; arrival_enquiry_state: "OPEN" | "CONVERTED" | null; next_action: "CHECK_IN_COMPLETE" | "LAB_REQUEST_CAPTURE"; };
 export type VisitContextResponse = { visit: { id: string; patient: string; patient_name: string; facility: string; local_service_date: string; visit_type: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; state: "OPEN" | "IN_PROGRESS" | "CLOSED" | "CANCELLED_ERROR"; closure_reason: string; reason_for_visit: string; opened_at: string; opened_by: string; in_progress_at: string | null; closed_at: string | null; closed_by: string | null; payer_binding_id: string | null; legacy_source_key: string | null; emergency_setup_pending: boolean; related_visit: string | null; slip_print_count: number; referral_source_type: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; referral_source_name: string; results_review: boolean; version: number; }; queue_history: Array<{ id: string; queue_label: string; department: string; department_name: string; queue_type: string; status: string; current_stage: string; queue_time: string; called_at: string | null; claimed_by: string | null; claimed_by_name: string | null; claimed_at: string | null; completed_at: string | null; hold_reason: string; version: number; }>; invoice: { id: string; invoice_no: string; status: string; currency: string; subtotal: string; total: string; amount_paid: string; balance: string; issued_at: string | null; voided_at: string | null; version: number; } | null; clinical_summary: Array<{ encounter_id: string; status: string; clinician: string; clinician_name: string; started_at: string; signed_at: string | null; closed_at: string | null; }>; clinical?: Array<{ id: string; encounter_no: string; patient: string; patient_name: string; visit?: string | null; queue_entry?: string | null; complaints: Array<{ text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; }>; triage_complaint: string | null; allergy_status: "NOT_RECORDED" | "NKA" | "UNKNOWN" | "RECORDED"; active_allergies: Array<{ id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }>; allergy_revision: number; allergy_state_etag: string; allergies_reviewed_at: string; allergies_reviewed_revision: number | null; allergies_review_is_current: boolean; facility: string; clinician: string; status?: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; disposition?: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note?: string; started_at: string; signed_at?: string | null; closed_at?: string | null; notes: Array<{ id: string; note_type?: string; content: { consultation?: string; presenting_complaint?: string; hpi?: string; past_medical_history?: string; past_surgical_history?: string; family_history?: string; social_history?: string; general_examination?: string; cardiovascular_examination?: string; respiratory_examination?: string; abdominal_examination?: string; neurological_examination?: string; genitourinary_examination?: string; musculoskeletal_examination?: string; treatment_plan?: string; [key: string]: unknown; }; status: "DRAFT" | "SIGNED" | "AMENDED"; author: string; signed_by: string | null; signed_at: string | null; current_version: number; }>; diagnoses: Array<{ id: string; encounter: string; diagnosis_type: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code: string; label: string; coded: boolean; certainty_note: string; is_primary: boolean; no_diagnosis_reason: string; status: "ACTIVE"; recorded_by: string; created_at: string; updated_at: string; }>; follow_up: { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null; consultation_etag: string; patient_projection: { id: string; patient_no: string; display_name: string; sex: string; date_of_birth: string | null; version: number; } | null; visit_history: Array<{ id: string; local_service_date: string; visit_type: string; state: string; opened_at: string; closed_at: string | null; version: number; }>; laboratory: Array<Record<string, unknown>>; prescriptions: Array<Record<string, unknown>>; dispenses: Array<Record<string, unknown>>; }> | null; patient: { id: string; patient_no: string; display_name: string; sex: string; date_of_birth: string | null; version: number; } | null; allergy: { patient_id: string; status: string; revision: number; active_allergies: Array<{ id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }>; etag: string; } | null; visit_history: Array<{ id: string; local_service_date: string; visit_type: string; state: string; opened_at: string; closed_at: string | null; version: number; }>; laboratory: Array<{  }>; prescriptions: Array<{  }>; dispenses: Array<{  }>; };
+export type ZReport = { shift_id: string; status: string; opened_at: string; closed_at: string | null; opening_float: string; tenders: Array<{  }>; payment_count: number; reversed_count: number; refund_count: number; refund_total: string; discount_total: string; declared_cash: string | null; expected_cash: string | null; variance: string | null; variance_reason: string; };
 export type ActiveAllergy = { id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; };
 export type AllergyStatus = "NOT_RECORDED" | "NKA" | "UNKNOWN" | "RECORDED";
 export type ClinicalNote = { id: string; note_type: string; content: { consultation?: string; presenting_complaint?: string; hpi?: string; past_medical_history?: string; past_surgical_history?: string; family_history?: string; social_history?: string; general_examination?: string; cardiovascular_examination?: string; respiratory_examination?: string; abdominal_examination?: string; neurological_examination?: string; genitourinary_examination?: string; musculoskeletal_examination?: string; treatment_plan?: string; [key: string]: unknown; }; status: "DRAFT" | "SIGNED" | "AMENDED"; author: string; signed_by: string | null; signed_at: string | null; current_version: number; };
@@ -70,7 +74,7 @@ export type Encounter = { id: string; encounter_no: string; patient: string; pat
 export type EncounterDisposition = "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER";
 export type Facility = { id: string; name: string; code: string; mode: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone: string; is_active: boolean; };
 export type FollowUpRecommendation = { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null;
-export type Invoice = { id: string; invoice_no: string; patient: string; patient_name: string; visit: string | null; encounter: string | null; status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID" | "VOIDED"; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; issued_at: string | null; items: Array<{ id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; }>; payments: Array<{ id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; }>; voided_at: string | null; voided_by: string | null; current_line_set_version: number; version: number; };
+export type Invoice = { id: string; invoice_no: string; patient: string; patient_name: string; visit: string | null; encounter: string | null; status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID" | "VOIDED"; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; credit_total: string; refunded_total: string; refundable_credit: string; issued_at: string | null; items: Array<{ id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; }>; payments: Array<{ id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; }>; voided_at: string | null; voided_by: string | null; current_line_set_version: number; version: number; };
 export type InvoiceItem = { id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; };
 export type Patient = { id: string; patient_no: string; display_name: string; first_name: string; middle_name: string; last_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth: string | null; phone: string; email: string; address: string; village: string; parish: string; sub_county: string; district: string; next_of_kin_name: string; next_of_kin_phone: string; estimated_age_years: number | null; estimated_age_months: number | null; dob_estimated: boolean; identity_status: "ACTIVE" | "PROVISIONAL" | "MERGED"; status: "ACTIVE" | "DECEASED" | "ARCHIVED"; last_seen_at: string | null; version: number; identifiers: Array<{ id: string; identifier_type: "NATIONAL_ID" | "PASSPORT" | "INSURANCE" | "OTHER"; value: string; verified: boolean; is_primary: boolean; }>; contacts: Array<{ id: string; relationship: string; name: string; phone: string; is_primary: boolean; }>; created_at: string; updated_at: string; };
 export type PatientDuplicateCandidate = { id: string; patient_no: string; display_name: string; match_score: number; last_visit_date: string | null; last_seen_at: string | null; };
@@ -84,11 +88,14 @@ export type CreateLoginRequest = Login;
 export type CreateLoginResponse = SessionResponse;
 export type ListMesResponse = MeResponse;
 export type CreateRefreshResponse = SessionResponse;
+export type RetrieveCreditNoteDetailResponse = CreditNote;
 export type ListInvoiceCreatesResponse = Array<Invoice>;
 export type CreateInvoiceCreateRequest = InvoiceCreate;
 export type CreateInvoiceCreateResponse = Invoice;
 export type RetrieveVisitInvoiceResponse = Invoice;
 export type RetrieveInvoiceDetailResponse = Invoice;
+export type CreateCreditNoteIssueRequest = CreditNoteIssue;
+export type CreateCreditNoteIssueResponse = CreditNoteResult;
 export type CreateInvoiceLineCreateRequest = InvoiceLineCreate;
 export type CreateInvoiceLineCreateResponse = InvoiceMutation;
 export type CreateInvoiceLineVoidRequest = InvoiceLineVoid;
@@ -111,6 +118,7 @@ export type CreateShiftOpenRequest = ShiftOpen;
 export type CreateShiftOpenResponse = Shift;
 export type CreateShiftCloseRequest = ShiftClose;
 export type CreateShiftCloseResponse = Shift;
+export type RetrieveShiftZReportResponse = Array<ZReport>;
 export type CreateCheckInRequest = CheckIn;
 export type CreateCheckInResponse = QueueEntry;
 export type CreateEncounterCreateRequest = EncounterCreate;
@@ -178,7 +186,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "38d7c06ef4baa49cf4ac9dad122ad88566cf7bd64273d9a025606dc4615941a2";
+export const GENERATED_API_CONTRACT_SHA256 = "91e53a615dfec9bd55ac6a3a34773c398271407709a079d7e294de44ff0559e4";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -203,6 +211,11 @@ export const GENERATED_API_OPERATIONS = [
   },
   {
     "method": "GET",
+    "operationId": "retrieveCreditNoteDetail",
+    "path": "/api/v1/billing/credit-notes/{id}/"
+  },
+  {
+    "method": "GET",
     "operationId": "listInvoiceCreates",
     "path": "/api/v1/billing/invoices/"
   },
@@ -220,6 +233,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "GET",
     "operationId": "retrieveInvoiceDetail",
     "path": "/api/v1/billing/invoices/{id}/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createCreditNoteIssue",
+    "path": "/api/v1/billing/invoices/{id}/credit-notes/"
   },
   {
     "method": "POST",
@@ -277,6 +295,21 @@ export const GENERATED_API_OPERATIONS = [
     "path": "/api/v1/billing/receipts/{id}/reprint/"
   },
   {
+    "method": "POST",
+    "operationId": "createRefundFenced",
+    "path": "/api/v1/billing/refunds/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createRefundApproveFenced",
+    "path": "/api/v1/billing/refunds/{id}/approve/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createRefundRejectFenced",
+    "path": "/api/v1/billing/refunds/{id}/reject/"
+  },
+  {
     "method": "GET",
     "operationId": "listServiceCatalogs",
     "path": "/api/v1/billing/services/"
@@ -295,6 +328,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createShiftClose",
     "path": "/api/v1/billing/shifts/{id}/close/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveShiftZReport",
+    "path": "/api/v1/billing/shifts/{id}/z-report/"
   },
   {
     "method": "POST",

@@ -67,6 +67,22 @@ type CashierShift = {
   version: number;
 };
 
+type ZReport = {
+  shift_id: string;
+  status: string;
+  tenders: Array<{ method: string; count: number; amount: string }>;
+  payment_count: number;
+  reversed_count: number;
+  refund_count: number;
+  refund_total: string;
+  discount_total: string;
+  opening_float: string;
+  declared_cash: string | null;
+  expected_cash: string | null;
+  variance: string | null;
+  variance_reason: string;
+};
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message.includes("permission")) {
     return "You don't have permission to perform this action.";
@@ -116,6 +132,9 @@ function BillingWorkspace() {
   const [closeResult, setCloseResult] = useState<CashierShift | null>(null);
   const [reversingPaymentId, setReversingPaymentId] = useState<string | null>(null);
   const [reversalReason, setReversalReason] = useState("");
+  const [creditAmount, setCreditAmount] = useState("");
+  const [creditReason, setCreditReason] = useState("");
+  const [zReport, setZReport] = useState<ZReport | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
 
   const [patientSearch, setPatientSearch] = useState("");
@@ -483,6 +502,40 @@ function BillingWorkspace() {
     },
   });
 
+  const issueCredit = useMutation({
+    mutationFn: (invoiceId: string) =>
+      apiRequest<{ credit_no: string }>(
+        `/api/v1/billing/invoices/${invoiceId}/credit-notes/`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": newIdempotencyKey("s06-credit") },
+          body: JSON.stringify({ amount: creditAmount, reason: creditReason.trim() }),
+        },
+      ),
+    onSuccess: (credit) => {
+      setNotice(`Credit note ${credit.credit_no} issued.`);
+      setCreditAmount("");
+      setCreditReason("");
+      setError("");
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const loadZReport = useMutation({
+    mutationFn: (shiftId: string) =>
+      apiRequest<ZReport>(`/api/v1/billing/shifts/${shiftId}/z-report/`),
+    onSuccess: (report) => {
+      setZReport(report);
+      setError("");
+    },
+    onError: (reason) => setError(errorMessage(reason)),
+  });
+
   if (!can("billing.invoice.create")) {
     return <UnauthorisedState capability="billing.invoice.create" />;
   }
@@ -552,6 +605,13 @@ function BillingWorkspace() {
                 <p className="text-[11.5px] font-medium text-muted">
                   Expected cash and variance are shown only after your blind count is recorded.
                 </p>
+                <Button
+                  variant="link"
+                  disabled={loadZReport.isPending}
+                  onClick={() => loadZReport.mutate(activeShift.id)}
+                >
+                  {loadZReport.isPending ? "Loading Z-report…" : "Load Z-report"}
+                </Button>
               </>
             ) : (
               <>
@@ -574,11 +634,81 @@ function BillingWorkspace() {
               </>
             )}
             {closeResult ? (
-              <p className="rounded-[12px] bg-accent-teal-soft px-3.5 py-2.5 text-[12px] font-medium text-ink" role="status">
-                Closed shift {closeResult.id.slice(0, 8)}: expected {closeResult.expected_cash},
-                declared {closeResult.declared_cash}, variance {closeResult.variance}.
-              </p>
+              <div className="space-y-2">
+                <p className="rounded-[12px] bg-accent-teal-soft px-3.5 py-2.5 text-[12px] font-medium text-ink" role="status">
+                  Closed shift {closeResult.id.slice(0, 8)}: expected {closeResult.expected_cash},
+                  declared {closeResult.declared_cash}, variance {closeResult.variance}.
+                </p>
+                <Button
+                  variant="link"
+                  disabled={loadZReport.isPending}
+                  onClick={() => loadZReport.mutate(closeResult.id)}
+                >
+                  {loadZReport.isPending ? "Loading Z-report…" : "Load Z-report"}
+                </Button>
+              </div>
             ) : null}
+          </div>
+        </Card>
+      ) : null}
+
+      {zReport ? (
+        <Card data-z-report className="print:border-0 print:shadow-none">
+          <div className="px-5 py-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[15px] font-bold text-ink">Shift Z-report</h2>
+              <Button variant="secondary" onClick={() => window.print()}>
+                <IconPrinter className="h-4 w-4" />
+                Print Z-report
+              </Button>
+            </div>
+            <div className="mt-4 rounded-[14px] border border-line bg-white p-4 text-[12.5px]">
+              <p className="font-bold text-ink">{session?.organisation.name}</p>
+              <p className="text-[11.5px] font-medium text-muted">{currentFacility?.name ?? ""}</p>
+              <hr className="my-3 border-line-soft" />
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                <dt className="font-medium text-secondary">Shift</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.shift_id.slice(0, 8)} · {zReport.status}</dd>
+                <dt className="font-medium text-secondary">Opening float</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.opening_float}</dd>
+                <dt className="font-medium text-secondary">Payments</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.payment_count}</dd>
+                <dt className="font-medium text-secondary">Reversals</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.reversed_count}</dd>
+                <dt className="font-medium text-secondary">Refunds</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.refund_count} · {zReport.refund_total}</dd>
+                <dt className="font-medium text-secondary">Discounts</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.discount_total}</dd>
+                <dt className="font-medium text-secondary">Expected cash</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.expected_cash ?? "—"}</dd>
+                <dt className="font-medium text-secondary">Declared cash</dt>
+                <dd className="text-right font-semibold text-ink">{zReport.declared_cash ?? "—"}</dd>
+                <dt className="font-medium text-secondary">Variance</dt>
+                <dd className="text-right font-bold text-ink">{zReport.variance ?? "—"}</dd>
+              </dl>
+              <hr className="my-3 border-line-soft" />
+              <p className="text-[11px] font-bold uppercase tracking-wide text-muted">Tenders</p>
+              {zReport.tenders.length ? (
+                <ul className="mt-1 divide-y divide-line-soft">
+                  {zReport.tenders.map((tender) => (
+                    <li key={tender.method} className="flex justify-between py-1">
+                      <span>{tender.method.replaceAll("_", " ")} × {tender.count}</span>
+                      <span className="font-semibold">{tender.amount}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[12px] font-medium text-secondary">No committed tenders.</p>
+              )}
+              {zReport.variance_reason ? (
+                <p className="mt-2 text-[11.5px] font-medium text-secondary">
+                  Variance reason: {zReport.variance_reason}
+                </p>
+              ) : null}
+              <p className="mt-3 text-[10.5px] font-medium text-muted">
+                Internal cashier summary. Not a fiscal receipt.
+              </p>
+            </div>
           </div>
         </Card>
       ) : null}
@@ -698,6 +828,66 @@ function BillingWorkspace() {
                           </li>
                         ))}
                       </ul>
+                    </div>
+                  ) : null}
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-[14px] bg-surface-muted px-3.5 py-3 text-[12px]">
+                    <dt className="font-medium text-secondary">Gross total</dt>
+                    <dd className="text-right font-semibold text-ink">
+                      {activeInvoice.currency} {activeInvoice.total}
+                    </dd>
+                    <dt className="font-medium text-secondary">Applied payments</dt>
+                    <dd className="text-right font-semibold text-ink">{activeInvoice.amount_paid}</dd>
+                    <dt className="font-medium text-secondary">Credit notes</dt>
+                    <dd className="text-right font-semibold text-ink">{activeInvoice.credit_total}</dd>
+                    <dt className="font-medium text-secondary">Refundable credit</dt>
+                    <dd className="text-right font-semibold text-ink">{activeInvoice.refundable_credit}</dd>
+                    <dt className="font-medium text-secondary">Balance due</dt>
+                    <dd className="text-right font-bold text-ink">{activeInvoice.balance}</dd>
+                  </dl>
+                  {can("billing.credit_note.issue") &&
+                  activeInvoice.status !== "VOID" &&
+                  activeInvoice.status !== "VOIDED" ? (
+                    <div className="grid gap-3 rounded-[14px] border border-line-soft p-3.5 sm:grid-cols-2">
+                      <p className="text-[12px] font-bold uppercase tracking-wide text-muted sm:col-span-2">
+                        Issue credit note
+                      </p>
+                      <Field label={`Credit amount (${activeInvoice.currency})`} htmlFor="credit-amount">
+                        <TextInput
+                          id="credit-amount"
+                          inputMode="decimal"
+                          value={creditAmount}
+                          onChange={(event) => setCreditAmount(event.target.value)}
+                        />
+                      </Field>
+                      <Field label="Credit reason" htmlFor="credit-reason">
+                        <TextInput
+                          id="credit-reason"
+                          value={creditReason}
+                          onChange={(event) => setCreditReason(event.target.value)}
+                        />
+                      </Field>
+                      <div className="sm:col-span-2 flex flex-wrap items-center gap-3">
+                        <Button
+                          variant="secondary"
+                          disabled={
+                            issueCredit.isPending ||
+                            !creditAmount.trim() ||
+                            !creditReason.trim()
+                          }
+                          onClick={() => issueCredit.mutate(activeInvoice.id)}
+                        >
+                          {issueCredit.isPending ? "Issuing…" : "Issue credit note"}
+                        </Button>
+                        {activeInvoice.refundable_credit !== "0.00" ? (
+                          <Button
+                            variant="link"
+                            disabled
+                            title="Refund issuance requires privileged MFA and is disabled."
+                          >
+                            Request refund — MFA required
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
                 </div>
