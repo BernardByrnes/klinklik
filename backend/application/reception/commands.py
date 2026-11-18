@@ -821,7 +821,7 @@ def visit_cancel_error(
         invoice.amount_paid > 0
         or invoice.status in {"PAID", "PARTIALLY_PAID"}
         or PaymentAllocation.objects.filter(invoice=invoice).exists()
-        or Payment.objects.filter(invoice=invoice, status="POSTED").exists()
+        or Payment.objects.filter(invoice=invoice, status__in=Payment.EFFECTIVE_STATUSES).exists()
     ):
         raise CanonicalError(
             "PAYMENT_EXISTS",
