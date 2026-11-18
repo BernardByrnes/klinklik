@@ -1,0 +1,149 @@
+import { expect, test, type Page } from "@playwright/test";
+
+const DEMO_PASSWORD = process.env.CLINICOPUS_E2E_PASSWORD ?? "ClinicopusDemo!2026";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8100";
+
+async function steadyFill(page: Page, label: string, value: string) {
+  const locator = page.getByLabel(label, { exact: true });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await locator.fill(value);
+    if ((await locator.inputValue()) === value) {
+      await page.waitForTimeout(150);
+      if ((await locator.inputValue()) === value) return;
+    }
+  }
+  throw new Error(`Input "${label}" did not hold its value`);
+}
+
+async function login(page: Page) {
+  await page.goto("/");
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/login$/);
+  const organisationId = process.env.CLINICOPUS_E2E_ORGANISATION_ID;
+  if (organisationId) await steadyFill(page, "Organisation ID", organisationId);
+  await steadyFill(page, "Username", "demo");
+  await steadyFill(page, "Password", DEMO_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/overview$/);
+}
+
+async function apiLogin(page: Page) {
+  const response = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "demo", password: DEMO_PASSWORD },
+  });
+  expect(response.ok()).toBeTruthy();
+  const body = (await response.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  return { token: body.access_token, facilityId: body.facilities[0].id };
+}
+
+function apiHeaders(session: { token: string; facilityId: string }) {
+  return {
+    Authorization: `Bearer ${session.token}`,
+    "X-Facility-Id": session.facilityId,
+    "Content-Type": "application/json",
+  };
+}
+
+test("S-05 cashier opens a shift, collects exactly, reprints and reverses before a blind close", async ({
+  page,
+}) => {
+  await login(page);
+  const session = await apiLogin(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+
+  const patient = await page.request.post(`${API}/api/v1/patients/`, {
+    headers: apiHeaders(session),
+    data: {
+      first_name: "S05",
+      last_name: `Cashier${suffix}`,
+      sex: "FEMALE",
+      phone: `078${suffix.slice(-6).padStart(6, "0")}`,
+    },
+  });
+  expect(patient.ok()).toBeTruthy();
+  const patientId = ((await patient.json()) as { id: string }).id;
+  const checkIn = await page.request.post(`${API}/api/v1/reception/visits/check-in/`, {
+    headers: { ...apiHeaders(session), "Idempotency-Key": `s05-checkin-${suffix}` },
+    data: { patient_id: patientId, visit_type: "OUTPATIENT_NEW", payer_type: "CASH" },
+  });
+  expect(checkIn.ok(), await checkIn.text()).toBeTruthy();
+  const checkedIn = (await checkIn.json()) as {
+    visit_id: string;
+    invoice_id: string | null;
+  };
+  expect(checkedIn.invoice_id).toBeTruthy();
+
+  await page.goto(`/billing?visit=${checkedIn.visit_id}`);
+  await expect(page.getByRole("heading", { name: "Billing & Payments" })).toBeVisible();
+  await expect(page.getByText("Cashier shift", { exact: true })).toBeVisible();
+  const shiftOpened = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/billing/shifts/open/") &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Open shift", exact: true }).click();
+  expect((await shiftOpened).status()).toBe(201);
+  await expect(page.getByText(/Shift open since/)).toBeVisible();
+
+  // First payment: shift-bound canonical command.
+  await steadyFill(page, "Amount (UGX)", "10000.00");
+  const firstPayment = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/billing/invoices/${checkedIn.invoice_id}/payments/`) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Post payment", exact: true }).click();
+  expect((await firstPayment).status()).toBe(201);
+  await expect(page.getByText(/Payment recorded\. Receipt RCT-/)).toBeVisible();
+  await expect(page.locator("[data-print-sheet]")).toContainText("10000.00");
+
+  // Second payment: the receipt must be read by its committed identity.
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page.getByText("This invoice is paid in full.")).toHaveCount(0);
+  await steadyFill(page, "Amount (UGX)", "20000.00");
+  const receiptByIidentity = page.waitForResponse(
+    (response) =>
+      /\/api\/v1\/billing\/receipts\/[0-9a-f-]+\/$/.test(response.url()) &&
+      response.request().method() === "GET"
+  );
+  await page.getByRole("button", { name: "Post payment", exact: true }).click();
+  expect((await receiptByIidentity).status()).toBe(200);
+  await expect(page.locator("[data-print-sheet]")).toContainText("20000.00");
+  await expect(page.locator("[data-print-sheet]")).toContainText("0.00");
+
+  // CMD-081 reprint is an audited, idempotent intent over the same receipt.
+  const reprinted = page.waitForResponse(
+    (response) =>
+      /\/api\/v1\/billing\/receipts\/[0-9a-f-]+\/reprint\/$/.test(response.url()) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Print receipt", exact: true }).click();
+  expect((await reprinted).status()).toBe(200);
+
+  // Whole-payment reversal restores the balance without deleting evidence.
+  await page.getByRole("button", { name: "Reverse whole payment", exact: true }).first().click();
+  await steadyFill(page, "Reversal reason", "Synthetic wrong tender");
+  const reversed = page.waitForResponse(
+    (response) =>
+      /\/api\/v1\/billing\/payments\/[0-9a-f-]+\/reverse\/$/.test(response.url()) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Confirm reversal", exact: true }).click();
+  expect((await reversed).status()).toBe(200);
+  await expect(page.getByText(/Payment reversed\./)).toBeVisible();
+  await expect(page.getByText("REVERSED")).toBeVisible();
+
+  // Blind close: the declaration is entered before the expected cash appears.
+  await steadyFill(page, "Declared cash", "9000.00");
+  const closed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/close/") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Close shift", exact: true }).click();
+  expect((await closed).status()).toBe(200);
+  await expect(page.getByText(/Expected 10000\.00/)).toBeVisible();
+  await expect(page.getByText(/variance -1000\.00/).first()).toBeVisible();
+});

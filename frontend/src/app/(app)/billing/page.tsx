@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiRequestError, apiRequest } from "../../../lib/api";
+import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import {
   getAuthoritySnapshot,
   isCurrentAuthority,
@@ -42,6 +42,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 type ReceiptState = {
   invoiceId: string;
+  receiptId: string | null;
+  exact: boolean;
   data: Receipt | null;
   error: string;
   loading: boolean;
@@ -50,6 +52,19 @@ type ReceiptState = {
 type PaymentContext = {
   origin: AuthoritySnapshot;
   visitId: string | null;
+  paymentCount: number;
+};
+
+type CashierShift = {
+  id: string;
+  status: "OPEN" | "CLOSED";
+  opened_at: string;
+  closed_at?: string | null;
+  opening_float: string;
+  declared_cash: string | null;
+  expected_cash: string | null;
+  variance: string | null;
+  version: number;
 };
 
 function errorMessage(error: unknown) {
@@ -95,6 +110,13 @@ function BillingWorkspace() {
   } | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [openingFloat, setOpeningFloat] = useState("0.00");
+  const [declaredCash, setDeclaredCash] = useState("");
+  const [closeReason, setCloseReason] = useState("");
+  const [closeResult, setCloseResult] = useState<CashierShift | null>(null);
+  const [reversingPaymentId, setReversingPaymentId] = useState<string | null>(null);
+  const [reversalReason, setReversalReason] = useState("");
+  const paymentKeyRef = useRef<string | null>(null);
 
   const [patientSearch, setPatientSearch] = useState("");
   const [debouncedPatientSearch, setDebouncedPatientSearch] = useState("");
@@ -143,6 +165,14 @@ function BillingWorkspace() {
     enabled: focused && Boolean(focusedVisitId) && can("billing.invoice.create"),
     retry: false,
   });
+
+  const shiftKey = useProtectedQueryKey("cashier-shift");
+  const shiftQuery = useQuery({
+    queryKey: shiftKey,
+    queryFn: () => apiRequest<{ shift: CashierShift | null }>("/api/v1/billing/shifts/current/"),
+    enabled: can("billing.payment.record"),
+  });
+  const activeShift = shiftQuery.data?.shift ?? null;
 
   const patientResults = useQuery({
     queryKey: patientsKey,
@@ -245,23 +275,39 @@ function BillingWorkspace() {
     setPaymentAmount(activeInvoice.balance);
   }, [focused, activeInvoice, collectionReady]);
 
-  async function loadReceipt(invoiceId: string, origin: AuthoritySnapshot) {
+  async function loadReceipt(
+    invoiceId: string,
+    origin: AuthoritySnapshot,
+    receiptId: string | null = null,
+    exact = false,
+  ) {
     setReceiptState((current) =>
       current && current.invoiceId === invoiceId
         ? { ...current, loading: true, error: "" }
         : current,
     );
     try {
-      const data = await apiRequest<Receipt>(
-        `/api/v1/billing/invoices/${invoiceId}/receipt/`,
-      );
+      const path =
+        exact && receiptId
+          ? `/api/v1/billing/receipts/${encodeURIComponent(receiptId)}/`
+          : `/api/v1/billing/invoices/${invoiceId}/receipt/`;
+      const data = await apiRequest<Receipt>(path);
       if (!isCurrentReceipt(invoiceId, origin)) return;
-      setReceiptState({ invoiceId, data, error: "", loading: false });
+      setReceiptState({
+        invoiceId,
+        receiptId,
+        exact,
+        data,
+        error: "",
+        loading: false,
+      });
       setNotice(`Payment recorded. Receipt ${data.receipt_no}.`);
     } catch (reason) {
       if (!isCurrentReceipt(invoiceId, origin)) return;
       setReceiptState({
         invoiceId,
+        receiptId,
+        exact,
         data: null,
         error: errorMessage(reason),
         loading: false,
@@ -296,18 +342,27 @@ function BillingWorkspace() {
   });
 
   const pay = useMutation({
-    mutationFn: (invoiceId: string) =>
-      apiRequest(`/api/v1/billing/invoices/${invoiceId}/pay/`, {
+    mutationFn: (invoiceId: string) => {
+      const key = paymentKeyRef.current ?? newIdempotencyKey("s05-payment");
+      paymentKeyRef.current = key;
+      const path = activeShift
+        ? `/api/v1/billing/invoices/${invoiceId}/payments/`
+        : `/api/v1/billing/invoices/${invoiceId}/pay/`;
+      return apiRequest<{ id: string; receipt_id: string | null }>(path, {
         method: "POST",
+        headers: { "Idempotency-Key": key },
         body: JSON.stringify({ amount: paymentAmount, method, ...(reference.trim() ? { reference: reference.trim() } : {}) }),
-      }),
+      });
+    },
     onMutate: (): PaymentContext => ({
       origin: getAuthoritySnapshot(),
       visitId: visitContextRef.current,
+      paymentCount: activeInvoice?.payments?.length ?? 0,
     }),
-    onSuccess: (_payment, invoiceId, context) => {
+    onSuccess: (result, invoiceId, context) => {
       // The POST committed the payment. Everything below is reconciliation:
       // a failed receipt read must never read back as a failed payment.
+      paymentKeyRef.current = null;
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
       if (!isCurrentPaymentContext(context, invoiceId)) {
@@ -321,15 +376,109 @@ function BillingWorkspace() {
         setPostPaymentGate({ invoiceId, paidAt: Date.now() });
       }
       receiptTargetRef.current = invoiceId;
-      setReceiptState({ invoiceId, data: null, error: "", loading: true });
+      setReceiptState({
+        invoiceId,
+        receiptId: result.receipt_id ?? null,
+        exact: context.paymentCount > 0,
+        data: null,
+        error: "",
+        loading: true,
+      });
       setNotice("Payment recorded. Preparing the receipt.");
       setError("");
       setReference("");
-      void loadReceipt(invoiceId, context.origin);
+      void loadReceipt(
+        invoiceId,
+        context.origin,
+        result.receipt_id ?? null,
+        context.paymentCount > 0,
+      );
     },
     onError: (reason, invoiceId, context) => {
       if (!isCurrentPaymentContext(context, invoiceId)) return;
       setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const openShift = useMutation({
+    mutationFn: () =>
+      apiRequest<CashierShift>("/api/v1/billing/shifts/open/", {
+        method: "POST",
+        body: JSON.stringify({ opening_float: openingFloat || "0.00" }),
+      }),
+    onSuccess: (shift) => {
+      setNotice(`Shift opened with ${shift.opening_float} opening float.`);
+      setError("");
+      setCloseResult(null);
+      queryClient.invalidateQueries({ queryKey: shiftKey });
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const closeShift = useMutation({
+    mutationFn: (shiftId: string) =>
+      apiRequest<CashierShift>(`/api/v1/billing/shifts/${shiftId}/close/`, {
+        method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey("s05-shift-close") },
+        body: JSON.stringify({
+          declared_cash: declaredCash,
+          ...(closeReason.trim() ? { reason: closeReason.trim() } : {}),
+        }),
+      }),
+    onSuccess: (shift) => {
+      setCloseResult(shift);
+      setNotice(
+        `Shift closed. Expected ${shift.expected_cash}, counted ${shift.declared_cash}, variance ${shift.variance}.`,
+      );
+      setDeclaredCash("");
+      setCloseReason("");
+      setError("");
+      queryClient.invalidateQueries({ queryKey: shiftKey });
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const reversePayment = useMutation({
+    mutationFn: (paymentId: string) =>
+      apiRequest(`/api/v1/billing/payments/${paymentId}/reverse/`, {
+        method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey("s05-reverse") },
+        body: JSON.stringify({ reason: reversalReason.trim() }),
+      }),
+    onSuccess: () => {
+      setReversingPaymentId(null);
+      setReversalReason("");
+      setNotice("Payment reversed. The invoice balance was restored without deleting payment evidence.");
+      setError("");
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
+      queryClient.invalidateQueries({ queryKey: shiftKey });
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
+  const reprintReceipt = useMutation({
+    mutationFn: (receiptId: string) =>
+      apiRequest(`/api/v1/billing/receipts/${receiptId}/reprint/`, {
+        method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey("s05-reprint") },
+        body: JSON.stringify({}),
+      }),
+    onSuccess: () => {
+      setNotice((current) => (current ? current : "Receipt reprint recorded."));
+      window.print();
+    },
+    onError: (reason) => {
       setError(errorMessage(reason));
     },
   });
@@ -356,6 +505,83 @@ function BillingWorkspace() {
         </p>
       ) : null}
       {error ? <ErrorBanner message={error} onDismiss={() => setError("")} /> : null}
+
+      {canRecordPayment ? (
+        <Card>
+          <CardTitleBar title="Cashier shift" />
+          <div className="px-5 py-4 space-y-3">
+            {shiftQuery.isLoading ? (
+              <p className="text-[12.5px] font-medium text-secondary" role="status" aria-busy="true">
+                Loading the current shift…
+              </p>
+            ) : shiftQuery.isError ? (
+              <p className="text-[12.5px] font-medium text-ink" role="alert">
+                The current shift could not be loaded. Payments remain unavailable until it is.
+              </p>
+            ) : activeShift ? (
+              <>
+                <p className="text-[12.5px] font-medium text-ink">
+                  Shift open since {formatDate(activeShift.opened_at)} · opening float{" "}
+                  {activeShift.opening_float}
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Declared cash" htmlFor="declared-cash">
+                    <TextInput
+                      id="declared-cash"
+                      inputMode="decimal"
+                      value={declaredCash}
+                      onChange={(event) => setDeclaredCash(event.target.value)}
+                      placeholder="Count the drawer before closing"
+                    />
+                  </Field>
+                  <Field label="Close reason (optional)" htmlFor="shift-close-reason">
+                    <TextInput
+                      id="shift-close-reason"
+                      value={closeReason}
+                      onChange={(event) => setCloseReason(event.target.value)}
+                    />
+                  </Field>
+                </div>
+                <Button
+                  variant="secondary"
+                  disabled={closeShift.isPending || !declaredCash.trim()}
+                  onClick={() => closeShift.mutate(activeShift.id)}
+                >
+                  {closeShift.isPending ? "Closing…" : "Close shift"}
+                </Button>
+                <p className="text-[11.5px] font-medium text-muted">
+                  Expected cash and variance are shown only after your blind count is recorded.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-[12.5px] font-medium text-secondary">
+                  No shift is open. Shift-bound payments use exact allocations and an issued receipt.
+                </p>
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field label="Opening float" htmlFor="opening-float">
+                    <TextInput
+                      id="opening-float"
+                      inputMode="decimal"
+                      value={openingFloat}
+                      onChange={(event) => setOpeningFloat(event.target.value)}
+                    />
+                  </Field>
+                  <Button disabled={openShift.isPending} onClick={() => openShift.mutate()}>
+                    {openShift.isPending ? "Opening…" : "Open shift"}
+                  </Button>
+                </div>
+              </>
+            )}
+            {closeResult ? (
+              <p className="rounded-[12px] bg-accent-teal-soft px-3.5 py-2.5 text-[12px] font-medium text-ink" role="status">
+                Closed shift {closeResult.id.slice(0, 8)}: expected {closeResult.expected_cash},
+                declared {closeResult.declared_cash}, variance {closeResult.variance}.
+              </p>
+            ) : null}
+          </div>
+        </Card>
+      ) : null}
 
       <section className="grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-5 items-start">
         <div className="space-y-5">
@@ -413,6 +639,66 @@ function BillingWorkspace() {
                         </li>
                       ))}
                     </ul>
+                  ) : null}
+                  {activeInvoice.payments?.length ? (
+                    <div className="space-y-2">
+                      <p className="text-[12px] font-bold uppercase tracking-wide text-muted">Payments</p>
+                      <ul className="rounded-[14px] border border-line-soft divide-y divide-line-soft">
+                        {activeInvoice.payments.map((payment) => (
+                          <li key={payment.id} className="px-3.5 py-2.5 text-[12.5px]">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-medium text-ink">
+                                {payment.receipt_no} · {activeInvoice.currency} {payment.amount}
+                              </span>
+                              <span className="text-secondary">
+                                {payment.method.replaceAll("_", " ")} · {payment.status}
+                              </span>
+                            </div>
+                            {payment.status === "CONFIRMED" && can("billing.payment.reverse") ? (
+                              reversingPaymentId === payment.id ? (
+                                <div className="mt-2 flex flex-wrap items-end gap-2">
+                                  <Field label="Reversal reason" htmlFor={`reverse-reason-${payment.id}`}>
+                                    <TextInput
+                                      id={`reverse-reason-${payment.id}`}
+                                      value={reversalReason}
+                                      onChange={(event) => setReversalReason(event.target.value)}
+                                      placeholder="Why is the whole payment wrong?"
+                                    />
+                                  </Field>
+                                  <Button
+                                    variant="secondary"
+                                    disabled={reversePayment.isPending || !reversalReason.trim()}
+                                    onClick={() => reversePayment.mutate(payment.id)}
+                                  >
+                                    {reversePayment.isPending ? "Reversing…" : "Confirm reversal"}
+                                  </Button>
+                                  <Button
+                                    variant="link"
+                                    onClick={() => {
+                                      setReversingPaymentId(null);
+                                      setReversalReason("");
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                              ) : (
+                                <Button
+                                  variant="link"
+                                  className="mt-1"
+                                  onClick={() => {
+                                    setReversingPaymentId(payment.id);
+                                    setReversalReason("");
+                                  }}
+                                >
+                                  Reverse whole payment
+                                </Button>
+                              )
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   ) : null}
                 </div>
               ) : null}
@@ -641,7 +927,14 @@ function BillingWorkspace() {
                           variant="secondary"
                           className="mt-3"
                           disabled={activeReceipt.loading}
-                          onClick={() => void loadReceipt(activeInvoice.id, getAuthoritySnapshot())}
+                          onClick={() =>
+                            void loadReceipt(
+                              activeInvoice.id,
+                              getAuthoritySnapshot(),
+                              activeReceipt.receiptId,
+                              activeReceipt.exact,
+                            )
+                          }
                         >
                           Retry receipt
                         </Button>
@@ -725,9 +1018,13 @@ function BillingWorkspace() {
               <div className="px-5 py-5">
                 <div className="flex items-center justify-between">
                   <h2 className="text-[15px] font-bold text-ink">Receipt</h2>
-                  <Button variant="secondary" onClick={() => window.print()}>
+                  <Button
+                    variant="secondary"
+                    disabled={reprintReceipt.isPending}
+                    onClick={() => reprintReceipt.mutate(activeReceipt.data!.id)}
+                  >
                     <IconPrinter className="h-4 w-4" />
-                    Print receipt
+                    {reprintReceipt.isPending ? "Preparing…" : "Print receipt"}
                   </Button>
                 </div>
                 <div className="mt-4 rounded-[14px] border border-line bg-white p-4 font-sans">
