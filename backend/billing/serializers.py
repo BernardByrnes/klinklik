@@ -73,6 +73,21 @@ class InvoiceSerializer(serializers.ModelSerializer):
         ]
 
 
+class InvoiceMutationSerializer(serializers.Serializer):
+    """PHI-minimal invoice result for idempotent line commands."""
+
+    id = serializers.UUIDField()
+    invoice_no = serializers.CharField()
+    status = serializers.CharField()
+    currency = serializers.CharField()
+    subtotal = serializers.DecimalField(max_digits=14, decimal_places=2)
+    discount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    amount_paid = serializers.DecimalField(max_digits=14, decimal_places=2)
+    balance = serializers.DecimalField(max_digits=14, decimal_places=2)
+    version = serializers.IntegerField()
+
+
 class InvoiceCreateSerializer(serializers.Serializer):
     patient_id = serializers.UUIDField()
     encounter_id = serializers.UUIDField(required=False)

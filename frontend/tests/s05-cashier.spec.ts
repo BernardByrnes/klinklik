@@ -76,6 +76,26 @@ test("S-05 cashier opens a shift, collects exactly, reprints and reverses before
   };
   expect(checkedIn.invoice_id).toBeTruthy();
 
+  // A previous interrupted run may have left this synthetic cashier's shift
+  // open; close it through the same command before starting the journey.
+  const current = await page.request.get(`${API}/api/v1/billing/shifts/current/`, {
+    headers: apiHeaders(session),
+  });
+  const openShift = ((await current.json()) as { shift: { id: string } | null }).shift;
+  if (openShift) {
+    const closed = await page.request.post(
+      `${API}/api/v1/billing/shifts/${openShift.id}/close/`,
+      {
+        headers: {
+          ...apiHeaders(session),
+          "Idempotency-Key": `s05-cleanup-close-${suffix}`,
+        },
+        data: { declared_cash: "0.00", reason: "Synthetic E2E setup cleanup" },
+      }
+    );
+    expect(closed.ok(), await closed.text()).toBeTruthy();
+  }
+
   await page.goto(`/billing?visit=${checkedIn.visit_id}`);
   await expect(page.getByRole("heading", { name: "Billing & Payments" })).toBeVisible();
   await expect(page.getByText("Cashier shift", { exact: true })).toBeVisible();

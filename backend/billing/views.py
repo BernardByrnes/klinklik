@@ -10,6 +10,7 @@ from billing.serializers import (
     InvoiceCreateSerializer,
     InvoiceLineCreateSerializer,
     InvoiceLineVoidSerializer,
+    InvoiceMutationSerializer,
     InvoiceSerializer,
     PaymentCreateSerializer,
     PaymentMethodConfigureSerializer,
@@ -467,7 +468,7 @@ class PaymentMethodListView(TenantAPIView):
 class InvoiceLineCreateView(TenantAPIView):
     capability = "billing.invoice.create"
     serializer_class = InvoiceLineCreateSerializer
-    response_serializer_class = InvoiceSerializer
+    response_serializer_class = InvoiceMutationSerializer
     idempotency_operation = "CMD-073"
 
     def post(self, request, pk):
@@ -486,13 +487,13 @@ class InvoiceLineCreateView(TenantAPIView):
             request=request,
             **data,
         )
-        return Response(InvoiceSerializer(invoice).data, status=status.HTTP_201_CREATED)
+        return Response(InvoiceMutationSerializer(invoice).data, status=status.HTTP_201_CREATED)
 
 
 class InvoiceLineVoidView(TenantAPIView):
     capability = "billing.invoice.create"
     serializer_class = InvoiceLineVoidSerializer
-    response_serializer_class = InvoiceSerializer
+    response_serializer_class = InvoiceMutationSerializer
     idempotency_operation = "CMD-074"
 
     def post(self, request, pk, line_id):
@@ -507,4 +508,4 @@ class InvoiceLineVoidView(TenantAPIView):
             reason=serializer.validated_data["reason"],
             request=request,
         )
-        return Response(InvoiceSerializer(invoice).data)
+        return Response(InvoiceMutationSerializer(invoice).data)

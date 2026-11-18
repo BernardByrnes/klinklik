@@ -447,7 +447,9 @@ def test_s05_manual_line_and_void_protect_paid_invoices(tenant, authed_client):
     assert manual.status_code == 201, manual.data
     assert manual.data["total"] == "35000.00"
     assert manual.data["balance"] == "35000.00"
-    line = next(item for item in manual.data["items"] if item["source_type"] == "MANUAL")
+    detail = authed_client.get(f"/api/v1/billing/invoices/{invoice_id}/")
+    assert detail.status_code == 200
+    line = next(item for item in detail.data["items"] if item["source_type"] == "MANUAL")
     assert line["manual_reason"] == "Synthetic manual service"
 
     missing_reason = authed_client.post(
@@ -466,11 +468,12 @@ def test_s05_manual_line_and_void_protect_paid_invoices(tenant, authed_client):
     assert voided.status_code == 200, voided.data
     assert voided.data["total"] == "30000.00"
     assert voided.data["balance"] == "30000.00"
-    stored = next(item for item in voided.data["items"] if item["id"] == line["id"])
+    detail = authed_client.get(f"/api/v1/billing/invoices/{invoice_id}/")
+    stored = next(item for item in detail.data["items"] if item["id"] == line["id"])
     assert stored["state"] == "VOIDED"
     assert stored["void_reason"] == "Synthetic line entered in error"
     assert stored["voided_by"]
-    active_line = next(item for item in voided.data["items"] if item["state"] == "ACTIVE")
+    active_line = next(item for item in detail.data["items"] if item["state"] == "ACTIVE")
 
     open_shift(authed_client)
     paid = pay(authed_client, invoice_id, "10000.00", "s05-pay-line-guard")

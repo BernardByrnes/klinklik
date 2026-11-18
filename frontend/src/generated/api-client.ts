@@ -25,6 +25,7 @@ export type FollowUpWrite = { recommended_date?: string | null; interval_value?:
 export type InvoiceCreate = { patient_id: string; encounter_id?: string; items: Array<{  }>; discount?: string; };
 export type InvoiceLineCreate = { service_id?: string; description?: string; quantity?: string; amount?: string; reason?: string; manual?: boolean; };
 export type InvoiceLineVoid = { reason: string; };
+export type InvoiceMutation = { id: string; invoice_no: string; status: string; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; version: number; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type NoteAmend = { content: {  }; reason: string; };
@@ -89,9 +90,9 @@ export type CreateInvoiceCreateResponse = Invoice;
 export type RetrieveVisitInvoiceResponse = Invoice;
 export type RetrieveInvoiceDetailResponse = Invoice;
 export type CreateInvoiceLineCreateRequest = InvoiceLineCreate;
-export type CreateInvoiceLineCreateResponse = Invoice;
+export type CreateInvoiceLineCreateResponse = InvoiceMutation;
 export type CreateInvoiceLineVoidRequest = InvoiceLineVoid;
-export type CreateInvoiceLineVoidResponse = Invoice;
+export type CreateInvoiceLineVoidResponse = InvoiceMutation;
 export type CreateInvoicePaymentLegacyRequest = PaymentCreate;
 export type CreateInvoicePaymentLegacyResponse = Payment;
 export type CreateInvoicePaymentRequest = PaymentCreate;
@@ -177,7 +178,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "1271343c7f07309f4fbe4cfd755daadfc5fa7acbedeb4dde77024934d396530c";
+export const GENERATED_API_CONTRACT_SHA256 = "38d7c06ef4baa49cf4ac9dad122ad88566cf7bd64273d9a025606dc4615941a2";
 
 export const GENERATED_API_OPERATIONS = [
   {
