@@ -1958,3 +1958,84 @@ def reprice_invoice(
         },
     )
     return invoice, new_binding, before_total
+
+
+@transaction.atomic
+def issue_source_line(
+    *,
+    organisation,
+    facility,
+    actor,
+    invoice,
+    service,
+    amount,
+    description,
+    source_type,
+    source_id,
+    source_version="v1",
+    source_line_identity=None,
+    request=None,
+):
+    """Append one source-attributed charge line through the billing projection.
+
+    Used by owner slices (for example laboratory orders) so a charge keeps the
+    exact source identity and never edits an existing line.
+    """
+
+    assert_transaction_active()
+    invoice = Invoice.objects.select_for_update().filter(
+        id=invoice.id, organisation=organisation, facility=facility
+    ).first()
+    if invoice is None:
+        raise CanonicalError("INVOICE_NOT_FOUND", "Invoice was not found.", status_code=404)
+    if invoice.status in {"VOID", "VOIDED"}:
+        raise CanonicalError("INVOICE_NOT_EDITABLE", "A voided invoice cannot accept a line.", status_code=409)
+    if invoice.visit_id is not None:
+        from scheduling.services import assert_visit_open
+
+        visit = Visit.objects.filter(id=invoice.visit_id).first()
+        if visit is not None:
+            assert_visit_open(visit=visit, action="accept a new charge")
+    identity = source_line_identity or f"{source_type}:{source_id}"
+    existing = InvoiceItem.objects.filter(
+        organisation=organisation,
+        invoice=invoice,
+        source_type=source_type,
+        source_id=source_id,
+        source_line_identity=identity,
+        line_set_version=invoice.current_line_set_version,
+    ).first()
+    if existing is not None:
+        return existing, False
+    amount = _money(amount)
+    if amount <= 0:
+        raise CanonicalError("INVOICE_LINE_AMOUNT_INVALID", "The charge must be positive.", status_code=400)
+    line = InvoiceItem.objects.create(
+        organisation=organisation,
+        invoice=invoice,
+        facility=facility,
+        service=service,
+        description=str(description)[:240],
+        quantity=Decimal("1.00"),
+        unit_price=amount,
+        amount=amount,
+        line_set_version=invoice.current_line_set_version,
+        source_type=source_type,
+        source_id=source_id,
+        source_version=str(source_version)[:40],
+        source_line_identity=identity,
+        created_by=actor,
+    )
+    invoice = recompute_invoice_projection(invoice)
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="CREATE",
+        entity_type="InvoiceItem",
+        entity_id=line.id,
+        after={"source_type": source_type, "invoice_id": str(invoice.id)},
+        event_code="INVOICE_LINE_ADDED",
+    )
+    return line, True
