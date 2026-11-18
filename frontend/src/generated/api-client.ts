@@ -29,6 +29,8 @@ export type InvoiceCreate = { patient_id: string; encounter_id?: string; items: 
 export type InvoiceLineCreate = { service_id?: string; description?: string; quantity?: string; amount?: string; reason?: string; manual?: boolean; };
 export type InvoiceLineVoid = { reason: string; };
 export type InvoiceMutation = { id: string; invoice_no: string; status: string; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; version: number; };
+export type InvoiceReprice = { expected_version: number; price_list_id?: string; payer_type?: "CASH" | "SELF_PAY_MOMO"; };
+export type InvoiceRepriceResult = { id: string; invoice_no: string; status: string; before_total: string; after_total: string; line_set_version: number; version: number; payer_binding_id: string; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type NoteAmend = { content: {  }; reason: string; };
@@ -74,8 +76,8 @@ export type Encounter = { id: string; encounter_no: string; patient: string; pat
 export type EncounterDisposition = "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER";
 export type Facility = { id: string; name: string; code: string; mode: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone: string; is_active: boolean; };
 export type FollowUpRecommendation = { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null;
-export type Invoice = { id: string; invoice_no: string; patient: string; patient_name: string; visit: string | null; encounter: string | null; status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID" | "VOIDED"; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; credit_total: string; refunded_total: string; refundable_credit: string; issued_at: string | null; items: Array<{ id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; }>; payments: Array<{ id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; }>; voided_at: string | null; voided_by: string | null; current_line_set_version: number; version: number; };
-export type InvoiceItem = { id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; };
+export type Invoice = { id: string; invoice_no: string; patient: string; patient_name: string; visit: string | null; encounter: string | null; status: "DRAFT" | "ISSUED" | "PARTIALLY_PAID" | "PAID" | "VOID" | "VOIDED"; currency: string; subtotal: string; discount: string; total: string; amount_paid: string; balance: string; credit_total: string; refunded_total: string; refundable_credit: string; issued_at: string | null; items: Array<{ id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; is_current: string; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; }>; payments: Array<{ id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; }>; voided_at: string | null; voided_by: string | null; current_line_set_version: number; version: number; };
+export type InvoiceItem = { id: string; service: string | null; description: string; quantity: string; unit_price: string; amount: string; line_set_version: number; is_current: string; source_type: string; source_id: string | null; source_version: string; source_line_identity: string; state: string; void_reason: string; voided_at: string | null; voided_by: string | null; manual_reason: string; };
 export type Patient = { id: string; patient_no: string; display_name: string; first_name: string; middle_name: string; last_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth: string | null; phone: string; email: string; address: string; village: string; parish: string; sub_county: string; district: string; next_of_kin_name: string; next_of_kin_phone: string; estimated_age_years: number | null; estimated_age_months: number | null; dob_estimated: boolean; identity_status: "ACTIVE" | "PROVISIONAL" | "MERGED"; status: "ACTIVE" | "DECEASED" | "ARCHIVED"; last_seen_at: string | null; version: number; identifiers: Array<{ id: string; identifier_type: "NATIONAL_ID" | "PASSPORT" | "INSURANCE" | "OTHER"; value: string; verified: boolean; is_primary: boolean; }>; contacts: Array<{ id: string; relationship: string; name: string; phone: string; is_primary: boolean; }>; created_at: string; updated_at: string; };
 export type PatientDuplicateCandidate = { id: string; patient_no: string; display_name: string; match_score: number; last_visit_date: string | null; last_seen_at: string | null; };
 export type Payment = { id: string; receipt_no: string; amount: string; method: "CASH" | "MOBILE_MONEY" | "MOBILE_MONEY_MANUAL" | "CARD" | "BANK"; reference: string; status: "CONFIRMED" | "POSTED" | "REVERSED"; received_by: string; received_at: string; shift_id: string | null; receipt_id: string | null; reversed_at: string | null; allocations: Array<{ id: string; invoice: string; invoice_no: string; amount: string; }>; };
@@ -105,6 +107,8 @@ export type CreateInvoicePaymentLegacyResponse = Payment;
 export type CreateInvoicePaymentRequest = PaymentCreate;
 export type CreateInvoicePaymentResponse = PaymentResult;
 export type ListInvoiceReceiptsResponse = Array<Receipt>;
+export type CreateInvoiceRepriceRequest = InvoiceReprice;
+export type CreateInvoiceRepriceResponse = InvoiceRepriceResult;
 export type ListPaymentMethodConfiguresResponse = Array<PaymentMethod>;
 export type CreatePaymentMethodConfigureRequest = PaymentMethodConfigure;
 export type CreatePaymentMethodConfigureResponse = Array<PaymentMethod>;
@@ -186,7 +190,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "91e53a615dfec9bd55ac6a3a34773c398271407709a079d7e294de44ff0559e4";
+export const GENERATED_API_CONTRACT_SHA256 = "d06465ddef042252584d208c9042946fcb5523c41631058e89cf898c580e4d5b";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -263,6 +267,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "GET",
     "operationId": "listInvoiceReceipts",
     "path": "/api/v1/billing/invoices/{id}/receipt/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createInvoiceReprice",
+    "path": "/api/v1/billing/invoices/{id}/reprice/"
   },
   {
     "method": "GET",

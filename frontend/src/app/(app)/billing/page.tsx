@@ -134,6 +134,12 @@ function BillingWorkspace() {
   const [reversalReason, setReversalReason] = useState("");
   const [creditAmount, setCreditAmount] = useState("");
   const [creditReason, setCreditReason] = useState("");
+  const [repriceListId, setRepriceListId] = useState("");
+  const [repriceResult, setRepriceResult] = useState<{
+    before_total: string;
+    after_total: string;
+    line_set_version: number;
+  } | null>(null);
   const [zReport, setZReport] = useState<ZReport | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
 
@@ -502,6 +508,35 @@ function BillingWorkspace() {
     },
   });
 
+  const repriceInvoice = useMutation({
+    mutationFn: (invoiceId: string) =>
+      apiRequest<{
+        before_total: string;
+        after_total: string;
+        line_set_version: number;
+      }>(`/api/v1/billing/invoices/${invoiceId}/reprice/`, {
+        method: "POST",
+        headers: { "Idempotency-Key": newIdempotencyKey("s07-reprice") },
+        body: JSON.stringify({
+          expected_version: activeInvoice?.version,
+          ...(repriceListId.trim() ? { price_list_id: repriceListId.trim() } : {}),
+        }),
+      }),
+    onSuccess: (result) => {
+      setRepriceResult(result);
+      setNotice(
+        `Invoice repriced from ${result.before_total} to ${result.after_total} (line set ${result.line_set_version}).`,
+      );
+      setError("");
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
+      queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
+    },
+    onError: (reason) => {
+      setNotice("");
+      setError(errorMessage(reason));
+    },
+  });
+
   const issueCredit = useMutation({
     mutationFn: (invoiceId: string) =>
       apiRequest<{ credit_no: string }>(
@@ -844,6 +879,47 @@ function BillingWorkspace() {
                     <dt className="font-medium text-secondary">Balance due</dt>
                     <dd className="text-right font-bold text-ink">{activeInvoice.balance}</dd>
                   </dl>
+                  {can("visit.payer_reprice") &&
+                  activeInvoice.status === "ISSUED" &&
+                  activeInvoice.amount_paid === "0.00" ? (
+                    <div className="grid gap-3 rounded-[14px] border border-line-soft p-3.5 sm:grid-cols-2">
+                      <p className="text-[12px] font-bold uppercase tracking-wide text-muted sm:col-span-2">
+                        Reprice invoice (ISSUED → ISSUED)
+                      </p>
+                      <Field label="New price list ID (optional)" htmlFor="reprice-price-list">
+                        <TextInput
+                          id="reprice-price-list"
+                          value={repriceListId}
+                          onChange={(event) => setRepriceListId(event.target.value)}
+                          placeholder="Leave blank to use the current catalogue list"
+                        />
+                      </Field>
+                      <div className="flex flex-wrap items-end gap-3">
+                        <Button
+                          variant="secondary"
+                          disabled={repriceInvoice.isPending}
+                          onClick={() => repriceInvoice.mutate(activeInvoice.id)}
+                        >
+                          {repriceInvoice.isPending ? "Repricing…" : "Reprice invoice"}
+                        </Button>
+                      </div>
+                      {repriceResult ? (
+                        <p className="text-[12px] font-medium text-ink sm:col-span-2" role="status">
+                          Old {repriceResult.before_total} → new {repriceResult.after_total}
+                          {" "}(difference{" "}
+                          {(
+                            Number(repriceResult.after_total) -
+                            Number(repriceResult.before_total)
+                          ).toFixed(2)}
+                          ), line set {repriceResult.line_set_version}.
+                        </p>
+                      ) : null}
+                      <p className="text-[11.5px] font-medium text-muted sm:col-span-2">
+                        Prior line sets remain retained and immutable. Paid, partially paid or
+                        corrected invoices are refused.
+                      </p>
+                    </div>
+                  ) : null}
                   {can("billing.credit_note.issue") &&
                   activeInvoice.status !== "VOID" &&
                   activeInvoice.status !== "VOIDED" ? (
