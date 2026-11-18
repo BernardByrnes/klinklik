@@ -65,3 +65,8 @@ class OTCSaleCreateSerializer(serializers.Serializer):
     method = serializers.CharField(required=False, allow_blank=True, max_length=40)
     reference = serializers.CharField(required=False, allow_blank=True, max_length=120)
     lines = OTCSaleLineInputSerializer(many=True)
+
+
+class InstructionTemplateSerializer(serializers.Serializer):
+    content = serializers.CharField(max_length=240, allow_blank=True)
+    expected_version = serializers.IntegerField(min_value=1)

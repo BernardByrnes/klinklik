@@ -11,6 +11,7 @@ from pharmacy.views import (
     PrescriptionDraftView,
     PrescriptionItemNotDispensedView,
     PrescriptionQueueView,
+    ProductInstructionTemplateView,
 )
 
 urlpatterns = [
@@ -49,6 +50,11 @@ urlpatterns = [
         "items/<uuid:item_id>/not-dispensed/",
         PrescriptionItemNotDispensedView.as_view(),
         name="pharmacy-item-not-dispensed",
+    ),
+    path(
+        "products/<uuid:pk>/instruction-template/",
+        ProductInstructionTemplateView.as_view(),
+        name="pharmacy-product-instruction-template",
     ),
     path("otc/", OTCSaleCreateView.as_view(), name="pharmacy-otc-create"),
     path("otc/sales/", OTCSaleListView.as_view(), name="pharmacy-otc-list"),

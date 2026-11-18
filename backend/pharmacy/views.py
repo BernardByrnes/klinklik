@@ -16,6 +16,7 @@ from pharmacy.dispensing import (
 from pharmacy.models import Dispense, OTCSale
 from pharmacy.serializers import (
     DispensePrepareSerializer,
+    InstructionTemplateSerializer,
     NotDispensedSerializer,
     OTCSaleCreateSerializer,
     PrescriptionCancelSerializer,
@@ -272,6 +273,34 @@ class PrescriptionItemNotDispensedView(TenantAPIView):
                 "prescription_id": str(item.prescription_id),
                 "state": item.state,
                 "not_dispensed_reason": item.not_dispensed_reason,
+            }
+        )
+
+
+class ProductInstructionTemplateView(TenantAPIView):
+    capability = "catalogue.manage"
+    serializer_class = InstructionTemplateSerializer
+    idempotency_operation = "CMD-110"
+    requires_idempotency = True
+
+    def patch(self, request, pk):
+        from pharmacy.services import set_instruction_template
+
+        serializer = InstructionTemplateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product = set_instruction_template(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            product_id=pk,
+            request=request,
+            **serializer.validated_data,
+        )
+        return Response(
+            {
+                "id": str(product.id),
+                "instructions_template": product.instructions_template,
+                "version": product.version,
             }
         )
 

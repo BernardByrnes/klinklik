@@ -629,3 +629,98 @@ def test_s12_audit_redacts_no_clinical_payload(tenant, authed_client):
             assert "Synthetic S12 instructions" not in payload
             assert "medicine_name" not in payload
         assert events.count() >= 2
+
+
+def test_s12_draft_replaces_once_and_supports_external_items(tenant, authed_client):
+    stock = _stock(authed_client, tenant)
+    patient_id, checked_in = _visit(authed_client, tenant)
+    encounter = _encounter(authed_client, tenant, patient_id, checked_in["visit_id"])
+    first = _draft(authed_client, encounter.id, stock["product"]["id"], quantity="4.00")
+    assert first.status_code == 200, first.data
+    second = authed_client.patch(
+        "/api/v1/pharmacy/prescriptions/draft/",
+        {
+            "encounter_id": str(encounter.id),
+            "items": [
+                {
+                    "product_id": stock["product"]["id"],
+                    "quantity": "6.00",
+                },
+                {
+                    "medicine_name": "Synthetic external medicine",
+                    "quantity": "2.00",
+                },
+            ],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s12-draft-replace-{uuid4().hex}",
+    )
+    assert second.status_code == 200, second.data
+    assert len(second.data["items"]) == 2
+    assert second.data["items"][0]["quantity"] == "6.00"
+    assert second.data["items"][1]["external"] is True
+    with tenant_atomic(tenant.organisation.id):
+        assert Prescription.objects.filter(encounter_id=encounter.id).count() == 1
+        assert PrescriptionItem.objects.filter(
+            prescription_id=first.data["id"]
+        ).count() == 2
+    zero = _draft(authed_client, encounter.id, stock["product"]["id"], quantity="0.00")
+    assert zero.status_code == 400
+
+
+def test_s12_signed_encounter_refuses_new_prescription(tenant, authed_client):
+    stock = _stock(authed_client, tenant)
+    patient_id, checked_in = _visit(authed_client, tenant)
+    encounter = _encounter(
+        authed_client, tenant, patient_id, checked_in["visit_id"], status="SIGNED"
+    )
+    response = _draft(authed_client, encounter.id, stock["product"]["id"])
+    assert response.status_code == 409
+    assert response.data["code"] == "INVALID_STATE"
+
+
+def test_s12_cancel_retains_items_and_cancels_pending_only(tenant, authed_client):
+    stock = _stock(authed_client, tenant, quantity="100.00")
+    prescription, _checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"], quantity="4.00"
+    )
+    response = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/cancel/",
+        {"reason": "Synthetic prescriber cancellation"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s12-cancel-prescription-{uuid4().hex}",
+    )
+    assert response.status_code == 200, response.data
+    assert response.data["status"] == "CANCELLED"
+    with tenant_atomic(tenant.organisation.id):
+        items = PrescriptionItem.objects.filter(prescription_id=prescription.id)
+        assert items.count() == 1
+        assert items.first().state == "CANCELLED"
+        assert AuditEvent.objects.filter(
+            event_code="PRESCRIPTION_CANCELLED", entity_id=prescription.id
+        ).count() == 1
+
+
+def test_s12_instruction_template_has_version_and_audit(tenant, authed_client):
+    stock = _stock(authed_client, tenant)
+    product = stock["product"]
+    response = authed_client.patch(
+        f"/api/v1/pharmacy/products/{product['id']}/instruction-template/",
+        {"content": "Take with food", "expected_version": product["version"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s12-template-{uuid4().hex}",
+    )
+    assert response.status_code == 200, response.data
+    assert response.data["instructions_template"] == "Take with food"
+    assert response.data["version"] == product["version"] + 1
+    stale = authed_client.patch(
+        f"/api/v1/pharmacy/products/{product['id']}/instruction-template/",
+        {"content": "Take after food", "expected_version": product["version"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s12-template-stale-{uuid4().hex}",
+    )
+    assert stale.status_code == 409
+    with tenant_atomic(tenant.organisation.id):
+        assert AuditEvent.objects.filter(
+            event_code="PRODUCT_INSTRUCTION_TEMPLATE_SET"
+        ).count() == 1
