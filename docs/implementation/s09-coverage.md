@@ -94,7 +94,7 @@ Statuses: **COVERED** implemented and asserted; **PARTIAL** the supplied path wo
 | Lane | Result |
 | --- | --- |
 | Full merged SQLite | 395 passed, 78 skipped |
-| PostgreSQL as `clinicopus_app`, all families (S-00/auth/S-01..S-09) | 74 passed; 1 failed on the known independent S-01 pricing 40P01 race (23P01 expected) |
+| PostgreSQL as `clinicopus_app`, all families (S-00/auth/S-01..S-09) | 75 passed, 0 failed |
 | S-09 PostgreSQL lane | 3 passed, 0 skipped |
 | Disabled-guard proofs (S-02/S-03/S-04) | 3 passed |
 | Browser, all twelve specs | 21 passed |
