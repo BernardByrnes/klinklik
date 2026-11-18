@@ -10,13 +10,13 @@ from hashlib import sha256
 import json
 from uuid import uuid4
 
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, connection, models, transaction
 from django.utils.timezone import now
 
 from audit.services import record_fact
 from core.models import MigrationCutover, MigrationReconciliation
-from core.services import assert_transaction_active
-from clinical.models import Encounter
+from core.services import allocate_sequence, assert_transaction_active
+from clinical.models import Encounter, TriageAssessment
 from billing.models import Invoice
 from scheduling.models import QueueEntry, Visit
 
@@ -1610,4 +1610,1461 @@ def resolve_reconciliation(*, organisation, reconciliation_id, actor, reason):
                 "reason_hash": _stable_hash(str(reason).strip()),
             },
         )
+    return evidence
+
+
+# ---------------------------------------------------------------------------
+# MIG-002: canonical QueueEntry state adaptation
+# ---------------------------------------------------------------------------
+
+MIG002_ID = "MIG-002"
+MIG_002_ID = MIG002_ID
+MIG002_LEGACY_TABLE = "scheduling_queueentry"
+MIG002_CANONICAL_STATES = frozenset(
+    {
+        "WAITING_PAYMENT",
+        "WAITING",
+        "CALLED",
+        "IN_SERVICE",
+        "ON_HOLD",
+        "READY_TO_RESUME",
+        "COMPLETED",
+        "TRANSFERRED",
+        "CANCELLED",
+        "LWBS",
+        "NO_SHOW",
+        "EXPIRED",
+    }
+)
+MIG002_ACTIVE_STATES = frozenset(
+    {
+        "WAITING_PAYMENT",
+        "WAITING",
+        "CALLED",
+        "IN_SERVICE",
+        "ON_HOLD",
+        "READY_TO_RESUME",
+    }
+)
+MIG002_LEGACY_STATE_MAP = {
+    "WAITING": "WAITING",
+    "CALLED": "CALLED",
+    "CANCELLED": "CANCELLED",
+    "IN_TRIAGE": "IN_SERVICE",
+    "TRIAGED": "COMPLETED",
+    "IN_CONSULTATION": "IN_SERVICE",
+    "COMPLETED": "COMPLETED",
+}
+MIG002_SUPPORTED_LEGACY_STATES = frozenset(MIG002_LEGACY_STATE_MAP)
+MIG002_TARGET_WORK_IDENTITY_PREFIXES = (
+    "MIG-002:CONSULTATION:",
+    "COMPATIBILITY:MIG-002-ROLLBACK:",
+)
+
+
+def _mig002_source_evidence(queue, *, assessment_ids=(), encounter_ids=()):
+    """Return source and scope evidence without copying PHI.
+
+    Target-only fields such as ``state`` and ``work_identity`` are deliberately
+    excluded.  A backfill must not change the source hash it is proving.
+    """
+
+    visit = getattr(queue, "visit", None)
+    department = getattr(queue, "department", None)
+
+    return {
+        "legacy_table": MIG002_LEGACY_TABLE,
+        "legacy_pk": str(queue.id),
+        "organisation_id": str(queue.organisation_id),
+        "facility_id": str(queue.facility_id),
+        "visit_id": str(queue.visit_id) if queue.visit_id else None,
+        "patient_id": str(queue.patient_id),
+        "department_id": str(queue.department_id),
+        "queue_date": queue.queue_date.isoformat(),
+        "queue_type": queue.queue_type,
+        "status": queue.status,
+        "current_stage": queue.current_stage,
+        "hold_reason_present": bool(queue.hold_reason),
+        "priority": queue.priority,
+        "priority_reason_present": bool(queue.priority_reason),
+        "arrival_at": queue.arrival_at.isoformat() if queue.arrival_at else None,
+        "queue_time": queue.queue_time.isoformat() if queue.queue_time else None,
+        "called_at": queue.called_at.isoformat() if queue.called_at else None,
+        "called_by_id": str(queue.called_by_id) if queue.called_by_id else None,
+        "claimed_by_id": str(queue.claimed_by_id) if queue.claimed_by_id else None,
+        "claimed_at": queue.claimed_at.isoformat() if queue.claimed_at else None,
+        "assigned_user_id": str(queue.assigned_user_id) if queue.assigned_user_id else None,
+        "served_by_id": str(queue.served_by_id) if queue.served_by_id else None,
+        "started_at": queue.started_at.isoformat() if queue.started_at else None,
+        "service_started_at": (
+            queue.service_started_at.isoformat() if queue.service_started_at else None
+        ),
+        "completed_by_id": str(queue.completed_by_id) if queue.completed_by_id else None,
+        "completed_at": queue.completed_at.isoformat() if queue.completed_at else None,
+        "removed_by_id": str(queue.removed_by_id) if queue.removed_by_id else None,
+        "removed_at": queue.removed_at.isoformat() if queue.removed_at else None,
+        "visit_scope": {
+            "organisation_id": str(visit.organisation_id),
+            "facility_id": str(visit.facility_id),
+            "patient_id": str(visit.patient_id),
+            "local_service_date": visit.local_service_date.isoformat(),
+        } if visit is not None else None,
+        "department_scope": {
+            "organisation_id": str(department.organisation_id),
+            "facility_id": str(department.facility_id),
+            "department_id": str(department.id),
+            "code": department.code,
+        } if department is not None else None,
+        "assessment_ids": sorted(str(value) for value in assessment_ids),
+        "encounter_ids": sorted(str(value) for value in encounter_ids),
+    }
+
+
+def _mig002_source_hash(queue, *, assessment_ids=(), encounter_ids=()):
+    return _stable_hash(
+        _mig002_source_evidence(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+    )
+
+
+def _mig002_related_ids(queue):
+    assessment_ids = list(
+        TriageAssessment.objects.filter(
+            organisation_id=queue.organisation_id,
+            queue_entry_id=queue.id,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    encounter_ids = list(
+        Encounter.objects.filter(
+            organisation_id=queue.organisation_id,
+            queue_entry_id=queue.id,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    return assessment_ids, encounter_ids
+
+
+def _mig002_consultation_destination(queue):
+    """Resolve the only supported triage-to-consultation mapping.
+
+    MIG-002 has no authority to invent a cross-department destination.  The
+    source department is therefore the destination scope, and the stage must
+    explicitly identify consultation work.  Anything else is quarantined for
+    PC-050 review.
+    """
+
+    department = getattr(queue, "department", None)
+    if department is None or queue.current_stage != "CONSULTATION" or queue.queue_type != "TRIAGE":
+        return None
+    if (
+        department.organisation_id != queue.organisation_id
+        or department.facility_id != queue.facility_id
+    ):
+        return None
+    return department
+
+
+def _mig002_consultation_candidates(queue):
+    """Return active consultation work competing for a TRIAGED source.
+
+    The source QueueEntry and its Visit are the authority for the destination
+    scope.  The query intentionally does not pre-filter facility or patient:
+    a row with either value corrupted is evidence for PC-050, not a row that
+    can disappear from the migration decision.
+    """
+
+    if not queue.visit_id or queue.department_id is None:
+        return []
+    return list(
+        QueueEntry.objects.filter(
+            organisation_id=queue.organisation_id,
+            visit_id=queue.visit_id,
+            queue_type="CONSULTATION",
+        ).filter(
+            models.Q(state__in=MIG002_ACTIVE_STATES)
+            | models.Q(state__isnull=True, status="WAITING")
+        )
+        .exclude(id=queue.id)
+        .order_by("id")
+    )
+
+
+def _mig002_consultation_scope_matches(source, destination):
+    """Check the exact Visit/department identity for a mapped destination."""
+
+    return bool(
+        destination.organisation_id == source.organisation_id
+        and destination.facility_id == source.facility_id
+        and destination.visit_id == source.visit_id
+        and destination.patient_id == source.patient_id
+        and destination.department_id == source.department_id
+        and destination.queue_type == "CONSULTATION"
+        and destination.status == "WAITING"
+        and destination.state in {None, "WAITING"}
+    )
+
+
+def _mig002_classify(queue, *, assessment_ids=None, encounter_ids=None):
+    assessment_ids, encounter_ids = (
+        _mig002_related_ids(queue)
+        if assessment_ids is None or encounter_ids is None
+        else (assessment_ids, encounter_ids)
+    )
+    codes = []
+    target_state = MIG002_LEGACY_STATE_MAP.get(queue.status)
+    if target_state is None:
+        # Unsupported legacy names are evidence, not state classifiers.  In
+        # particular ON_HOLD/LWBS/NO_SHOW/EXPIRED must not be guessed into a
+        # canonical target merely because the strings look familiar.
+        codes.append("UNKNOWN_LEGACY_STATE")
+        target_state = None
+    if queue.visit_id is None:
+        codes.append("MISSING_VISIT")
+    else:
+        visit = getattr(queue, "visit", None)
+        if visit is None or (
+            visit.organisation_id != queue.organisation_id
+            or visit.facility_id != queue.facility_id
+            or visit.patient_id != queue.patient_id
+        ):
+            codes.append("VISIT_SCOPE_MISMATCH")
+    department = getattr(queue, "department", None)
+    if department is None or (
+        department.organisation_id != queue.organisation_id
+        or department.facility_id != queue.facility_id
+    ):
+        codes.append("DEPARTMENT_SCOPE_MISMATCH")
+    if queue.status in MIG002_SUPPORTED_LEGACY_STATES and not str(queue.queue_type or "").strip():
+        codes.append("UNKNOWN_DEPARTMENT_WORK_IDENTITY")
+    if queue.status in {"WAITING", "CALLED", "CANCELLED", "COMPLETED"} and (
+        assessment_ids or encounter_ids
+    ):
+        codes.append("STATUS_WORK_RECORD_MISMATCH")
+    if queue.status == "IN_TRIAGE":
+        if queue.current_stage != "TRIAGE" or queue.queue_type != "TRIAGE":
+            codes.append("TRIAGE_STAGE_MISMATCH" if queue.current_stage != "TRIAGE" else "UNKNOWN_DEPARTMENT_WORK_IDENTITY")
+        if assessment_ids or encounter_ids:
+            codes.append("TRIAGE_WORK_RECORD_MISMATCH")
+    if queue.status == "TRIAGED":
+        if len(assessment_ids) != 1:
+            codes.append("TRIAGE_ASSESSMENT_MISMATCH")
+        if _mig002_consultation_destination(queue) is None:
+            codes.append("UNKNOWN_DEPARTMENT_WORK_IDENTITY")
+        if encounter_ids:
+            codes.append("TRIAGE_ENCOUNTER_MISMATCH")
+        assessment = (
+            TriageAssessment.objects.filter(
+                organisation_id=queue.organisation_id,
+                id=assessment_ids[0],
+            ).first()
+            if len(assessment_ids) == 1
+            else None
+        )
+        if len(assessment_ids) == 1 and (
+            assessment is None
+            or assessment.facility_id != queue.facility_id
+            or assessment.patient_id != queue.patient_id
+            or assessment.queue_entry_id != queue.id
+        ):
+            codes.append("TRIAGE_SCOPE_MISMATCH")
+        elif assessment is not None and assessment.acuity not in {"EMERGENCY", "URGENT", "ROUTINE"}:
+            codes.append("TRIAGE_ACUITY_INVALID")
+    if queue.status == "IN_CONSULTATION":
+        if assessment_ids:
+            codes.append("CONSULTATION_TRIAGE_MISMATCH")
+        if len(encounter_ids) != 1:
+            codes.append("CONSULTATION_ENCOUNTER_MISMATCH")
+        else:
+            encounter = Encounter.objects.filter(
+                organisation_id=queue.organisation_id,
+                id=encounter_ids[0],
+            ).first()
+            if encounter is None or (
+                encounter.organisation_id != queue.organisation_id
+                or encounter.facility_id != queue.facility_id
+                or encounter.patient_id != queue.patient_id
+                or encounter.visit_id != queue.visit_id
+                or encounter.queue_entry_id != queue.id
+            ):
+                codes.append("CONSULTATION_SCOPE_MISMATCH")
+        if queue.current_stage != "CONSULTATION" or queue.queue_type not in {"CONSULTATION", "CLINICIAN"}:
+            codes.append("UNKNOWN_DEPARTMENT_WORK_IDENTITY")
+    if queue.status == "COMPLETED" and not str(queue.queue_type or "").strip():
+        codes.append("UNKNOWN_DEPARTMENT_WORK_IDENTITY")
+    if queue.status == "TRIAGED" and queue.visit_id and _mig002_consultation_destination(queue) is not None:
+        active_destinations = _mig002_consultation_candidates(queue)
+        same_department = [
+            destination
+            for destination in active_destinations
+            if destination.department_id == queue.department_id
+        ]
+        matching_destinations = [
+            destination
+            for destination in same_department
+            if _mig002_consultation_scope_matches(queue, destination)
+        ]
+        if len(matching_destinations) > 1 or len(same_department) > 1:
+            codes.append("DUPLICATE_ACTIVE_DESTINATION")
+        elif same_department and not matching_destinations:
+            codes.append("CONSULTATION_DESTINATION_SCOPE_MISMATCH")
+        elif active_destinations and not same_department:
+            # MIG-002 has no authority to invent a cross-department
+            # consultation destination.  A competing department identity is
+            # therefore quarantined instead of being silently reused.
+            codes.append("UNKNOWN_DEPARTMENT_WORK_IDENTITY")
+
+        identity = f"MIG-002:CONSULTATION:{queue.id}"
+        identity_rows = list(
+            QueueEntry.objects.filter(
+                organisation_id=queue.organisation_id,
+                visit_id=queue.visit_id,
+                work_identity=identity,
+            )
+            .exclude(id=queue.id)
+            .order_by("id")
+        )
+        if identity_rows and not (
+            len(identity_rows) == 1
+            and _mig002_consultation_scope_matches(queue, identity_rows[0])
+        ):
+            codes.append("CONSULTATION_DESTINATION_SCOPE_MISMATCH")
+    # A newly added state column may contain NULL/WAITING from an older
+    # expand pass. Any other disagreement is durable drift and must be
+    # reconciled rather than silently repaired by a model save.
+    if (
+        target_state is not None
+        and queue.state not in {None, "WAITING", target_state}
+    ):
+        codes.append("LEGACY_CANONICAL_STATE_MISMATCH")
+    return sorted(set(codes)), target_state, assessment_ids, encounter_ids
+
+
+def _mig002_population(*, organisation, facility_id=None):
+    # Rows created by MIG-002 backfill or its Visit-linked rollback writer are
+    # target/compatibility rows, not additional legacy source population.
+    # Excluding both identities keeps L_queue stable across backfill, rollback,
+    # and a later migration evidence scan.
+    queryset = QueueEntry.objects.filter(organisation=organisation)
+    for prefix in MIG002_TARGET_WORK_IDENTITY_PREFIXES:
+        queryset = queryset.exclude(work_identity__startswith=prefix)
+    if facility_id:
+        queryset = queryset.filter(facility_id=facility_id)
+    return queryset.select_related("visit", "department").order_by("id")
+
+
+def _mig002_switch(organisation, *, phase="EXPANDED"):
+    switch, _ = MigrationCutover.objects.select_for_update().get_or_create(
+        organisation_id=getattr(organisation, "id", organisation),
+        migration_id=MIG002_ID,
+        defaults={
+            "phase": phase,
+            "target_reads_enabled": False,
+            "target_writes_enabled": False,
+        },
+    )
+    return switch
+
+
+def _mig002_record_exception(*, queue, codes, source_hash, target_refs=None, run_id=None):
+    evidence, created = MigrationReconciliation.objects.get_or_create(
+        organisation_id=queue.organisation_id,
+        migration_id=MIG002_ID,
+        legacy_table=MIG002_LEGACY_TABLE,
+        legacy_pk=str(queue.id),
+        defaults={
+            "facility_id": queue.facility_id,
+            "evidence_codes": sorted(set(codes)),
+            "proposed_target_refs": target_refs,
+            "source_hash": source_hash,
+            "target_hash": _stable_hash({"source_hash": source_hash, "target_refs": target_refs}),
+            "backfill_run_id": run_id,
+        },
+    )
+    if not created:
+        evidence.facility_id = queue.facility_id
+        evidence.evidence_codes = sorted(set(codes))
+        evidence.proposed_target_refs = target_refs
+        evidence.source_hash = source_hash
+        evidence.target_hash = _stable_hash({"source_hash": source_hash, "target_refs": target_refs})
+        evidence.backfill_run_id = run_id
+        if evidence.resolution_state == "RESOLVED":
+            evidence.resolution_state = "PENDING"
+            evidence.resolved_by = None
+            evidence.resolved_at = None
+            evidence.reason = ""
+        evidence.save(
+            update_fields=[
+                "facility", "evidence_codes", "proposed_target_refs", "source_hash",
+                "target_hash", "backfill_run_id", "resolution_state", "resolved_by",
+                "resolved_at", "reason", "updated_at",
+            ]
+        )
+    return evidence
+
+
+def _mig002_snapshot(*, organisation, facility_id=None):
+    rows = []
+    queues = list(_mig002_population(organisation=organisation, facility_id=facility_id))
+    exception_count = 0
+    for queue in queues:
+        assessment_ids, encounter_ids = _mig002_related_ids(queue)
+        codes, _, _, _ = _mig002_classify(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+        exception_count += bool(codes)
+        rows.append(
+            {
+                "legacy_pk": str(queue.id),
+                "source_hash": _mig002_source_hash(
+                    queue,
+                    assessment_ids=assessment_ids,
+                    encounter_ids=encounter_ids,
+                ),
+                "evidence_codes": codes,
+            }
+        )
+    organisation_counts, facility_counts = _scope_counts(queues)
+    return {
+        "source_count": len(rows),
+        "exception_count": exception_count,
+        "organisation_counts": organisation_counts,
+        "facility_counts": facility_counts,
+        "digest": _stable_hash(rows),
+        "rows": rows,
+    }
+
+
+def _mig002_target_refs(queue):
+    refs = {"queue_id": str(queue.id)}
+    if queue.visit_id:
+        refs["visit_id"] = str(queue.visit_id)
+    destinations = []
+    if queue.status == "TRIAGED" and _mig002_consultation_destination(queue) is not None:
+        destinations = [
+            destination
+            for destination in _mig002_consultation_candidates(queue)
+            if _mig002_consultation_scope_matches(queue, destination)
+        ]
+    if len(destinations) == 1:
+        destination = destinations[0]
+        refs["consultation_queue_id"] = str(destination.id)
+    return refs
+
+
+def _mig002_target_hash(queue):
+    return _stable_hash(
+        {
+            "state": queue.state,
+            "work_identity": queue.work_identity,
+            "source_event_id": queue.source_event_id,
+            "source_stage": queue.source_stage,
+            "target_refs": _mig002_target_refs(queue),
+        }
+    )
+
+
+def expand_mig002(*, organisation):
+    """Record the additive MIG-002 expansion without touching legacy rows."""
+
+    assert_transaction_active()
+    switch = _mig002_switch(organisation, phase="EXPANDED")
+    switch.phase = "EXPANDED"
+    switch.target_reads_enabled = False
+    switch.target_writes_enabled = False
+    switch.blocker_checks_passed = False
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase",
+            "target_reads_enabled",
+            "target_writes_enabled",
+            "blocker_checks_passed",
+            "write_fence",
+            "version",
+            "updated_at",
+        ]
+    )
+    return MigrationSummary(MIG002_ID, "EXPAND", run_id=str(switch.last_run_id or ""))
+
+
+def _mig002_promote_existing_consultation(destination):
+    """Complete target fields on a proven pre-expand destination row.
+
+    A destination that predates the nullable MIG-002 fields can be a valid
+    existing work row with ``state`` still NULL.  Reuse it in place and fill
+    only the canonical state field; the destination remains part of the
+    legacy source population until its own stable-key row is backfilled.
+    """
+
+    updates = {}
+    if destination.state is None:
+        updates["state"] = "WAITING"
+    if updates:
+        QueueEntry.objects.filter(id=destination.id).update(**updates)
+        destination.refresh_from_db()
+    return destination
+
+
+def _mig002_ensure_consultation(queue, *, assessment_ids):
+    department = _mig002_consultation_destination(queue)
+    if not queue.visit_id or len(assessment_ids) != 1 or department is None:
+        return None
+    identity = f"MIG-002:CONSULTATION:{queue.id}"
+    identity_rows = list(
+        QueueEntry.objects.select_for_update().filter(
+            organisation_id=queue.organisation_id,
+            visit_id=queue.visit_id,
+            work_identity=identity,
+        )
+        .exclude(id=queue.id)
+        .order_by("id")
+    )
+    if identity_rows:
+        if len(identity_rows) == 1 and _mig002_consultation_scope_matches(queue, identity_rows[0]):
+            return _mig002_promote_existing_consultation(identity_rows[0])
+        raise ValueError("MIG-002 consultation destination has invalid scope or state.")
+
+    existing_destinations = [
+        destination
+        for destination in _mig002_consultation_candidates(queue)
+        if destination.department_id == queue.department_id
+    ]
+    matching_destinations = [
+        destination
+        for destination in existing_destinations
+        if _mig002_consultation_scope_matches(queue, destination)
+    ]
+    if len(existing_destinations) > 1 or len(matching_destinations) > 1:
+        raise ValueError("MIG-002 has duplicate active consultation destinations.")
+    if existing_destinations:
+        if len(matching_destinations) != 1:
+            raise ValueError("MIG-002 consultation destination has invalid scope or state.")
+        return _mig002_promote_existing_consultation(matching_destinations[0])
+    assessment = TriageAssessment.objects.filter(
+        organisation_id=queue.organisation_id,
+        facility_id=queue.facility_id,
+        id=assessment_ids[0],
+    ).first()
+    priority = getattr(assessment, "acuity", None) if assessment else None
+    if priority not in {"EMERGENCY", "URGENT", "ROUTINE"}:
+        raise ValueError("MIG-002 triage evidence has no supported acuity.")
+    last = (
+        QueueEntry.objects.filter(
+            organisation_id=queue.organisation_id,
+            facility_id=queue.facility_id,
+            queue_date=queue.queue_date,
+        )
+        .order_by("-sequence")
+        .values_list("sequence", flat=True)
+        .first()
+    )
+    sequence = allocate_sequence(
+        organisation=queue.organisation_id,
+        facility=queue.facility_id,
+        sequence_type="QUEUE",
+        period_key=queue.queue_date.isoformat(),
+        initial_value=(last or 0) + 1,
+    )
+    try:
+        with transaction.atomic():
+            destination = QueueEntry.objects.create(
+                organisation_id=queue.organisation_id,
+                facility_id=queue.facility_id,
+                visit_id=queue.visit_id,
+                patient_id=queue.patient_id,
+                department_id=department.id,
+                queue_date=queue.queue_date,
+                sequence=sequence,
+                queue_type="CONSULTATION",
+                work_identity=identity,
+                priority=priority,
+                visit_type=queue.visit_type,
+                status="WAITING",
+                state="WAITING",
+                current_stage="CONSULTATION",
+                source_stage="TRIAGE",
+                queue_time=queue.queue_time or now(),
+                last_activity_at=queue.updated_at or queue.queue_time or now(),
+                source_event_id=f"MIG-002:CONSULTATION:{queue.id}",
+            )
+    except IntegrityError:
+        destination = QueueEntry.objects.select_for_update().filter(
+            organisation_id=queue.organisation_id,
+            facility_id=queue.facility_id,
+            visit_id=queue.visit_id,
+            work_identity=identity,
+        ).first()
+        if destination is None:
+            raise
+    return destination
+
+
+def inventory_mig002(*, organisation, facility_id=None, run_id=None):
+    """Inventory every QueueEntry and persist only non-PHI exceptions."""
+
+    assert_transaction_active()
+    run_id = run_id or uuid4()
+    snapshot = _mig002_snapshot(organisation=organisation, facility_id=facility_id)
+    for queue in _mig002_population(organisation=organisation, facility_id=facility_id):
+        assessment_ids, encounter_ids = _mig002_related_ids(queue)
+        codes, _, _, _ = _mig002_classify(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+        if codes:
+            _mig002_record_exception(
+                queue=queue,
+                codes=codes,
+                source_hash=_mig002_source_hash(
+                    queue,
+                    assessment_ids=assessment_ids,
+                    encounter_ids=encounter_ids,
+                ),
+                target_refs=_mig002_target_refs(queue),
+                run_id=run_id,
+            )
+    switch = _mig002_switch(organisation)
+    switch.phase = "INVENTORY"
+    switch.target_reads_enabled = False
+    switch.target_writes_enabled = False
+    switch.inventory_completed_at = now()
+    switch.inventory_source_count = snapshot["source_count"]
+    switch.inventory_digest = snapshot["digest"]
+    switch.inventory_organisation_counts = snapshot["organisation_counts"]
+    switch.inventory_facility_counts = snapshot["facility_counts"]
+    switch.backfill_completed_at = None
+    switch.backfill_source_count = 0
+    switch.backfill_digest = ""
+    switch.backfill_organisation_counts = {}
+    switch.backfill_facility_counts = {}
+    switch.deterministic_row_evidence = {}
+    switch.last_verified_at = None
+    switch.parity_digest = ""
+    switch.parity_passes = 0
+    switch.scope_link_hash_verified = False
+    switch.blocker_checks_passed = False
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.last_run_id = run_id
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase", "target_reads_enabled", "target_writes_enabled", "inventory_completed_at",
+            "inventory_source_count", "inventory_digest", "inventory_organisation_counts",
+            "inventory_facility_counts", "backfill_completed_at", "backfill_source_count",
+            "backfill_digest", "backfill_organisation_counts", "backfill_facility_counts",
+            "deterministic_row_evidence", "last_verified_at", "parity_digest", "parity_passes",
+            "scope_link_hash_verified", "blocker_checks_passed", "shadow_read_equal",
+            "shadow_read_digest", "stable_full_scan_count", "last_run_id", "write_fence",
+            "version", "updated_at",
+        ]
+    )
+    return MigrationSummary(
+        MIG002_ID,
+        "INVENTORY",
+        inspected=snapshot["source_count"],
+        exceptions=snapshot["exception_count"],
+        organisation_counts=snapshot["organisation_counts"],
+        facility_counts=snapshot["facility_counts"],
+        run_id=str(run_id),
+    )
+
+
+def backfill_mig002(*, organisation, facility_id=None, batch_size=500, after_id=None, run_id=None):
+    """Restartable stable-key state backfill and destination convergence."""
+
+    assert_transaction_active()
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    run_id = run_id or uuid4()
+    queryset = _mig002_population(organisation=organisation, facility_id=facility_id)
+    if after_id:
+        queryset = queryset.filter(id__gt=after_id)
+    # Lock only the QueueEntry rows. The nullable Visit join cannot take part in
+    # a FOR UPDATE, and locking Department/Patient would widen the fence.
+    queues = list(queryset.select_for_update(of=("self",))[:batch_size])
+    inspected = 0
+    backfilled = 0
+    exceptions = 0
+    for queue in queues:
+        inspected += 1
+        assessment_ids, encounter_ids = _mig002_related_ids(queue)
+        codes, target_state, _, _ = _mig002_classify(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+        source_hash = _mig002_source_hash(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+        if codes:
+            exceptions += 1
+            _mig002_record_exception(
+                queue=queue,
+                codes=codes,
+                source_hash=source_hash,
+                target_refs=_mig002_target_refs(queue),
+                run_id=run_id,
+            )
+            continue
+        before = (
+            queue.state,
+            queue.work_identity,
+            queue.source_event_id,
+            queue.source_stage,
+        )
+        work_identity = queue.work_identity or f"MIG-002:QUEUE:{queue.id}"
+        source_event_id = queue.source_event_id or f"MIG-002:QUEUE:{queue.id}"
+        source_stage = queue.source_stage or queue.current_stage or "RECEPTION"
+        # QuerySet.update is intentional: a legacy TRIAGED shadow must not be
+        # remapped a second time by QueueEntry.save().
+        QueueEntry.objects.filter(id=queue.id).update(
+            state=target_state,
+            work_identity=work_identity,
+            source_event_id=source_event_id,
+            source_stage=source_stage,
+            last_activity_at=queue.last_activity_at or queue.updated_at or queue.queue_time or now(),
+        )
+        queue.refresh_from_db()
+        if queue.status == "TRIAGED":
+            _mig002_ensure_consultation(queue, assessment_ids=assessment_ids)
+        if before != (target_state, work_identity, source_event_id, source_stage):
+            backfilled += 1
+
+    all_queues = list(_mig002_population(organisation=organisation, facility_id=facility_id))
+    snapshot = _mig002_snapshot(organisation=organisation, facility_id=facility_id)
+    exception_keys = set(
+        MigrationReconciliation.objects.filter(
+            organisation=organisation,
+            migration_id=MIG002_ID,
+            legacy_table=MIG002_LEGACY_TABLE,
+            legacy_pk__in=[str(queue.id) for queue in all_queues],
+        ).values_list("legacy_pk", flat=True)
+    )
+    complete = all(
+        str(queue.id) in exception_keys
+        or (
+            queue.state in MIG002_CANONICAL_STATES
+            and bool(queue.work_identity)
+            and bool(queue.source_event_id)
+        )
+        for queue in all_queues
+    )
+    switch = _mig002_switch(organisation)
+    deterministic = {}
+    for queue in all_queues:
+        assessment_ids, encounter_ids = _mig002_related_ids(queue)
+        codes, _, _, _ = _mig002_classify(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+        if not codes and queue.state in MIG002_CANONICAL_STATES:
+            deterministic[f"{MIG002_LEGACY_TABLE}:{queue.id}"] = {
+                "legacy_table": MIG002_LEGACY_TABLE,
+                "legacy_pk": str(queue.id),
+                "organisation_id": str(queue.organisation_id),
+                "facility_id": str(queue.facility_id),
+                "source_hash": _mig002_source_hash(
+                    queue,
+                    assessment_ids=assessment_ids,
+                    encounter_ids=encounter_ids,
+                ),
+                "target_hash": _mig002_target_hash(queue),
+                "backfill_run_id": str(run_id),
+                "target_refs": _mig002_target_refs(queue),
+            }
+    persisted = dict(switch.deterministic_row_evidence or {})
+    if facility_id:
+        persisted.update(deterministic)
+    else:
+        persisted = deterministic
+    unresolved = MigrationReconciliation.objects.filter(
+        organisation=organisation,
+        migration_id=MIG002_ID,
+        resolution_state="PENDING",
+    )
+    if facility_id:
+        unresolved = unresolved.filter(facility_id=facility_id)
+    switch.phase = "BACKFILL"
+    switch.target_reads_enabled = False
+    switch.target_writes_enabled = False
+    if complete and not facility_id:
+        switch.backfill_completed_at = now()
+        switch.backfill_source_count = snapshot["source_count"]
+        switch.backfill_digest = snapshot["digest"]
+        switch.backfill_organisation_counts = snapshot["organisation_counts"]
+        switch.backfill_facility_counts = snapshot["facility_counts"]
+    else:
+        switch.backfill_completed_at = None
+        switch.backfill_source_count = 0
+        switch.backfill_digest = ""
+        switch.backfill_organisation_counts = {}
+        switch.backfill_facility_counts = {}
+    switch.deterministic_row_evidence = persisted
+    switch.last_verified_at = None
+    switch.parity_digest = ""
+    switch.parity_passes = 0
+    switch.scope_link_hash_verified = False
+    switch.blocker_checks_passed = False
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.last_run_id = run_id
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase", "target_reads_enabled", "target_writes_enabled", "backfill_completed_at",
+            "backfill_source_count", "backfill_digest", "backfill_organisation_counts",
+            "backfill_facility_counts", "deterministic_row_evidence", "last_verified_at",
+            "parity_digest", "parity_passes", "scope_link_hash_verified", "blocker_checks_passed",
+            "shadow_read_equal", "shadow_read_digest", "stable_full_scan_count", "last_run_id",
+            "write_fence", "version", "updated_at",
+        ]
+    )
+    return MigrationSummary(
+        MIG002_ID,
+        "BACKFILL",
+        inspected=inspected,
+        backfilled=backfilled,
+        exceptions=exceptions,
+        unresolved=unresolved.count(),
+        parity_digest=snapshot["digest"],
+        organisation_counts=snapshot["organisation_counts"],
+        facility_counts=snapshot["facility_counts"],
+        run_id=str(run_id),
+    )
+
+
+def verify_mig002(*, organisation, facility_id=None):
+    """Run state, scope, uniqueness, and source/target parity gates."""
+
+    assert_transaction_active()
+    switch = _mig002_switch(organisation)
+    queues = list(_mig002_population(organisation=organisation, facility_id=facility_id))
+    reconciliation_query = MigrationReconciliation.objects.filter(
+        organisation=organisation,
+        migration_id=MIG002_ID,
+    )
+    if facility_id:
+        reconciliation_query = reconciliation_query.filter(facility_id=facility_id)
+    evidence_rows = list(reconciliation_query.order_by("id"))
+    pending = {
+        (evidence.legacy_table, str(evidence.legacy_pk))
+        for evidence in evidence_rows
+        if evidence.resolution_state == "PENDING"
+    }
+    unresolved = len(pending)
+    row_hashes = []
+    scope_ok = True
+    shadow_equal = True
+    classified = 0
+    exceptions = 0
+    for queue in queues:
+        assessment_ids, encounter_ids = _mig002_related_ids(queue)
+        codes, expected_state, _, _ = _mig002_classify(
+            queue,
+            assessment_ids=assessment_ids,
+            encounter_ids=encounter_ids,
+        )
+        key = (MIG002_LEGACY_TABLE, str(queue.id))
+        if codes:
+            exceptions += 1
+            if key not in pending:
+                pending.add(key)
+                unresolved += 1
+            continue
+        classified += 1
+        target_refs = _mig002_target_refs(queue)
+        target_state_ok = (
+            queue.state == expected_state
+            and queue.state in MIG002_CANONICAL_STATES
+            and bool(queue.work_identity)
+            and bool(queue.source_event_id)
+        )
+        if queue.visit_id:
+            visit = queue.visit
+            target_state_ok = target_state_ok and visit is not None and (
+                visit.organisation_id == queue.organisation_id
+                and visit.facility_id == queue.facility_id
+                and visit.patient_id == queue.patient_id
+            )
+        if queue.status == "TRIAGED" and "consultation_queue_id" not in target_refs:
+            target_state_ok = False
+        if not target_state_ok:
+            shadow_equal = False
+            if key not in pending:
+                pending.add(key)
+                unresolved += 1
+        else:
+            proof = (switch.deterministic_row_evidence or {}).get(
+                f"{MIG002_LEGACY_TABLE}:{queue.id}"
+            )
+            current_source_hash = _mig002_source_hash(
+                queue,
+                assessment_ids=assessment_ids,
+                encounter_ids=encounter_ids,
+            )
+            if proof is None or proof.get("source_hash") != current_source_hash or proof.get("target_refs") != target_refs:
+                shadow_equal = False
+                if key not in pending:
+                    pending.add(key)
+                    unresolved += 1
+            row_hashes.append(
+                {
+                    "queue_id": str(queue.id),
+                    "source_hash": current_source_hash,
+                    "target_hash": _mig002_target_hash(queue),
+                }
+            )
+        if queue.visit_id and (
+            queue.visit is None
+            or queue.visit.organisation_id != queue.organisation_id
+            or queue.visit.facility_id != queue.facility_id
+            or queue.visit.patient_id != queue.patient_id
+        ):
+            scope_ok = False
+
+    active_duplicates = (
+        QueueEntry.objects.filter(
+            organisation=organisation,
+            visit_id__isnull=False,
+            state__in=MIG002_ACTIVE_STATES,
+            **({"facility_id": facility_id} if facility_id else {}),
+        )
+        .values("visit_id", "department_id")
+        .annotate(row_count=models.Count("id"))
+        .filter(row_count__gt=1)
+        .count()
+    )
+    in_service_duplicates = (
+        QueueEntry.objects.filter(
+            organisation=organisation,
+            visit_id__isnull=False,
+            state="IN_SERVICE",
+            **({"facility_id": facility_id} if facility_id else {}),
+        )
+        .values("visit_id")
+        .annotate(row_count=models.Count("id"))
+        .filter(row_count__gt=1)
+        .count()
+    )
+    if active_duplicates or in_service_duplicates:
+        scope_ok = False
+        unresolved += active_duplicates + in_service_duplicates
+    source_count = len(queues)
+    if source_count != classified + exceptions:
+        shadow_equal = False
+        unresolved += abs(source_count - classified - exceptions)
+    parity_digest = _stable_hash(
+        {
+            "source_count": source_count,
+            "classified": classified,
+            "exceptions": exceptions,
+            "rows": row_hashes,
+        }
+    )
+    stable_full_scan_count = (
+        min(2, switch.stable_full_scan_count + 1)
+        if switch.parity_digest == parity_digest
+        and switch.shadow_read_digest == parity_digest
+        and switch.shadow_read_equal == shadow_equal
+        else 1
+    )
+    gates_passed = bool(
+        unresolved == 0
+        and scope_ok
+        and shadow_equal
+        and source_count == classified + exceptions
+    )
+    switch.last_verified_at = now()
+    switch.parity_digest = parity_digest
+    switch.scope_link_hash_verified = scope_ok
+    switch.blocker_checks_passed = gates_passed
+    switch.shadow_read_equal = shadow_equal and not unresolved
+    switch.shadow_read_digest = parity_digest
+    switch.stable_full_scan_count = stable_full_scan_count
+    switch.save(
+        update_fields=[
+            "last_verified_at", "parity_digest", "scope_link_hash_verified",
+            "blocker_checks_passed", "shadow_read_equal", "shadow_read_digest",
+            "stable_full_scan_count", "updated_at",
+        ]
+    )
+    return MigrationSummary(
+        MIG002_ID,
+        "VERIFY",
+        inspected=source_count,
+        exceptions=exceptions,
+        unresolved=unresolved,
+        linked_visit_count=sum(1 for queue in queues if queue.visit_id),
+        parity_digest=parity_digest,
+        scope_link_hash_verified=scope_ok,
+        blocker_checks_passed=gates_passed,
+        shadow_read_equal=shadow_equal and not unresolved,
+        shadow_read_digest=parity_digest,
+        stable_full_scan_count=stable_full_scan_count,
+        run_id=str(switch.last_run_id) if switch.last_run_id else "",
+    )
+
+
+def _require_mig002_database_guards():
+    """Verify the owner-installed queue guards without runtime DDL.
+
+    The application role has DML privileges only. Creating the constraints or a
+    global NOT NULL here would either fail or impose one tenant's cutover on
+    every other organisation, so activation only verifies what the schema owner
+    installed in ``scheduling.0007_s02_queue_database_guards``.
+
+    The check is bound to the target table OID and rejects objects that exist
+    but are unusable: an unvalidated CHECK, an invalid or not-ready index, or a
+    state trigger that is disabled for normal application writes.
+    """
+
+    if connection.vendor != "postgresql":
+        return
+    missing = []
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 'scheduling_queueentry'::regclass::oid")
+        table_oid = cursor.fetchone()[0]
+        cursor.execute(
+            """
+            SELECT conname FROM pg_constraint
+            WHERE conrelid = %s
+              AND contype = 'c'
+              AND convalidated
+              AND conname IN ('queue_entry_state_valid', 'queue_entry_attempt_counts_nonnegative')
+            """,
+            [table_oid],
+        )
+        present_constraints = {row[0] for row in cursor.fetchall()}
+        cursor.execute(
+            """
+            SELECT c.relname FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE i.indrelid = %s
+              AND i.indisunique
+              AND i.indisvalid
+              AND i.indisready
+              AND c.relname IN ('uniq_active_queue_visit_department', 'uniq_in_service_queue_visit')
+            """,
+            [table_oid],
+        )
+        present_indexes = {row[0] for row in cursor.fetchall()}
+        cursor.execute(
+            """
+            SELECT tgname FROM pg_trigger
+            WHERE tgrelid = %s
+              AND tgname = 'klin_klink_queue_state'
+              AND NOT tgisinternal
+              AND tgenabled = 'O'
+            """,
+            [table_oid],
+        )
+        present_triggers = {row[0] for row in cursor.fetchall()}
+    for name in ("queue_entry_state_valid", "queue_entry_attempt_counts_nonnegative"):
+        if name not in present_constraints:
+            missing.append(name)
+    for name in ("uniq_active_queue_visit_department", "uniq_in_service_queue_visit"):
+        if name not in present_indexes:
+            missing.append(name)
+    if "klin_klink_queue_state" not in present_triggers:
+        missing.append("klin_klink_queue_state")
+    if missing:
+        raise ValueError(
+            "MIG-002 database guards are missing or unusable ("
+            + ", ".join(sorted(missing))
+            + "). Apply the owner migration first: "
+            "python backend/manage.py migrate scheduling 0007"
+        )
+
+
+def constrain_mig002(*, organisation):
+    """Activate semantic database constraints only after E=0 is proven."""
+
+    assert_transaction_active()
+    if not _mig001_target_writer_active(organisation):
+        raise ValueError("MIG-002 requires an active MIG-001 Visit writer.")
+    summary = verify_mig002(organisation=organisation)
+    switch = _mig002_switch(organisation)
+    if switch.phase not in {"BACKFILL", "CONSTRAINED", "CUTOVER"}:
+        raise ValueError("MIG-002 constraints require completed inventory and backfill evidence.")
+    unresolved_targets = QueueEntry.objects.filter(
+        organisation=organisation,
+        state__isnull=True,
+    ).exists()
+    if (
+        summary.unresolved
+        or switch.inventory_completed_at is None
+        or not switch.inventory_digest
+        or switch.backfill_completed_at is None
+        or not switch.backfill_digest
+        or unresolved_targets
+        or not summary.blocker_checks_passed
+        or not summary.scope_link_hash_verified
+        or not summary.shadow_read_equal
+        or summary.stable_full_scan_count < 2
+    ):
+        raise ValueError("MIG-002 constrain requires E=0 and two stable verification scans.")
+
+    _require_mig002_database_guards()
+    # Constrain records that the guards and evidence were verified. Activation
+    # belongs to cutover: a tenant that is not already active stays fenced.
+    already_active = bool(switch.target_reads_enabled and switch.target_writes_enabled)
+    if not already_active:
+        switch.phase = "CONSTRAINED"
+        switch.target_reads_enabled = False
+        switch.target_writes_enabled = False
+    switch.blocker_checks_passed = summary.blocker_checks_passed
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase",
+            "target_reads_enabled",
+            "target_writes_enabled",
+            "blocker_checks_passed",
+            "write_fence",
+            "version",
+            "updated_at",
+        ]
+    )
+    return MigrationSummary(
+        **{
+            **summary.as_dict(),
+            "phase": "CONSTRAIN",
+            "blocker_checks_passed": summary.blocker_checks_passed,
+        }
+    )
+
+
+def cutover_mig002(*, organisation, facility_id=None, parity_passes=2):
+    """Enable canonical QueueEntry routes only after stable parity gates."""
+
+    assert_transaction_active()
+    if not _mig001_target_writer_active(organisation):
+        raise ValueError("MIG-002 requires an active MIG-001 Visit writer.")
+    if parity_passes < 2:
+        raise ValueError("MIG-002 cutover requires two stable parity passes.")
+    if facility_id:
+        raise ValueError("MIG-002 cutover is organisation-wide; verify without a facility filter.")
+    switch = _mig002_switch(organisation)
+    if switch.phase == "ROLLBACK":
+        raise ValueError("MIG-002 cutover requires a new inventory/backfill cycle after rollback.")
+    if switch.inventory_completed_at is None or not switch.inventory_digest:
+        raise ValueError("MIG-002 cutover requires durable inventory evidence.")
+    if switch.backfill_completed_at is None or not switch.backfill_digest:
+        raise ValueError("MIG-002 cutover requires a completed durable backfill.")
+    current = _mig002_snapshot(organisation=organisation)
+    if (
+        current["source_count"] != switch.inventory_source_count
+        or current["digest"] != switch.inventory_digest
+        or current["source_count"] != switch.backfill_source_count
+        or current["digest"] != switch.backfill_digest
+    ):
+        raise ValueError("MIG-002 inventory/backfill evidence is stale; run the phases again.")
+    previous_signature = None
+    summary = None
+    for _ in range(parity_passes):
+        summary = verify_mig002(organisation=organisation)
+        if (
+            summary.unresolved
+            or not summary.scope_link_hash_verified
+            or not summary.shadow_read_equal
+            or not summary.blocker_checks_passed
+        ):
+            raise ValueError("MIG-002 cutover is blocked by unresolved state or scope evidence.")
+        signature = (
+            summary.inspected,
+            summary.unresolved,
+            summary.parity_digest,
+            summary.scope_link_hash_verified,
+            summary.shadow_read_equal,
+        )
+        if previous_signature is not None and signature != previous_signature:
+            raise ValueError("MIG-002 parity scans are not stable.")
+        previous_signature = signature
+    if summary is None or summary.stable_full_scan_count < 2:
+        raise ValueError("MIG-002 cutover requires two stable full scans.")
+    # The public cutover command is the final gate: callers may omit the
+    # separately named constraint phase, but cutover itself must prove and
+    # activate the same database constraints before enabling target routes.
+    if switch.phase != "CONSTRAINED":
+        constrain_mig002(organisation=organisation)
+        switch = _mig002_switch(organisation)
+    # Activation is the explicit gate: re-verify the installed guards even for
+    # a tenant already marked CONSTRAINED, so a disabled or invalid object can
+    # never be activated by an earlier verification.
+    _require_mig002_database_guards()
+    switch.phase = "CUTOVER"
+    switch.target_reads_enabled = True
+    switch.target_writes_enabled = True
+    switch.parity_passes = parity_passes
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase", "target_reads_enabled", "target_writes_enabled", "parity_passes",
+            "write_fence", "version", "updated_at",
+        ]
+    )
+    return MigrationSummary(
+        **{**summary.as_dict(), "phase": "CUTOVER", "parity_passes": parity_passes}
+    )
+
+
+def rollback_mig002(*, organisation, reason, actor=None):
+    """Disable target routes while retaining canonical rows and evidence."""
+
+    assert_transaction_active()
+    reason = str(reason or "").strip()
+    if len(reason) < 3:
+        raise ValueError("A rollback reason is required.")
+    switch = _mig002_switch(organisation, phase="ROLLBACK")
+    switch.phase = "ROLLBACK"
+    switch.target_reads_enabled = False
+    switch.target_writes_enabled = False
+    switch.rollback_at = now()
+    switch.rollback_reason = reason[:240]
+    switch.last_verified_at = None
+    switch.parity_digest = ""
+    switch.parity_passes = 0
+    switch.scope_link_hash_verified = False
+    switch.blocker_checks_passed = False
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.write_fence += 1
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "phase", "target_reads_enabled", "target_writes_enabled", "rollback_at",
+            "rollback_reason", "last_verified_at", "parity_digest", "parity_passes",
+            "scope_link_hash_verified", "blocker_checks_passed", "shadow_read_equal",
+            "shadow_read_digest", "stable_full_scan_count", "write_fence", "version", "updated_at",
+        ]
+    )
+    if actor is not None:
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            event_code="MIGRATION_ROLLED_BACK",
+            action="UPDATE",
+            entity_type="MigrationCutover",
+            entity_id=switch.id,
+            source_ids={"migration_id": MIG002_ID},
+            after={"phase": "ROLLBACK", "reason_hash": _stable_hash(reason)},
+        )
+    return switch
+
+
+def _locked_migration_switch(organisation, migration_id):
+    """Lock a migration fence in the order shared by all queue writers."""
+
+    return MigrationCutover.objects.select_for_update().filter(
+        organisation=organisation,
+        migration_id=migration_id,
+    ).first()
+
+
+def _mig001_target_writer_active(organisation):
+    """Return whether the S-01 Visit writer is the active outer fence."""
+
+    switch = _locked_migration_switch(organisation, MIGRATION_ID)
+    return bool(switch is not None and switch.target_writes_enabled)
+
+
+def target_reads_enabled_mig002(organisation):
+    assert_transaction_active()
+    # MIG-002 must never expose target reads while the authoritative S-01
+    # Visit route is rolled back or has not yet been cut over.
+    if not _mig001_target_writer_active(organisation):
+        return False
+    switch = _locked_migration_switch(organisation, MIG002_ID)
+    return bool(switch is not None and switch.target_reads_enabled)
+
+
+def target_writes_enabled_mig002(organisation):
+    """Read the MIG-002 write fence, falling back to the S-01 target on fresh data."""
+
+    assert_transaction_active()
+    if not _mig001_target_writer_active(organisation):
+        return False
+    switch = _locked_migration_switch(organisation, MIG002_ID)
+    if switch is not None:
+        return bool(switch.target_writes_enabled)
+    return True
+
+
+def legacy_writes_enabled_mig002(organisation):
+    assert_transaction_active()
+    # MIG-001 owns the legacy-writer decision.  Its rollback must reopen the
+    # original writer even if a stale MIG-002 row remains.  MIG-002 may add
+    # only its explicit Visit-linked compatibility route while MIG-001 stays
+    # on the canonical Visit writer.
+    mig001_switch = _locked_migration_switch(organisation, MIGRATION_ID)
+    mig001_legacy_enabled = mig001_switch is None or not mig001_switch.target_writes_enabled
+    if mig001_legacy_enabled:
+        return True
+    switch = _locked_migration_switch(organisation, MIG002_ID)
+    if switch is None:
+        return False
+    return bool(
+        switch.phase == "ROLLBACK"
+        and not switch.target_writes_enabled
+    )
+
+
+def mig002_rollback_active(organisation):
+    """Return whether the Visit-linked rollback writer is explicitly active."""
+
+    assert_transaction_active()
+    # Keep the same MIG-001 -> MIG-002 lock order used by the writer fence.
+    if not _mig001_target_writer_active(organisation):
+        return False
+    switch = _locked_migration_switch(organisation, MIG002_ID)
+    return bool(
+        switch is not None
+        and switch.phase == "ROLLBACK"
+        and not switch.target_writes_enabled
+    )
+
+
+def resolve_mig002_reconciliation(*, organisation, reconciliation_id, actor, reason):
+    """Resolve a corrected MIG-002 source only after target convergence."""
+
+    assert_transaction_active()
+    reason = str(reason or "").strip()
+    if len(reason) < 3:
+        raise ValueError("A reconciliation reason is required.")
+    evidence = MigrationReconciliation.objects.select_for_update().filter(
+        id=reconciliation_id,
+        organisation=organisation,
+        migration_id=MIG002_ID,
+    ).first()
+    if evidence is None:
+        raise ValueError("MIG-002 evidence was not found in this organisation.")
+    queue = QueueEntry.objects.select_for_update(of=("self",)).select_related("visit", "department").filter(
+        organisation=organisation,
+        id=evidence.legacy_pk,
+        **({"facility_id": evidence.facility_id} if evidence.facility_id else {}),
+    ).first()
+    if queue is None:
+        raise ValueError("The QueueEntry source is unavailable; rerun inventory.")
+    assessment_ids, encounter_ids = _mig002_related_ids(queue)
+    codes, target_state, _, _ = _mig002_classify(
+        queue,
+        assessment_ids=assessment_ids,
+        encounter_ids=encounter_ids,
+    )
+    if codes:
+        raise ValueError("Correct the QueueEntry source before resolving this evidence.")
+    work_identity = queue.work_identity or f"MIG-002:QUEUE:{queue.id}"
+    source_event_id = queue.source_event_id or f"MIG-002:QUEUE:{queue.id}"
+    source_stage = queue.source_stage or queue.current_stage or "RECEPTION"
+    # Reconciliation is the explicit owner of the corrected source row. The
+    # model save hook must remain inert, so apply the deterministic target
+    # fields here before marking the exception resolved.
+    QueueEntry.objects.filter(id=queue.id).update(
+        state=target_state,
+        work_identity=work_identity,
+        source_event_id=source_event_id,
+        source_stage=source_stage,
+        last_activity_at=queue.last_activity_at or queue.updated_at or queue.queue_time or now(),
+    )
+    queue.refresh_from_db()
+    if queue.status == "TRIAGED":
+        _mig002_ensure_consultation(queue, assessment_ids=assessment_ids)
+    source_hash = _mig002_source_hash(
+        queue,
+        assessment_ids=assessment_ids,
+        encounter_ids=encounter_ids,
+    )
+    refs = _mig002_target_refs(queue)
+    switch = _mig002_switch(organisation)
+    snapshot = _mig002_snapshot(organisation=organisation)
+    deterministic_evidence = dict(switch.deterministic_row_evidence or {})
+    deterministic_evidence[f"{MIG002_LEGACY_TABLE}:{queue.id}"] = {
+        "legacy_table": MIG002_LEGACY_TABLE,
+        "legacy_pk": str(queue.id),
+        "organisation_id": str(queue.organisation_id),
+        "facility_id": str(queue.facility_id),
+        "source_hash": source_hash,
+        "target_hash": _mig002_target_hash(queue),
+        "backfill_run_id": str(evidence.backfill_run_id or switch.last_run_id or uuid4()),
+        "target_refs": refs,
+    }
+    evidence.source_hash = source_hash
+    evidence.proposed_target_refs = refs
+    evidence.target_hash = _stable_hash({"source_hash": source_hash, "target_refs": refs})
+    evidence.resolution_state = "RESOLVED"
+    evidence.resolved_by = actor
+    evidence.resolved_at = now()
+    evidence.reason = reason[:240]
+    evidence.save(
+        update_fields=[
+            "source_hash", "proposed_target_refs", "target_hash", "resolution_state",
+            "resolved_by", "resolved_at", "reason", "updated_at",
+        ]
+    )
+    switch.inventory_source_count = snapshot["source_count"]
+    switch.inventory_digest = snapshot["digest"]
+    switch.inventory_organisation_counts = snapshot["organisation_counts"]
+    switch.inventory_facility_counts = snapshot["facility_counts"]
+    if switch.backfill_completed_at is not None:
+        switch.backfill_source_count = snapshot["source_count"]
+        switch.backfill_digest = snapshot["digest"]
+        switch.backfill_organisation_counts = snapshot["organisation_counts"]
+        switch.backfill_facility_counts = snapshot["facility_counts"]
+    switch.deterministic_row_evidence = deterministic_evidence
+    switch.last_verified_at = None
+    switch.parity_digest = ""
+    switch.parity_passes = 0
+    switch.scope_link_hash_verified = False
+    switch.blocker_checks_passed = False
+    switch.shadow_read_equal = False
+    switch.shadow_read_digest = ""
+    switch.stable_full_scan_count = 0
+    switch.version += 1
+    switch.save(
+        update_fields=[
+            "inventory_source_count", "inventory_digest", "inventory_organisation_counts",
+            "inventory_facility_counts", "backfill_source_count", "backfill_digest",
+            "backfill_organisation_counts", "backfill_facility_counts",
+            "deterministic_row_evidence", "last_verified_at", "parity_digest",
+            "parity_passes", "scope_link_hash_verified", "blocker_checks_passed",
+            "shadow_read_equal", "shadow_read_digest", "stable_full_scan_count",
+            "version", "updated_at",
+        ]
+    )
+    record_fact(
+        organisation=organisation,
+        actor=actor,
+        event_code="MIGRATION_RECONCILIATION_RESOLVED",
+        action="UPDATE",
+        entity_type="MigrationReconciliation",
+        entity_id=evidence.id,
+        source_ids={
+            "reconciliation_id": evidence.id,
+            "migration_id": MIG002_ID,
+            "legacy_table": evidence.legacy_table,
+            "legacy_pk": evidence.legacy_pk,
+        },
+        after={"resolution_state": "RESOLVED", "reason_hash": _stable_hash(reason)},
+    )
     return evidence

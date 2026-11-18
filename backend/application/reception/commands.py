@@ -36,6 +36,7 @@ from scheduling.services import (
     record_arrival_enquiry,
     resolve_department,
     set_referral_source,
+    queue_lwbs,
 )
 from tenancy.models import Facility, FacilityWorkflowPolicy, Organisation
 
@@ -86,6 +87,13 @@ CMD_006_SPEC = CommandSpec(
     capability="visit.cancel_error",
     owner_service="scheduling.services.visit.cancel_error",
     lock_plan=("Visit", "QueueEntry", "Invoice"),
+)
+CMD_007_SPEC = CommandSpec(
+    operation_id="CMD-007",
+    rank1_id="REC-009",
+    capability="visit.close_lwbs",
+    owner_service="application.reception.commands.visit_close_lwbs",
+    lock_plan=("Visit", "QueueEntry", "Encounter", "Payment", "Invoice", "AuditEvent"),
 )
 
 
@@ -140,6 +148,12 @@ class VisitCancelErrorOutcome:
     visit: Visit
     queue_entries: tuple
     invoice: Invoice | None
+
+
+@dataclass(frozen=True)
+class VisitCloseLwbsOutcome:
+    visit: Visit
+    queue_entry: QueueEntry
 
 
 @dataclass(frozen=True)
@@ -914,6 +928,68 @@ def visit_cancel_error(
         visit=visit,
         queue_entries=tuple(queue_entries),
         invoice=invoice,
+    )
+
+
+def visit_close_lwbs(
+    *,
+    organisation,
+    facility,
+    actor,
+    visit_id,
+    queue_entry_id=None,
+    reason="",
+    reason_text="",
+    expected_version=None,
+    expected_queue_version=None,
+):
+    """CMD-007 owner for an atomic pre-service Visit close as LWBS."""
+
+    assert_transaction_active()
+    visit = Visit.objects.select_for_update().filter(
+        id=visit_id,
+        organisation=organisation,
+        facility=facility,
+    ).first()
+    if visit is None:
+        raise CanonicalError("NOT_FOUND", "The Visit was not found in this facility.", status_code=404)
+    if expected_version is not None and visit.version != expected_version:
+        raise CanonicalError(
+            "VERSION_CONFLICT",
+            "The Visit changed; refresh before recording LWBS.",
+            status_code=412,
+            metadata={"current_version": visit.version},
+        )
+    queue_query = QueueEntry.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        visit=visit,
+    )
+    if queue_entry_id:
+        queue_query = queue_query.filter(id=queue_entry_id)
+    else:
+        queue_query = queue_query.filter(
+            state__in={"WAITING", "WAITING_PAYMENT", "CALLED", "NO_SHOW"},
+        ).order_by("queue_time", "sequence", "id")
+    queue = queue_query.first()
+    if queue is None:
+        raise CanonicalError("PREREQUISITE_MISSING", "LWBS requires a queue entry for this Visit.", status_code=422)
+    closed = queue_lwbs(
+        organisation=organisation,
+        facility=facility,
+        actor=actor,
+        queue_entry_id=queue.id,
+        expected_version=expected_queue_version,
+        reason=reason,
+        reason_text=reason_text,
+    )
+    return VisitCloseLwbsOutcome(
+        visit=Visit.objects.get(
+            id=visit.id,
+            organisation=organisation,
+            facility=facility,
+        ),
+        queue_entry=closed,
     )
 
 

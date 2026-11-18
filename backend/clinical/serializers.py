@@ -166,6 +166,7 @@ class OpenAPISchemaField(serializers.JSONField):
 
 
 class TriageSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1, write_only=True)
     acuity = serializers.ChoiceField(choices=TriageAssessment.ACUITY_CHOICES, default="ROUTINE")
     chief_complaint = serializers.CharField(required=False, allow_blank=True)
     observations = serializers.JSONField(required=False, default=dict)
@@ -362,6 +363,30 @@ class EncounterSerializer(serializers.ModelSerializer):
     diagnoses = ProjectedField({"type": "array", "items": DIAGNOSIS_SCHEMA})
     complaints = ProjectedField({"type": "array", "items": PRESENTING_COMPLAINT_SCHEMA})
     triage_complaint = ProjectedField({"type": "string", "nullable": True})
+    triage_record = ProjectedField(
+        {
+            "type": "object",
+            "nullable": True,
+            "properties": {
+                "record_id": {"type": "string"},
+                "visit_id": {"type": "string"},
+                "state": {"type": "string"},
+                "current_version": {"type": "integer"},
+                "version": {"type": "integer"},
+                "acuity": {"type": "string", "nullable": True},
+                "acuity_reason": {"type": "string"},
+                "presenting_complaints": {"type": "array", "items": {"type": "object"}},
+                "current_medications": {"type": "object"},
+                "observation": {"type": "object", "nullable": True},
+                "bmi": {"type": "string", "nullable": True},
+                "recorded_by_id": {"type": "string"},
+                "recorded_by_name": {"type": "string"},
+                "completed_by_id": {"type": "string", "nullable": True},
+                "completed_by_name": {"type": "string", "nullable": True},
+                "completed_at": {"type": "string", "nullable": True},
+            },
+        }
+    )
     allergy_status = ProjectedField({"type": "string", "enum": ["NOT_RECORDED", "NKA", "UNKNOWN", "RECORDED"]})
     active_allergies = ProjectedField({"type": "array", "items": ACTIVE_ALLERGY_SCHEMA})
     allergy_revision = ProjectedField({"type": "integer"})
@@ -404,6 +429,21 @@ class EncounterSerializer(serializers.ModelSerializer):
             facility=obj.facility_id,
             queue_entry_id=obj.queue_entry_id,
         ).values_list("chief_complaint", flat=True).first()
+
+    def get_triage_record(self, obj):
+        if hasattr(obj, "_triage_record_for_serialization"):
+            return obj._triage_record_for_serialization
+        from core.mig003 import target_reads_enabled_mig003
+
+        if not target_reads_enabled_mig003(obj.organisation):
+            return None
+        from clinical.triage import completed_summary
+
+        return completed_summary(
+            organisation=obj.organisation,
+            facility=obj.facility,
+            visit_id=obj.visit_id,
+        )
 
     def get_allergy_status(self, obj):
         return self._allergy_snapshot(obj)["status"]
@@ -458,7 +498,7 @@ class EncounterSerializer(serializers.ModelSerializer):
     class Meta:
         model = Encounter
         fields = [
-            "id", "encounter_no", "patient", "patient_name", "visit", "queue_entry", "complaints", "triage_complaint",
+            "id", "encounter_no", "patient", "patient_name", "visit", "queue_entry", "complaints", "triage_complaint", "triage_record",
             "allergy_status", "active_allergies", "allergy_revision", "allergy_state_etag",
             "allergies_reviewed_at", "allergies_reviewed_revision", "allergies_review_is_current",
             "facility", "clinician", "status", "disposition", "disposition_note", "started_at", "signed_at", "closed_at", "notes", "diagnoses",
@@ -468,6 +508,7 @@ class EncounterSerializer(serializers.ModelSerializer):
 
 class EncounterCreateSerializer(serializers.Serializer):
     queue_entry_id = serializers.UUIDField()
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1, write_only=True)
 
 
 class TriageResponseSerializer(serializers.Serializer):
@@ -518,3 +559,63 @@ class NoteResponseSerializer(serializers.Serializer):
     etag = serializers.CharField()
     saved_at = serializers.DateTimeField()
     current_version = serializers.IntegerField(required=False)
+
+
+class TriageRecordSnapshotSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    visit_id = serializers.UUIDField()
+    patient_id = serializers.UUIDField()
+    state = serializers.CharField()
+    acuity = serializers.ChoiceField(
+        choices=TriageAssessment.ACUITY_CHOICES, allow_null=True, required=False
+    )
+    presenting_complaints = serializers.JSONField()
+    current_medications = serializers.JSONField()
+    recorded_by_id = serializers.UUIDField()
+    completed_by_id = serializers.UUIDField(allow_null=True, required=False)
+    completed_at = serializers.DateTimeField(allow_null=True, required=False)
+    current_version = serializers.IntegerField()
+    version = serializers.IntegerField()
+    observation = serializers.JSONField(allow_null=True, required=False)
+    bmi = serializers.CharField(allow_null=True, required=False)
+
+
+class TriageRecordStartSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+
+class TriageRecordSaveSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    acuity = serializers.ChoiceField(
+        choices=TriageAssessment.ACUITY_CHOICES, required=False, allow_null=True
+    )
+    acuity_reason = serializers.CharField(required=False, allow_blank=True, max_length=240)
+    presenting_complaints = serializers.JSONField(required=False, allow_null=True)
+    chief_complaint = serializers.CharField(
+        required=False, allow_blank=True, max_length=500
+    )
+    current_medications = serializers.JSONField(required=False, allow_null=True)
+    observation = serializers.JSONField(required=False, allow_null=True)
+    vitals = serializers.JSONField(required=False, allow_null=True)
+
+
+class TriageRecordCompleteSerializer(TriageRecordSaveSerializer):
+    expected_version = serializers.IntegerField(min_value=1)
+    expected_queue_version = serializers.IntegerField(min_value=1)
+
+
+class TriageRecordStartResponseSerializer(serializers.Serializer):
+    triage_record = TriageRecordSnapshotSerializer()
+    queue_entry = QueueEntrySerializer()
+
+
+class TriageRecordCompleteResponseSerializer(serializers.Serializer):
+    triage_record = TriageRecordSnapshotSerializer()
+    source_queue_entry_id = serializers.UUIDField()
+    source_state = serializers.CharField()
+    destination_queue_entry_id = serializers.UUIDField()
+    destination_state = serializers.CharField()
+
+
+class TriageRecordSaveResponseSerializer(serializers.Serializer):
+    triage_record = TriageRecordSnapshotSerializer()

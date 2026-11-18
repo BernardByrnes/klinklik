@@ -1,6 +1,7 @@
 from rest_framework import status
 from rest_framework.response import Response
 
+from core.permissions import queue_scope_pairs
 from core.tenant_api import TenantAPIView
 from scheduling.models import QueueEntry
 from scheduling.serializers import CheckInSerializer, QueueEntrySerializer
@@ -64,7 +65,19 @@ class QueueClaimView(TenantAPIView):
     def post(self, request, pk):
         try:
             entry = claim_queue_entry(
-                organisation=request.organisation, actor=request.user, queue_id=pk, request=request
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                queue_id=pk,
+                request=request,
+                # The compatibility route delegates to the canonical writer and
+                # must honor the same department/work-type scope.
+                allowed_scopes=queue_scope_pairs(
+                    organisation=request.organisation,
+                    facility=request.facility,
+                    user=request.user,
+                    capabilities=("queue.claim",),
+                ),
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

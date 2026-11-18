@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiRequest } from "../../../lib/api";
+import { apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
-import { QueueEntry } from "../../../features/clinic";
+import { OperationalQueueEnvelope, QueueMutationResponse, canonicalQueueState } from "../../../features/clinic";
 import { IconQueue, IconSearch } from "../../../components/icons";
 import {
   Button,
@@ -23,11 +23,11 @@ import {
 } from "../../../components/ui";
 
 const FILTERS = [
-  { key: "all", label: "All", status: "" },
-  { key: "waiting", label: "Awaiting triage", status: "WAITING,CALLED" },
-  { key: "triage", label: "In triage", status: "IN_TRIAGE" },
-  { key: "ready", label: "Ready", status: "TRIAGED" },
-  { key: "consultation", label: "In consultation", status: "IN_CONSULTATION" },
+  { key: "all", label: "All", query: "" },
+  { key: "waiting", label: "Awaiting triage", query: "state=WAITING,CALLED&queue_type=TRIAGE" },
+  { key: "triage", label: "In service", query: "state=IN_SERVICE&queue_type=TRIAGE" },
+  { key: "ready", label: "Completed stage", query: "state=COMPLETED&queue_type=TRIAGE" },
+  { key: "consultation", label: "In service (consultation)", query: "state=IN_SERVICE&queue_type=CONSULTATION" },
 ] as const;
 
 type FilterKey = (typeof FILTERS)[number]["key"];
@@ -40,17 +40,25 @@ export default function QueuePage() {
   const [visibleCount, setVisibleCount] = useState(10);
   const [error, setError] = useState("");
 
-  const statusParam = FILTERS.find((item) => item.key === filter)!.status;
-  const queueKey = useProtectedQueryKey("queue", statusParam);
+  const queryParam = FILTERS.find((item) => item.key === filter)!.query;
+  const queueKey = useProtectedQueryKey("queue", queryParam);
   const queue = useQuery({
     queryKey: queueKey,
     queryFn: () =>
-      apiRequest<QueueEntry[]>("/api/v1/clinic/queue/" + (statusParam ? `?status=${statusParam}` : "")),
+      apiRequest<OperationalQueueEnvelope>("/api/v1/clinic/queue/operational/" + (queryParam ? `?${queryParam}` : "")),
     enabled: can("queue.view"),
   });
 
   const claim = useMutation({
-    mutationFn: (id: string) => apiRequest<QueueEntry>(`/api/v1/clinic/queue/${id}/claim/`, { method: "POST", body: "{}" }),
+    mutationFn: ({ id, version }: { id: string; version: number }) =>
+      apiRequest<QueueMutationResponse>(`/api/v1/clinic/queue/${id}/call/`, {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": newIdempotencyKey(`cmd-013-${id}`),
+          "If-Match": `"${version}"`,
+        },
+        body: JSON.stringify({ queue_entry_id: id, expected_version: version }),
+      }),
     onSuccess: () => {
       setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
@@ -60,7 +68,7 @@ export default function QueuePage() {
 
   const entries = useMemo(() => {
     const term = search.trim().toLowerCase();
-    const all = queue.data ?? [];
+    const all = queue.data?.entries ?? [];
     if (!term) return all;
     return all.filter(
       (entry) =>
@@ -161,12 +169,13 @@ export default function QueuePage() {
           <>
             <ul className="px-5 pt-2 pb-2 divide-y divide-line-soft">
               {visible.map((entry, index) => {
-                const badge = queueStatusBadge(entry.status);
-                const canClaim = entry.status === "WAITING" && can("queue.claim");
+                const state = canonicalQueueState(entry);
+                const badge = queueStatusBadge(state);
+                const canClaim = state === "WAITING" && can("queue.claim");
                 const openHref = can("triage.record") ? "/triage" : "/consultations";
                 return (
                   <li key={entry.id} className="flex flex-wrap items-center gap-3 py-3">
-                    <SequenceCircle value={entry.sequence || index + 1} index={index} />
+                    <SequenceCircle value={entry.token || index + 1} index={index} />
                     <div className="flex-1 min-w-0 leading-tight">
                       <div className="text-[13px] font-semibold text-ink">{entry.patient_name}</div>
                       <div className="mt-0.5 text-[11.5px] font-medium text-muted">
@@ -174,19 +183,19 @@ export default function QueuePage() {
                         <span className="mx-0.5">•</span>
                         {entry.department_name}
                         <span className="mx-0.5">•</span>
-                        {entry.current_stage.charAt(0) + entry.current_stage.slice(1).toLowerCase()}
+                        {state.replaceAll("_", " ").toLowerCase()}
                       </div>
                     </div>
                     <div className="text-right leading-tight">
                       <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-                      <div className="mt-1 text-[10.5px] font-medium text-muted">{formatTime(entry.arrival_at)}</div>
+                      <div className="mt-1 text-[10.5px] font-medium text-muted">{formatTime(entry.queue_time)}</div>
                     </div>
                     <div className="flex items-center gap-2">
                       {canClaim ? (
                         <Button
                           variant="small-secondary"
                           disabled={claim.isPending}
-                          onClick={() => claim.mutate(entry.id)}
+                          onClick={() => claim.mutate({ id: entry.id, version: entry.version })}
                         >
                           {claim.isPending ? "Claiming…" : "Claim"}
                         </Button>

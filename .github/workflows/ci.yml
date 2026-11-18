@@ -36,6 +36,8 @@ jobs:
       - run: python manage.py check
       - run: python -m pytest -q
         working-directory: .
+        env:
+          PYTHONPATH: ..
 
   postgres-proof:
     runs-on: ubuntu-latest
@@ -188,12 +190,36 @@ jobs:
         run: |
           python tools/check_s00_postgres.py
           python backend/manage.py check_rls --require-postgres
+      - name: Prove cutover refuses a disabled state guard
+        env:
+          DB_NAME: clinicopus
+          DB_USER: clinicopus_app
+          DB_PASSWORD: clinicopus_app_test
+          S02_OWNER_DSN: postgresql://clinicopus_owner:clinicopus_owner_test@127.0.0.1:5432/test_clinicopus
+        run: |
+          : "${S02_OWNER_DSN:?S02_OWNER_DSN is required for the disabled-guard proof}"
+          set -o pipefail
+          python -m pytest --reuse-db -v \
+            backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
+            backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
+            backend/tests/test_s04_postgres.py::test_pg_s04_disabled_guard_blocks_cutover_from_constrained \
+            | tee "$RUNNER_TEMP/guard-proof.log"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/guard-proof.log"; then
+            echo "A disabled-guard proof was skipped; the cutover proof is incomplete." >&2
+            exit 1
+          fi
       - name: Run PostgreSQL-only S-00 tests
         env:
           DB_NAME: clinicopus
           DB_USER: clinicopus_app
           DB_PASSWORD: clinicopus_app_test
-        run: python -m pytest --reuse-db -q backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s05_postgres.py backend/tests/test_s06_postgres.py backend/tests/test_s07_postgres.py
+          S02_OWNER_DSN: postgresql://clinicopus_owner:clinicopus_owner_test@127.0.0.1:5432/test_clinicopus
+        run: |
+          python -m pytest --reuse-db -q \
+            --deselect backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
+            --deselect backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
+            --deselect backend/tests/test_s04_postgres.py::test_pg_s04_disabled_guard_blocks_cutover_from_constrained \
+            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py backend/tests/test_s03_postgres.py backend/tests/test_s04_postgres.py backend/tests/test_s05_postgres.py backend/tests/test_s06_postgres.py backend/tests/test_s07_postgres.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -226,6 +252,34 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: python backend/manage.py migrate --noinput
       - run: python backend/manage.py seed_demo
+      - name: Cut over MIG-002 for the synthetic organisation
+        run: |
+          org_id="$(python backend/manage.py shell -c 'from tenancy.models import Organisation; print(Organisation.objects.get(slug="clinicopus-demo").pk)' | tail -n 1)"
+          test -n "$org_id"
+          python backend/manage.py mig002 inventory --organisation "$org_id"
+          python backend/manage.py mig002 backfill --organisation "$org_id"
+          python backend/manage.py mig002 verify --organisation "$org_id"
+          python backend/manage.py mig002 cutover --organisation "$org_id"
+      - name: Cut over MIG-003 for the synthetic organisation
+        run: |
+          org_id="$(python backend/manage.py shell -c 'from tenancy.models import Organisation; print(Organisation.objects.get(slug="clinicopus-demo").pk)' | tail -n 1)"
+          test -n "$org_id"
+          python backend/manage.py mig003 inventory --organisation "$org_id"
+          python backend/manage.py mig003 backfill --organisation "$org_id"
+          python backend/manage.py mig003 verify --organisation "$org_id"
+          python backend/manage.py mig003 verify --organisation "$org_id"
+          python backend/manage.py mig003 constrain --organisation "$org_id"
+          python backend/manage.py mig003 cutover --organisation "$org_id"
+      - name: Verify MIG-004 for the synthetic organisation
+        run: |
+          org_id="$(python backend/manage.py shell -c 'from tenancy.models import Organisation; print(Organisation.objects.get(slug="clinicopus-demo").pk)' | tail -n 1)"
+          test -n "$org_id"
+          python backend/manage.py mig004 inventory --organisation "$org_id"
+          python backend/manage.py mig004 backfill --organisation "$org_id"
+          python backend/manage.py mig004 verify --organisation "$org_id"
+          python backend/manage.py mig004 verify --organisation "$org_id"
+          python backend/manage.py mig004 constrain --organisation "$org_id"
+          python backend/manage.py mig004 cutover --organisation "$org_id"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -235,5 +289,5 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/clinic-slice.spec.ts tests/billing-handoff-edges.spec.ts tests/s05-cashier.spec.ts tests/s06-corrections.spec.ts tests/s07-repricing.spec.ts
+      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts tests/s04-encounter.spec.ts tests/clinic-slice.spec.ts tests/billing-handoff-edges.spec.ts tests/s05-cashier.spec.ts tests/s06-corrections.spec.ts tests/s07-repricing.spec.ts
         working-directory: frontend

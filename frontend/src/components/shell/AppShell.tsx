@@ -9,7 +9,7 @@ import { apiRequest } from "../../lib/api";
 import { useProtectedQueryKey } from "../../lib/authority";
 import { useSession } from "../../lib/session";
 import { roleLabel } from "../../lib/roles";
-import { QueueEntry } from "../../features/clinic";
+import { LegacyQueueEntry } from "../../features/clinic";
 import {
   BrandMark,
   IconBilling,
@@ -49,7 +49,7 @@ function useQueueBadge(enabled: boolean) {
   const queryKey = useProtectedQueryKey("queue");
   const query = useQuery({
     queryKey,
-    queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/"),
+    queryFn: () => apiRequest<LegacyQueueEntry[]>("/api/v1/clinic/queue/"),
     enabled,
     staleTime: 10_000,
     refetchInterval: 30_000,

@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from patients.models import Patient
 from patients.serializers import PatientCreateSerializer, PatientSerializer
-from scheduling.models import ArrivalEnquiry, Visit
+from scheduling.models import ArrivalEnquiry, QueueEntry, Visit
 from billing.models import PriceList
 from clinical.serializers import (
     AllergyContextProjectionSerializer,
@@ -148,6 +148,23 @@ class VisitCancelErrorSerializer(serializers.Serializer):
     expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
 
+class VisitCloseLwbsSerializer(serializers.Serializer):
+    queue_entry_id = serializers.UUIDField(required=False, allow_null=True)
+    reason = serializers.ChoiceField(choices=QueueEntry.LWBS_REASON_CHOICES)
+    reason_text = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+    expected_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    expected_queue_version = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+    def validate(self, attrs):
+        reason_text = attrs.get("reason_text", "").strip()
+        if attrs["reason"] == "OTHER" and not reason_text:
+            raise serializers.ValidationError({"reason_text": "An explanation is required for OTHER."})
+        if attrs["reason"] != "OTHER" and reason_text:
+            raise serializers.ValidationError({"reason_text": "Free text is only allowed for OTHER."})
+        attrs["reason_text"] = reason_text
+        return attrs
+
+
 class PatientRegisterResponseSerializer(serializers.Serializer):
     """The committed CMD-002 result, separate from duplicate discovery.
 
@@ -269,6 +286,14 @@ class VisitCancelErrorResponseSerializer(serializers.Serializer):
     state = serializers.CharField(required=True)
 
 
+class VisitCloseLwbsResponseSerializer(serializers.Serializer):
+    visit_id = serializers.UUIDField(required=True)
+    queue_entry_id = serializers.UUIDField(required=True)
+    state = serializers.CharField(required=True)
+    version = serializers.IntegerField(required=True)
+    visit_version = serializers.IntegerField(required=True)
+
+
 class PatientCheckInPatientSerializer(serializers.ModelSerializer):
     display_name = serializers.ReadOnlyField()
 
@@ -315,6 +340,7 @@ __all__ = [
     "EncounterSummarySerializer",
     "VisitContextResponseSerializer",
     "VisitCancelErrorResponseSerializer",
+    "VisitCloseLwbsResponseSerializer",
     "PatientCheckInSummarySerializer",
     "PatientCheckInPatientSerializer",
     "CheckInVisitSummarySerializer",

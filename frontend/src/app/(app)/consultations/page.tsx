@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useSearchParams } from "next/navigation";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiRequestError, apiRequest } from "../../../lib/api";
+import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import {
@@ -18,7 +18,8 @@ import {
   EncounterDisposition,
   FollowUpRecommendation,
   PresentingComplaint,
-  QueueEntry,
+  OperationalQueueEnvelope,
+  OperationalQueueRow,
 } from "../../../features/clinic";
 import type {
   AllergyStateResponse,
@@ -96,10 +97,13 @@ const DISPOSITION_OPTIONS: Array<{ value: EncounterDisposition; label: string }>
 
 type DraftSaveState = "idle" | "unsaved" | "saved" | "retrying";
 
+type TriageRecordSummary = NonNullable<Encounter["triage_record"]>;
+
 type ConsultationDraft = {
   content: ClinicalNoteContent;
   complaints: PresentingComplaint[];
   triageComplaint: string | null;
+  triageRecord: TriageRecordSummary | null;
   hpi: string;
   pastMedicalHistory: string;
   pastSurgicalHistory: string;
@@ -180,8 +184,11 @@ type DraftMutationVariables = {
   origin: "manual" | "autosave";
 };
 
+type ConsultationWorkType = "CONSULTATION" | "CLINICIAN";
+
 type StartEncounterVariables = {
   queueEntryId: string;
+  version: number;
   session: number;
 };
 type NoteSaveResponse = NoteResponse;
@@ -669,6 +676,7 @@ function consultationDraftFromEncounter(encounter: Encounter): ConsultationDraft
     content,
     complaints: cloneComplaints(encounter.complaints ?? []),
     triageComplaint: encounter.triage_complaint ?? null,
+    triageRecord: encounter.triage_record ?? null,
     ...editableDraftValuesFromContent(content),
   };
 }
@@ -1182,6 +1190,7 @@ type HistorySectionProps = {
   status: string;
   complaints: PresentingComplaint[];
   triageComplaint: string | null;
+  triageRecord: TriageRecordSummary | null;
   complaintConflict: PresentingComplaint[] | null;
   hpi: string;
   pastMedicalHistory: string;
@@ -1201,8 +1210,7 @@ type HistorySectionProps = {
   savedAt: string | null;
 };
 
-function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingComplaint[]; testId?: string }) {
-  if (complaints.length === 0) {
+function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingComplaint[]; testId?: string }) {  if (complaints.length === 0) {
     return <p className="mt-2 text-[12.5px] leading-relaxed text-muted">No presenting complaints recorded.</p>;
   }
   return (
@@ -1222,10 +1230,113 @@ function ComplaintReadOnlyList({ complaints, testId }: { complaints: PresentingC
   );
 }
 
+function CanonicalTriageSummary({ record }: { record: TriageRecordSummary }) {
+  const observation = (record.observation ?? {}) as Record<string, unknown>;
+  const vitals: Array<[string, string]> = [];
+  if (observation.systolic != null && observation.diastolic != null) {
+    vitals.push(["BP", `${observation.systolic}/${observation.diastolic} mmHg`]);
+  }
+  if (observation.pulse != null) vitals.push(["Pulse", `${observation.pulse} bpm`]);
+  if (observation.temperature_c != null) vitals.push(["Temp", `${observation.temperature_c} °C`]);
+  if (observation.respiratory_rate != null) {
+    vitals.push(["Respiratory rate", `${observation.respiratory_rate} /min`]);
+  }
+  if (observation.oxygen_saturation != null) {
+    vitals.push(["SpO₂", `${observation.oxygen_saturation}%`]);
+  }
+  if (observation.weight_kg != null) vitals.push(["Weight", `${observation.weight_kg} kg`]);
+  if (observation.height_cm != null) vitals.push(["Height", `${observation.height_cm} cm`]);
+  if (observation.muac_cm != null) vitals.push(["MUAC", `${observation.muac_cm} cm`]);
+  const complaints =
+    (record.presenting_complaints as Array<{ text?: string }> | null) ?? [];
+  const medications = (record.current_medications as {
+    medications?: string[];
+    chronic_conditions?: string[];
+  } | null) ?? {};
+  const unableReasons = (observation.unable_reason_fields ?? {}) as Record<string, string>;
+  return (
+    <div
+      data-testid="triage-summary"
+      className="rounded-[14px] border border-line bg-white p-4"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-[13px] font-bold text-ink">Nurse triage</h3>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+          Read-only · v{record.current_version}
+        </p>
+      </div>
+      <p className="mt-2 text-[12.5px] font-medium text-secondary">
+        Acuity: <span className="font-bold text-ink">{record.acuity ?? "Not selected"}</span>
+        {record.completed_at ? ` · Completed ${new Date(record.completed_at).toLocaleString()}` : ""}
+        {record.completed_by_name ? ` · ${record.completed_by_name}` : ""}
+      </p>
+      {record.acuity_reason ? (
+        <p className="mt-1 text-[12px] font-medium text-secondary">Priority reason: {record.acuity_reason}</p>
+      ) : null}
+      {vitals.length > 0 ? (
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+          {vitals.map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted">{label}</dt>
+              <dd className="text-[12.5px] font-medium text-ink">{value}</dd>
+            </div>
+          ))}
+          {record.bmi ? (
+            <div>
+              <dt className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted">BMI</dt>
+              <dd className="text-[12.5px] font-medium text-ink">{record.bmi}</dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : (
+        <p className="mt-3 text-[12px] font-medium text-muted">No measurements recorded.</p>
+      )}
+      {Object.keys(unableReasons).length > 0 ? (
+        <p className="mt-2 text-[12px] font-medium text-secondary">
+          Not done:{" "}
+          {Object.entries(unableReasons)
+            .map(([field, reason]) => `${field.replace(/_/g, " ")} (${reason.toLowerCase().replace(/_/g, " ")})`)
+            .join(", ")}
+        </p>
+      ) : null}
+      {complaints.length > 0 ? (
+        <div className="mt-3">
+          <p className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted">Triage complaints</p>
+          <ul className="mt-1 space-y-1">
+            {complaints.map((complaint, index) => (
+              <li key={index} className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
+                {complaint.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {(medications.medications?.length ?? 0) > 0 || (medications.chronic_conditions?.length ?? 0) > 0 ? (
+        <div className="mt-3 space-y-1">
+          {(medications.medications?.length ?? 0) > 0 ? (
+            <p className="text-[12px] font-medium text-secondary">
+              Current medications: {medications.medications?.join(", ")}
+            </p>
+          ) : null}
+          {(medications.chronic_conditions?.length ?? 0) > 0 ? (
+            <p className="text-[12px] font-medium text-secondary">
+              Chronic conditions: {medications.chronic_conditions?.join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <p className="mt-3 text-[11px] font-medium text-muted">
+        Recorded by {record.recorded_by_name}. Triage data is read-only to clinicians.
+      </p>
+    </div>
+  );
+}
+
 function HistorySection({
   status,
   complaints,
   triageComplaint,
+  triageRecord,
   complaintConflict,
   hpi,
   pastMedicalHistory,
@@ -1283,6 +1394,7 @@ function HistorySection({
           <h3 className="text-[13px] font-bold text-ink">Presenting complaints</h3>
           <ComplaintReadOnlyList complaints={complaints} testId="signed-presenting-complaints" />
         </div>
+        {triageRecord ? <CanonicalTriageSummary record={triageRecord} /> : null}
         <div className="rounded-[14px] border border-line bg-white p-4">
           <h3 className="text-[13px] font-bold text-ink">Triage complaint</h3>
           <p className="mt-2 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">
@@ -1335,6 +1447,7 @@ function HistorySection({
           <p data-testid="triage-complaint" className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{triageComplaint || "No triage complaint recorded."}</p>
           <p className="mt-1 text-[11px] font-medium text-muted">It is never copied automatically. Use Copy from triage to append it as a new row.</p>
         </div>
+        {triageRecord ? <CanonicalTriageSummary record={triageRecord} /> : null}
         {complaintConflict ? (
           <div data-testid="complaint-conflict" role="status" aria-label="Latest saved complaint values" className="space-y-3 rounded-[10px] border border-accent-orange/40 bg-accent-orange-soft px-3 py-3">
             <p className="text-[12px] font-semibold text-ink">Current saved complaints from another update</p>
@@ -1876,14 +1989,17 @@ function TreatmentSection({
  * the same entry and the same patient as the Encounter, matching the server's
  * scope test.
  */
-function encounterVisitId(encounter: Encounter, queueEntry: QueueEntry | null) {
+function encounterVisitId(
+  encounter: Encounter,
+  queueEntry: { id: string; patient_id?: string; visit_id?: string | null } | null,
+) {
   if (encounter.visit) return encounter.visit;
   if (
     encounter.queue_entry &&
     queueEntry?.id === encounter.queue_entry &&
-    queueEntry.patient === encounter.patient
+    queueEntry.patient_id === encounter.patient
   ) {
-    return queueEntry.visit ?? null;
+    return queueEntry.visit_id ?? null;
   }
   return null;
 }
@@ -1891,7 +2007,7 @@ function encounterVisitId(encounter: Encounter, queueEntry: QueueEntry | null) {
 function ConsultationsWorkspace() {
   const { can } = useSession();
   const queryClient = useQueryClient();
-  const queueKey = useProtectedQueryKey("queue", "TRIAGED,IN_CONSULTATION");
+  const [workType, setWorkType] = useState<ConsultationWorkType>("CONSULTATION");
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("entry");
   const [selectedId, setSelectedId] = useState<string | null>(preselectedId);
@@ -1902,6 +2018,7 @@ function ConsultationsWorkspace() {
   const encounterEtagRef = useRef<string | null>(null);
   const [complaints, setComplaints] = useState<PresentingComplaint[]>([]);
   const [triageComplaint, setTriageComplaint] = useState<string | null>(null);
+  const [triageRecord, setTriageRecord] = useState<TriageRecordSummary | null>(null);
   const [hpi, setHpi] = useState("");
   const [pastMedicalHistory, setPastMedicalHistory] = useState("");
   const [pastSurgicalHistory, setPastSurgicalHistory] = useState("");
@@ -2020,16 +2137,37 @@ function ConsultationsWorkspace() {
     return dirtyFieldsRef.current.size > 0 || complaintsDirtyRef.current || allergyFormDirtyRef.current || diagnosisFormDirtyRef.current || dispositionFormDirtyRef.current || followUpFormDirtyRef.current;
   }, []);
 
-  const queue = useQuery({
-    queryKey: queueKey,
-    queryFn: () => apiRequest<QueueEntry[]>("/api/v1/clinic/queue/?status=TRIAGED,IN_CONSULTATION"),
+  const queue = useInfiniteQuery({
+    queryKey: useProtectedQueryKey("queue", workType),
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }) => {
+      // Canonical consultation worklist. The completed TRIAGE source row is
+      // never a consultation action, and a 503 leaves the workspace with no
+      // actionable rows instead of falling back to the legacy shadow.
+      return apiRequest<OperationalQueueEnvelope>(
+        `/api/v1/clinic/queue/operational/?queue_type=${workType}` +
+          `&state=WAITING,CALLED,IN_SERVICE&page=${pageParam}`,
+      );
+    },
+    getNextPageParam: (lastPage) => (lastPage.has_next ? lastPage.page + 1 : undefined),
     enabled: can("clinical.note.create"),
   });
-
-  const selected = useMemo(
-    () => (queue.data ?? []).find((entry) => entry.id === selectedId) ?? null,
-    [queue.data, selectedId],
+  const queueEntries = useMemo(
+    () => (queue.data?.pages ?? []).flatMap((page) => page.entries),
+    [queue.data],
   );
+  const selected: OperationalQueueRow | null = useMemo(
+    () => queueEntries.find((entry) => entry.id === selectedId) ?? null,
+    [queueEntries, selectedId],
+  );
+  // Start is only offered from a confirmed, currently reachable row.
+  const worklistUnavailable = queue.isError;
+  const worklistSettling = queue.isFetching;
+  const canStartEncounter =
+    Boolean(selected?.id) &&
+    typeof selected?.version === "number" &&
+    !worklistUnavailable &&
+    !worklistSettling;
   function applyAllergySnapshot(snapshot: AllergyStateResponse) {
     setEncounter((current) => {
       if (!current || current.id !== activeEncounterIdRef.current) return current;
@@ -2071,7 +2209,7 @@ function ConsultationsWorkspace() {
   }
 
   function currentDiagnosisContext(): DiagnosisContext | null {
-    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+    if (!encounter?.id || !selected?.patient_id || !encounterEtagRef.current) {
       setDiagnosisMutationError("The current consultation revision is unavailable. Reload before changing diagnoses.");
       return null;
     }
@@ -2080,7 +2218,7 @@ function ConsultationsWorkspace() {
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2097,7 +2235,7 @@ function ConsultationsWorkspace() {
     );
   }
   function currentDispositionContext(): DispositionContext | null {
-    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+    if (!encounter?.id || !selected?.patient_id || !encounterEtagRef.current) {
       setDispositionError("The current consultation revision is unavailable. Reload before saving the disposition.");
       return null;
     }
@@ -2106,7 +2244,7 @@ function ConsultationsWorkspace() {
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2124,7 +2262,7 @@ function ConsultationsWorkspace() {
   }
 
   function currentFollowUpContext(): FollowUpContext | null {
-    if (!encounter?.id || !selected?.patient || !encounterEtagRef.current) {
+    if (!encounter?.id || !selected?.patient_id || !encounterEtagRef.current) {
       setFollowUpError("The current consultation revision is unavailable. Reload before saving the follow-up.");
       return null;
     }
@@ -2133,7 +2271,7 @@ function ConsultationsWorkspace() {
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2150,12 +2288,12 @@ function ConsultationsWorkspace() {
     );
   }
   function currentAllergyContext(): AllergyContext | null {
-    if (!encounter?.id || !selected?.patient || !encounter.allergy_state_etag) {
+    if (!encounter?.id || !selected?.patient_id || !encounter.allergy_state_etag) {
       setAllergyMutationError("The current allergy state is unavailable. Reload the consultation before trying again.");
       return null;
     }
     return {
-      patientId: selected.patient,
+      patientId: selected.patient_id ?? "",
       encounterId: encounter.id,
       queueEntryId: selected.id,
       session: draftSessionRef.current,
@@ -2318,6 +2456,7 @@ function ConsultationsWorkspace() {
     draftSessionRef.current += 1;
     setComplaints(cloneComplaints(draft.complaints));
     setTriageComplaint(draft.triageComplaint);
+    setTriageRecord(draft.triageRecord);
     setHpi(values.hpi);
     setPastMedicalHistory(values.pastMedicalHistory);
     setPastSurgicalHistory(values.pastSurgicalHistory);
@@ -2509,7 +2648,7 @@ function ConsultationsWorkspace() {
     }]);
   }
 
-  function selectEntry(entry: QueueEntry) {
+  function selectEntry(entry: OperationalQueueRow) {
     if (
       entry.id !== selectedId &&
       hasUnsavedContent() &&
@@ -2543,7 +2682,7 @@ function ConsultationsWorkspace() {
     authoritativeComplaintsRef.current = [];
     complaintsDirtyRef.current = false;
     selectedQueueEntryIdRef.current = entry.id;
-    activePatientIdRef.current = entry.patient;
+    activePatientIdRef.current = entry.patient_id ?? "";
     activeEncounterIdRef.current = null;
     signGuardErrorRef.current = null;
     allergyFormDirtyRef.current = false;
@@ -2553,6 +2692,7 @@ function ConsultationsWorkspace() {
     setEncounter(null);
     setNote(DEFAULT_CONSULTATION_NOTE);
     setTriageComplaint(null);
+    setTriageRecord(null);
     setComplaints([]);
     setHpi("");
     setPastMedicalHistory("");
@@ -2599,11 +2739,33 @@ function ConsultationsWorkspace() {
     setError("");
   }
 
+  const encounterIntentRef = useRef<{
+    key: string;
+    queueEntryId: string;
+    version: number;
+  } | null>(null);
+
+  function encounterIntentKey(queueEntryId: string, version: number) {
+    // One idempotency key per intent: the same consultation row at the same
+    // version. A refreshed row version is a new action and gets a new key.
+    const current = encounterIntentRef.current;
+    if (current && current.queueEntryId === queueEntryId && current.version === version) {
+      return current.key;
+    }
+    const key = newIdempotencyKey("encounter-open");
+    encounterIntentRef.current = { key, queueEntryId, version };
+    return key;
+  }
+
   const startEncounter = useMutation<Encounter, unknown, StartEncounterVariables>({
-    mutationFn: ({ queueEntryId }) =>
+    mutationFn: ({ queueEntryId, version }) =>
       apiRequest<Encounter>("/api/v1/clinic/encounters/", {
         method: "POST",
-        body: JSON.stringify({ queue_entry_id: queueEntryId }),
+        headers: {
+          "If-Match": `"${version}"`,
+          "Idempotency-Key": encounterIntentKey(queueEntryId, version),
+        },
+        body: JSON.stringify({ queue_entry_id: queueEntryId, expected_version: version }),
       }),
     onSuccess: (created, variables) => {
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
@@ -2619,6 +2781,28 @@ function ConsultationsWorkspace() {
       setError("");
     },
     onError: (reason, variables) => {
+      const code =
+        reason instanceof ApiRequestError &&
+        reason.data &&
+        typeof reason.data === "object" &&
+        "code" in reason.data
+          ? String((reason.data as { code?: unknown }).code ?? "")
+          : "";
+      // A retryable or unknown outcome is not a new intent: keep the captured
+      // key, row, and version so a retry resolves the same command.
+      if (reason instanceof ApiRequestError && reason.status === 409 && code === "IDEMPOTENCY_IN_PROGRESS") {
+        setError("This submission is still being completed. Retry to confirm the same result.");
+        return;
+      }
+      // A definitive stale version or state conflict is a new intent; refresh
+      // the scoped worklist so the next action uses the returned version.
+      if (
+        reason instanceof ApiRequestError &&
+        (reason.status === 409 || reason.status === 412)
+      ) {
+        encounterIntentRef.current = null;
+        queryClient.invalidateQueries({ queryKey: protectedQueryKey("queue") });
+      }
       if (
         variables.session !== draftSessionRef.current ||
         selectedQueueEntryIdRef.current !== variables.queueEntryId
@@ -2631,8 +2815,13 @@ function ConsultationsWorkspace() {
 
   function startCurrentEncounter() {
     const queueEntryId = selected?.id;
-    if (!queueEntryId) return;
-    startEncounter.mutate({ queueEntryId, session: draftSessionRef.current });
+    const version = selected?.version;
+    if (!queueEntryId || typeof version !== "number") return;
+    startEncounter.mutate({
+      queueEntryId,
+      version,
+      session: draftSessionRef.current,
+    });
   }
 
   const allergyStatusMutation = useMutation<AllergyStateResponse, unknown, AllergyStatusMutationVariables>({
@@ -4230,7 +4419,32 @@ function ConsultationsWorkspace() {
 
       <section className="grid grid-cols-1 xl:grid-cols-[1fr_1.35fr] gap-5 items-start">
         <Card>
-          <CardTitleBar title={`Ready for consultation (${queue.data?.length ?? 0})`} />
+          <CardTitleBar title={`Ready for consultation (${queueEntries.length})`} />
+          <div
+            className="px-5 pt-3 flex flex-wrap items-center gap-2"
+            role="tablist"
+            aria-label="Consultation work type"
+          >
+            {([
+              { value: "CONSULTATION", label: "Consultation" },
+              { value: "CLINICIAN", label: "Clinician" },
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="tab"
+                aria-selected={workType === option.value}
+                onClick={() => setWorkType(option.value)}
+                className={`rounded-full px-3 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                  workType === option.value
+                    ? "bg-primary-soft text-primary-text"
+                    : "bg-surface-muted text-secondary hover:bg-primary-hover"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           {queue.isLoading ? (
             <div className="px-5 py-6 space-y-5" aria-busy="true" aria-label="Loading consultation queue">
               {Array.from({ length: 4 }).map((_, index) => (
@@ -4243,7 +4457,7 @@ function ConsultationsWorkspace() {
               title="The consultation queue could not be loaded."
               action={<Button variant="secondary" onClick={() => queue.refetch()}>Retry</Button>}
             />
-          ) : (queue.data ?? []).length === 0 ? (
+          ) : queueEntries.length === 0 ? (
             <EmptyState
               icon={<IconConsultation className="h-5 w-5" />}
               title="No patients are waiting for consultation."
@@ -4251,7 +4465,7 @@ function ConsultationsWorkspace() {
             />
           ) : (
             <ul className="px-5 pt-2 pb-4 divide-y divide-line-soft">
-              {(queue.data ?? []).map((entry, index) => {
+              {queueEntries.map((entry, index) => {
                 const badge = queueStatusBadge(entry.status);
                 const active = entry.id === selectedId;
                 return (
@@ -4265,7 +4479,7 @@ function ConsultationsWorkspace() {
                       }`}
                     >
                       <span className="pl-2 flex items-center gap-3 flex-1 min-w-0">
-                        <SequenceCircle value={entry.sequence || index + 1} index={index} />
+                        <SequenceCircle value={entry.token || index + 1} index={index} />
                         <span className="flex-1 min-w-0 leading-tight">
                           <span className="block text-[13px] font-semibold text-ink">{entry.patient_name}</span>
                           <span className="mt-0.5 block text-[11.5px] font-medium text-muted">
@@ -4277,7 +4491,7 @@ function ConsultationsWorkspace() {
                       </span>
                       <span className="pr-2 text-right leading-tight">
                         <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-                        <span className="mt-1 block text-[10.5px] font-medium text-muted">{formatTime(entry.arrival_at)}</span>
+                        <span className="mt-1 block text-[10.5px] font-medium text-muted">{formatTime(entry.queue_time)}</span>
                       </span>
                     </button>
                   </li>
@@ -4285,6 +4499,18 @@ function ConsultationsWorkspace() {
               })}
             </ul>
           )}
+          {queue.hasNextPage ? (
+            <div className="px-5 pb-4">
+              <Button
+                variant="link"
+                className="w-full"
+                disabled={queue.isFetchingNextPage}
+                onClick={() => void queue.fetchNextPage()}
+              >
+                {queue.isFetchingNextPage ? "Loading…" : "Load more"}
+              </Button>
+            </div>
+          ) : null}
         </Card>
 
         <Card>
@@ -4295,7 +4521,7 @@ function ConsultationsWorkspace() {
                 aria-label="Patient and encounter context"
                 className="flex items-start gap-3 rounded-[14px] bg-surface-muted border border-line-soft p-4"
               >
-                <SequenceCircle value={selected.sequence || "•"} index={2} />
+                <SequenceCircle value={selected.token || "•"} index={2} />
                 <div className="leading-tight">
                   <p className="text-[14px] font-bold text-ink">{selected.patient_name}</p>
                   <p className="mt-1 text-[11.5px] font-medium text-muted">
@@ -4303,7 +4529,7 @@ function ConsultationsWorkspace() {
                     <span className="mx-0.5">•</span>
                     {selected.department_name}
                     <span className="mx-0.5">•</span>
-                    Arrived {formatTime(selected.arrival_at)}
+                    Arrived {formatTime(selected.queue_time)}
                   </p>
                 </div>
                 {encounter ? (
@@ -4347,7 +4573,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the presenting complaint and HPI.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4356,6 +4582,7 @@ function ConsultationsWorkspace() {
                       status={encounter.status}
                       complaints={complaints}
                       triageComplaint={triageComplaint}
+                      triageRecord={triageRecord}
                       complaintConflict={complaintConflict}
                       hpi={hpi}
                       pastMedicalHistory={pastMedicalHistory}
@@ -4381,7 +4608,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the general examination.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting..." : "Start encounter"}
                       </Button>
                     </div>
@@ -4422,7 +4649,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to capture the treatment plan.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4468,7 +4695,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Not recorded yet. Start the encounter to record the diagnosis disposition.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4496,7 +4723,7 @@ function ConsultationsWorkspace() {
                       <p className="text-[12.5px] font-medium text-secondary">
                         Start the encounter to open the consultation note for this visit.
                       </p>
-                      <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                      <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                         {startEncounter.isPending ? "Starting…" : "Start encounter"}
                       </Button>
                     </div>
@@ -4508,7 +4735,7 @@ function ConsultationsWorkspace() {
                     <p className="text-[12.5px] font-medium text-secondary">
                       Start the encounter to open the consultation note for this visit.
                     </p>
-                    <Button disabled={startEncounter.isPending} onClick={startCurrentEncounter}>
+                    <Button disabled={!canStartEncounter || startEncounter.isPending} onClick={startCurrentEncounter}>
                       {startEncounter.isPending ? "Starting…" : "Start encounter"}
                     </Button>
                   </div>
@@ -4528,7 +4755,7 @@ function ConsultationsWorkspace() {
                           <Button>Open invoice</Button>
                         </Link>
                       ) : (
-                        <Link href={`/billing?patient=${selected.patient}&encounter=${encounter.id}`}>
+                        <Link href={`/billing?patient=${selected.patient_id}&encounter=${encounter.id}`}>
                           <Button>Create invoice</Button>
                         </Link>
                       )

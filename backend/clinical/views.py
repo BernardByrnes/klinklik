@@ -1,5 +1,6 @@
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from clinical.allergies import (
@@ -20,7 +21,27 @@ from clinical.diagnoses import DiagnosisDomainError, DiagnosisRevisionConflict, 
 from clinical.diagnosis_state import active_diagnosis_snapshot
 from clinical.dispositions import DispositionDomainError, DispositionRevisionConflict, set_disposition
 from clinical.followups import FollowUpDomainError, FollowUpRevisionConflict, save_follow_up
-from clinical.models import Allergy, Diagnosis, Encounter
+from clinical.models import Allergy, Diagnosis, Encounter, TriageAssessment, TriageRecord
+from application.clinical.commands import (
+    encounter_open,
+    encounter_sign,
+    triage_complete,
+    triage_record_complete,
+    triage_record_save,
+    triage_record_start,
+)
+from clinical.permissions import TriageMethodCapability, TriageRecordScopePermission
+from clinical.triage import snapshot as triage_snapshot
+from core.errors import CanonicalError
+from core.mig003 import target_reads_enabled_mig003, target_writes_enabled_mig003
+from core.permissions import (
+    HasCapability,
+    IsTenantMember,
+    QueueScopePermission,
+    coerce_queue_identifier,
+    queue_scope_pairs,
+    scope_allows,
+)
 from patients.models import Patient
 from clinical.serializers import (
     AllergyCreateSerializer,
@@ -34,6 +55,12 @@ from clinical.serializers import (
     EncounterSerializer,
     EncounterCreateSerializer,
     TriageResponseSerializer,
+    TriageRecordCompleteResponseSerializer,
+    TriageRecordCompleteSerializer,
+    TriageRecordSaveSerializer,
+    TriageRecordSaveResponseSerializer,
+    TriageRecordStartResponseSerializer,
+    TriageRecordStartSerializer,
     AllergyStateResponseSerializer,
     DiagnosisStateResponseSerializer,
     DispositionResponseSerializer,
@@ -46,42 +73,138 @@ from clinical.serializers import (
 from clinical.services import (
     PresentingComplaintRequired,
     amend_note,
-    record_triage,
     save_note,
-    sign_note,
-    start_encounter,
 )
 from core.tenant_api import TenantAPIView
+from core.errors import CanonicalError
+from core.idempotency import json_safe
 from scheduling.models import QueueEntry
 from scheduling.serializers import QueueEntrySerializer
 
 
+def _mig002_command_mode(organisation):
+    from core.models import MigrationCutover
+
+    return MigrationCutover.objects.filter(
+        organisation=organisation,
+        migration_id="MIG-002",
+        phase__in={"CONSTRAINED", "CUTOVER"},
+        target_writes_enabled=True,
+    ).exists()
+
+
+def _require_canonical_queue_version(request, expected_version):
+    """Canonical stage commands need the current queue version.
+
+    The legacy compatibility path keeps accepting a version-less request; the
+    canonical writer must not start service from an unconfirmed row.
+    """
+
+    if expected_version is not None:
+        return
+    if not _mig002_command_mode(request.organisation):
+        return
+    raise CanonicalError(
+        "PRECONDITION_REQUIRED",
+        "A current queue version is required in expected_version or If-Match.",
+        status_code=428,
+    )
+
+
 class TriageView(TenantAPIView):
     capability = "triage.record"
+    # The canonical stage command must be scoped to the row's own department
+    # and work type, before idempotency replay can expose a stored result.
+    permission_classes = [IsAuthenticated, IsTenantMember, HasCapability, QueueScopePermission]
+    idempotency_operation = "CMD-027"
+    requires_idempotency = True
     serializer_class = TriageSerializer
     response_serializer_class = TriageResponseSerializer
+
+    def requires_idempotency_for_request(self, request):
+        return _mig002_command_mode(request.organisation)
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference or {}
+        assessment_id = reference.get("entity_id") if isinstance(reference, dict) else None
+        assessment = TriageAssessment.objects.filter(
+            id=assessment_id,
+            organisation=self.request.organisation,
+            facility=self.request.facility,
+        ).first()
+        if assessment is None:
+            return record.response_body
+        queue_entry = QueueEntry.objects.select_related("patient", "department").filter(
+            id=assessment.queue_entry_id,
+            organisation=self.request.organisation,
+            facility=self.request.facility,
+        ).first()
+        if queue_entry is None:
+            return record.response_body
+        return self._response_body(assessment, queue_entry)
+
+    @staticmethod
+    def _response_body(assessment, queue_entry):
+        return json_safe({
+            "id": assessment.id,
+            "queue_entry": QueueEntrySerializer(queue_entry).data,
+            "acuity": assessment.acuity,
+            "chief_complaint": assessment.chief_complaint,
+            "observations": assessment.observations,
+        })
 
     def post(self, request, queue_id):
         serializer = TriageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        expected_version = _clinical_expected_version(request, values)
+        _require_canonical_queue_version(request, expected_version)
+        values.pop("expected_version", None)
         try:
-            assessment = record_triage(
+            outcome = triage_complete(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
                 queue_entry_id=queue_id,
-                data=serializer.validated_data,
-                request=request,
+                data=values,
+                expected_version=expected_version,
             )
+        except CanonicalError:
+            raise
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({
-            "id": assessment.id,
-            "queue_entry": QueueEntrySerializer(assessment.queue_entry).data,
-            "acuity": assessment.acuity,
-            "chief_complaint": assessment.chief_complaint,
-            "observations": assessment.observations,
-        }, status=status.HTTP_201_CREATED)
+        assessment = outcome.assessment
+        body = self._response_body(assessment, outcome.source)
+        response = Response(body, status=status.HTTP_201_CREATED)
+        response.idempotency_body = {
+            "id": str(assessment.id),
+            "queue_entry_id": str(outcome.source.id),
+            "state": outcome.source.state,
+        }
+        response.result_reference = {
+            "entity_type": "TriageAssessment",
+            "entity_id": str(assessment.id),
+        }
+        return response
+
+
+def _clinical_expected_version(request, values):
+    body_version = values.get("expected_version")
+    header = request.headers.get("If-Match")
+    if not header:
+        return body_version
+    value = str(header).strip()
+    if value.startswith("W/"):
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must be a strong queue version.", status_code=400)
+    try:
+        header_version = int(value.strip('"'))
+    except (TypeError, ValueError) as exc:
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain the queue version.", status_code=400) from exc
+    if header_version < 1:
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain a positive queue version.", status_code=400)
+    if body_version is not None and int(body_version) != header_version:
+        raise CanonicalError("VERSION_CONFLICT", "The body version and If-Match value do not agree.", status_code=412)
+    return header_version
 
 
 def _required_if_match(request, detail="If-Match is required for clinical note mutations."):
@@ -402,26 +525,57 @@ class EncounterAllergyReviewView(TenantAPIView):
 
 class EncounterListCreateView(TenantAPIView):
     capability = "clinical.note.create"
+    permission_classes = [IsAuthenticated, IsTenantMember, HasCapability, QueueScopePermission]
+    idempotency_operation = "CMD-030"
+    requires_idempotency = True
     serializer_class = EncounterCreateSerializer
     response_serializer_class = EncounterSerializer
 
+    def requires_idempotency_for_request(self, request):
+        return _mig002_command_mode(request.organisation)
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference or {}
+        encounter_id = reference.get("entity_id") if isinstance(reference, dict) else None
+        encounter = Encounter.objects.select_related("patient", "visit", "queue_entry").filter(
+            id=encounter_id,
+            organisation=self.request.organisation,
+            facility=self.request.facility,
+        ).first()
+        if encounter is None:
+            return record.response_body
+        return json_safe(EncounterSerializer(encounter).data)
+
     def post(self, request):
-        queue_entry_id = request.data.get("queue_entry_id")
+        serializer = EncounterCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        queue_entry_id = values["queue_entry_id"]
         if not queue_entry_id:
             return Response({"detail": "queue_entry_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        expected_version = _clinical_expected_version(request, values)
+        _require_canonical_queue_version(request, expected_version)
         try:
-            encounter = start_encounter(
+            outcome = encounter_open(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
                 queue_entry_id=queue_entry_id,
-                request=request,
+                expected_version=expected_version,
             )
+            encounter = outcome.encounter
+        except CanonicalError:
+            raise
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        data = EncounterSerializer(encounter).data
+        data = json_safe(EncounterSerializer(encounter).data)
         response = Response(data, status=status.HTTP_201_CREATED)
         response["ETag"] = data["consultation_etag"]
+        response.idempotency_body = {"id": str(encounter.id)}
+        response.result_reference = {
+            "entity_type": "Encounter",
+            "entity_id": str(encounter.id),
+        }
         return response
 
 
@@ -775,16 +929,17 @@ class EncounterSignView(TenantAPIView):
         serializer = NoteWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            note = sign_note(
+            outcome = encounter_sign(
                 organisation=request.organisation,
                 facility=request.facility,
                 actor=request.user,
-                encounter=encounter,
+                encounter_id=encounter.id,
                 content=serializer.validated_data["content"],
                 complaints=serializer.validated_data.get("complaints"),
                 expected_etag=expected_etag,
                 request=request,
             )
+            encounter.refresh_from_db()
         except ClinicalNoteRevisionConflict as exc:
             return _revision_conflict_response(exc)
         except AllergyStateConflict as exc:
@@ -811,7 +966,7 @@ class EncounterSignView(TenantAPIView):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        return _note_response(encounter=encounter, note=note, include_version=True)
+        return _note_response(encounter=encounter, note=outcome.note, include_version=True)
 
 
 class EncounterAmendView(TenantAPIView):
@@ -844,3 +999,375 @@ class EncounterAmendView(TenantAPIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return _note_response(encounter=encounter, note=note, include_version=True)
+
+
+def _mig003_triage_writes_required(organisation):
+    if not target_writes_enabled_mig003(organisation):
+        raise CanonicalError(
+            "MIGRATION_TARGET_DISABLED",
+            "Canonical triage is unavailable while migration compatibility is restored.",
+            status_code=503,
+            retryable=True,
+        )
+
+
+def _mig003_triage_reads_required(organisation):
+    if not target_reads_enabled_mig003(organisation):
+        raise CanonicalError(
+            "MIGRATION_TARGET_DISABLED",
+            "Canonical triage records are temporarily unavailable.",
+            status_code=503,
+            retryable=True,
+        )
+
+
+def _strong_if_match(request):
+    header = request.headers.get("If-Match")
+    if not header:
+        return None
+    value = str(header).strip()
+    if value.startswith("W/"):
+        raise CanonicalError(
+            "INVALID_IF_MATCH", "If-Match must be a strong triage version.", status_code=400
+        )
+    value = value.strip('"')
+    try:
+        version = int(value)
+    except (TypeError, ValueError) as exc:
+        raise CanonicalError(
+            "INVALID_IF_MATCH", "If-Match must contain the triage version.", status_code=400
+        ) from exc
+    if version < 1:
+        raise CanonicalError(
+            "INVALID_IF_MATCH", "If-Match must contain a positive version.", status_code=400
+        )
+    return version
+
+
+def _triage_expected_version(request, values, *, field="expected_version"):
+    header = _strong_if_match(request)
+    body = values.get(field)
+    if header is not None and body is not None and int(body) != header:
+        raise CanonicalError(
+            "VERSION_CONFLICT",
+            "The body version and If-Match value do not agree.",
+            status_code=412,
+        )
+    resolved = header if header is not None else body
+    if resolved is None:
+        raise CanonicalError(
+            "PRECONDITION_REQUIRED",
+            "A current version is required in the body or If-Match.",
+            status_code=428,
+            metadata={"field": field},
+        )
+    return int(resolved)
+
+
+def _triage_record_for_request(request, identifier):
+    record_id = coerce_queue_identifier(identifier)
+    if record_id is None:
+        raise CanonicalError(
+            "NOT_FOUND", "The triage record was not found in this facility.", status_code=404
+        )
+    record = TriageRecord.objects.filter(
+        organisation_id=request.organisation.id,
+        facility_id=request.facility.id,
+        id=record_id,
+    ).first()
+    if record is None:
+        raise CanonicalError(
+            "NOT_FOUND", "The triage record was not found in this facility.", status_code=404
+        )
+    return record
+
+
+def _triage_scope_allows(request, view, record):
+    source = QueueEntry.objects.filter(
+        organisation_id=request.organisation.id,
+        facility_id=request.facility.id,
+        visit_id=record.visit_id,
+        queue_type="TRIAGE",
+    ).values("department_id", "queue_type").first()
+    if source is None:
+        return False
+    write = request.method in {"POST", "PUT", "PATCH"}
+    attribute = "triage_write_capabilities" if write else "triage_read_capabilities"
+    capabilities = tuple(
+        getattr(view, attribute, ())
+        or getattr(view, "triage_capabilities", ())
+        or (getattr(view, "capability", None),)
+    )
+    pairs = queue_scope_pairs(
+        organisation=request.organisation,
+        facility=request.facility,
+        user=request.user,
+        capabilities=capabilities,
+    )
+    return scope_allows(pairs, source["department_id"], source["queue_type"])
+
+
+def _triage_replay_denial():
+    return CanonicalError(
+        "NOT_FOUND", "The triage record was not found in this facility.", status_code=404
+    )
+
+
+def _triage_response(body, *, record, idempotency_body, status_code=200):
+    data = json_safe(body)
+    response = Response(data, status=status_code)
+    response["ETag"] = f'"{record.row_version}"'
+    response.idempotency_body = json_safe(idempotency_body)
+    response.result_reference = {
+        "entity_type": "TriageRecord",
+        "entity_id": str(record.id),
+    }
+    return response
+
+
+class TriageRecordStartView(TenantAPIView):
+    """CMD-025: start/resume triage on one TRIAGE queue entry."""
+
+    capability = "triage.create"
+    triage_capabilities = ("triage.create",)
+    permission_classes = [
+        IsAuthenticated,
+        IsTenantMember,
+        HasCapability,
+        QueueScopePermission,
+    ]
+    idempotency_operation = "CMD-025"
+    requires_idempotency = True
+    serializer_class = TriageRecordStartSerializer
+    response_serializer_class = TriageRecordStartResponseSerializer
+
+    def requires_idempotency_for_request(self, request):
+        _mig003_triage_writes_required(request.organisation)
+        return True
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference if isinstance(record.result_reference, dict) else {}
+        record_id = reference.get("entity_id")
+        if record_id is None:
+            return record.response_body
+        target = _triage_record_for_request(self.request, record_id)
+        if not _triage_scope_allows(self.request, self, target):
+            raise _triage_replay_denial()
+        queue = (
+            QueueEntry.objects.filter(
+                organisation_id=self.request.organisation.id,
+                facility_id=self.request.facility.id,
+                visit_id=target.visit_id,
+                queue_type="TRIAGE",
+            )
+            .order_by("queue_time", "id")
+            .first()
+        )
+        if queue is None:
+            raise _triage_replay_denial()
+        return json_safe(
+            {
+                "triage_record": triage_snapshot(target),
+                "queue_entry": QueueEntrySerializer(queue).data,
+            }
+        )
+
+    def post(self, request, queue_id):
+        serializer = TriageRecordStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        queue_version = _triage_expected_version(request, values)
+        outcome = triage_record_start(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            queue_entry_id=queue_id,
+            expected_queue_version=queue_version,
+        )
+        body = {
+            "triage_record": triage_snapshot(outcome.record),
+            "queue_entry": QueueEntrySerializer(outcome.queue).data,
+        }
+        return _triage_response(
+            body,
+            record=outcome.record,
+            idempotency_body={
+                "triage_record_id": str(outcome.record.id),
+                "record_version": outcome.record.row_version,
+                "queue_entry_id": str(outcome.queue.id),
+                "queue_version": outcome.queue.version,
+            },
+        )
+
+
+class TriageRecordDetailView(TenantAPIView):
+    """GET/PATCH the scoped draft or completed triage snapshot."""
+
+    triage_read_capability = "triage.read"
+    triage_write_capability = "triage.create"
+    triage_read_capabilities = ("triage.read",)
+    triage_write_capabilities = ("triage.create",)
+    permission_classes = [
+        IsAuthenticated,
+        IsTenantMember,
+        TriageMethodCapability,
+        TriageRecordScopePermission,
+    ]
+    idempotency_operation = "CMD-026"
+    requires_idempotency = True
+    serializer_class = TriageRecordSaveSerializer
+    response_serializer_class = TriageRecordSaveResponseSerializer
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        if (
+            request.method == "GET"
+            and response.status_code == 200
+            and getattr(self, "_record_etag", None) is not None
+        ):
+            response["ETag"] = f'"{self._record_etag}"'
+        return response
+
+    def get(self, request, pk):
+        _mig003_triage_reads_required(request.organisation)
+        record = _triage_record_for_request(request, pk)
+        self._record_etag = record.row_version
+        return Response(json_safe({"triage_record": triage_snapshot(record)}))
+
+    def requires_idempotency_for_request(self, request):
+        _mig003_triage_writes_required(request.organisation)
+        return True
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference if isinstance(record.result_reference, dict) else {}
+        record_id = reference.get("entity_id")
+        if record_id is None:
+            return record.response_body
+        target = _triage_record_for_request(self.request, record_id)
+        if not _triage_scope_allows(self.request, self, target):
+            raise _triage_replay_denial()
+        return json_safe({"triage_record": triage_snapshot(target)})
+
+    def patch(self, request, pk):
+        _mig003_triage_writes_required(request.organisation)
+        serializer = TriageRecordSaveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        expected = _triage_expected_version(request, values)
+        record = triage_record_save(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            triage_record_id=pk,
+            payload=values,
+            expected_version=expected,
+        )
+        body = {"triage_record": triage_snapshot(record)}
+        return _triage_response(
+            body,
+            record=record,
+            idempotency_body={
+                "triage_record_id": str(record.id),
+                "record_version": record.row_version,
+            },
+        )
+
+
+class TriageRecordCompleteView(TenantAPIView):
+    """CMD-027: complete the draft and create the consultation destination."""
+
+    capability = "triage.create"
+    triage_write_capabilities = ("triage.create",)
+    permission_classes = [
+        IsAuthenticated,
+        IsTenantMember,
+        HasCapability,
+        TriageRecordScopePermission,
+    ]
+    idempotency_operation = "CMD-027"
+    requires_idempotency = True
+    serializer_class = TriageRecordCompleteSerializer
+    response_serializer_class = TriageRecordCompleteResponseSerializer
+
+    def requires_idempotency_for_request(self, request):
+        _mig003_triage_writes_required(request.organisation)
+        return True
+
+    def replay_idempotent_response(self, record):
+        reference = record.result_reference if isinstance(record.result_reference, dict) else {}
+        record_id = reference.get("entity_id")
+        if record_id is None:
+            return record.response_body
+        target = _triage_record_for_request(self.request, record_id)
+        if not _triage_scope_allows(self.request, self, target):
+            raise _triage_replay_denial()
+        stored = record.response_body if isinstance(record.response_body, dict) else {}
+        source = (
+            QueueEntry.objects.filter(
+                organisation_id=self.request.organisation.id,
+                facility_id=self.request.facility.id,
+                id=stored.get("source_queue_entry_id"),
+            ).first()
+            if stored.get("source_queue_entry_id")
+            else None
+        )
+        destination = (
+            QueueEntry.objects.filter(
+                organisation_id=self.request.organisation.id,
+                facility_id=self.request.facility.id,
+                id=stored.get("destination_queue_entry_id"),
+            ).first()
+            if stored.get("destination_queue_entry_id")
+            else None
+        )
+        if source is None or destination is None:
+            raise _triage_replay_denial()
+        return json_safe(
+            {
+                "triage_record": triage_snapshot(target),
+                "source_queue_entry_id": str(source.id),
+                "source_state": source.state,
+                "destination_queue_entry_id": str(destination.id),
+                "destination_state": destination.state,
+            }
+        )
+
+    def post(self, request, pk):
+        serializer = TriageRecordCompleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        expected = _triage_expected_version(request, values)
+        queue_version = values.get("expected_queue_version")
+        if queue_version is None:
+            raise CanonicalError(
+                "PRECONDITION_REQUIRED",
+                "A current queue version is required in expected_queue_version.",
+                status_code=428,
+                metadata={"field": "expected_queue_version"},
+            )
+        outcome = triage_record_complete(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            triage_record_id=pk,
+            payload=values,
+            expected_version=expected,
+            expected_queue_version=queue_version,
+        )
+        body = {
+            "triage_record": triage_snapshot(outcome.record),
+            "source_queue_entry_id": str(outcome.source.id),
+            "source_state": outcome.source.state,
+            "destination_queue_entry_id": str(outcome.destination.id),
+            "destination_state": outcome.destination.state,
+        }
+        return _triage_response(
+            body,
+            record=outcome.record,
+            idempotency_body={
+                "triage_record_id": str(outcome.record.id),
+                "record_version": outcome.record.row_version,
+                "source_queue_entry_id": str(outcome.source.id),
+                "destination_queue_entry_id": str(outcome.destination.id),
+            },
+        )

@@ -6,6 +6,7 @@ from application.reception.views import (
     PatientRegisterView,
     ReferralSourceView,
     VisitCancelErrorView,
+    VisitCloseLwbsView,
     VisitCheckInView,
     VisitContextView,
 )
@@ -18,6 +19,7 @@ urlpatterns = [
     path("visits/<uuid:pk>/", VisitContextView.as_view(), name="visit_context"),
     path("visits/<uuid:pk>/context/", VisitContextView.as_view(), name="visit_context_explicit"),
     path("visits/<uuid:pk>/cancel-error/", VisitCancelErrorView.as_view(), name="visit_cancel_error"),
+    path("visits/<uuid:pk>/close-lwbs/", VisitCloseLwbsView.as_view(), name="visit_close_lwbs"),
     path("arrival-enquiries/", ArrivalEnquiryView.as_view(), name="arrival_enquiry_record"),
     path(
         "visits/<uuid:pk>/referral-source/",

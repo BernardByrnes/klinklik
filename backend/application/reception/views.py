@@ -5,6 +5,7 @@ from application.reception.commands import (
     arrival_enquiry_record,
     patient_register,
     visit_cancel_error,
+    visit_close_lwbs,
     visit_check_in,
     visit_referral_source_record,
 )
@@ -27,6 +28,8 @@ from application.reception.serializers import (
     VisitCheckInSerializer,
     VisitCancelErrorSerializer,
     VisitCancelErrorResponseSerializer,
+    VisitCloseLwbsResponseSerializer,
+    VisitCloseLwbsSerializer,
     VisitContextResponseSerializer,
     VisitCheckInResponseSerializer,
     VisitSerializer,
@@ -37,6 +40,7 @@ from clinical.serializers import (
     PatientContextProjectionSerializer,
     VisitHistoryProjectionSerializer,
 )
+from core.errors import CanonicalError
 from core.tenant_api import TenantAPIView
 from core.idempotency import UncommittedResponse, json_safe
 
@@ -413,3 +417,66 @@ class VisitCancelErrorView(TenantAPIView):
         )
         response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
         return response
+
+
+class VisitCloseLwbsView(TenantAPIView):
+    # REC-009 authorizes abandonment through the queue.remove capability;
+    # CMD-007 retains visit.close_lwbs as the command contract/owner.
+    capability = "queue.remove"
+    idempotency_operation = "CMD-007"
+    requires_idempotency = True
+    serializer_class = VisitCloseLwbsSerializer
+    response_serializer_class = VisitCloseLwbsResponseSerializer
+
+    def replay_idempotent_response(self, record):
+        return record.response_body
+
+    def post(self, request, pk):
+        serializer = VisitCloseLwbsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        expected_version = _strong_if_match_version(request, values.get("expected_version"))
+        if expected_version is None:
+            raise CanonicalError(
+                "PRECONDITION_REQUIRED",
+                "A current Visit version is required in If-Match or expected_version.",
+                status_code=428,
+            )
+        values["expected_version"] = expected_version
+        outcome = visit_close_lwbs(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            visit_id=pk,
+            **values,
+        )
+        body = {
+            "visit_id": str(outcome.visit.id),
+            "queue_entry_id": str(outcome.queue_entry.id),
+            "state": outcome.queue_entry.state,
+            "version": outcome.queue_entry.version,
+            "visit_version": outcome.visit.version,
+        }
+        response = Response(body)
+        response["ETag"] = f'"{outcome.visit.version}"'
+        _store_exact_idempotent_response(response, stored_body=body)
+        response.result_reference = {"entity_type": "QueueEntry", "entity_id": str(outcome.queue_entry.id)}
+        return response
+
+
+def _strong_if_match_version(request, body_version):
+    header = request.headers.get("If-Match")
+    if not header:
+        return body_version
+    value = str(header).strip()
+    if value.startswith("W/"):
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must be a strong Visit version.", status_code=400)
+    try:
+        header_version = int(value.strip('"'))
+    except (TypeError, ValueError) as exc:
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain the Visit version.", status_code=400) from exc
+    if header_version < 1:
+        raise CanonicalError("INVALID_IF_MATCH", "If-Match must contain a positive Visit version.", status_code=400)
+    if body_version is not None and int(body_version) != header_version:
+        raise CanonicalError("VERSION_CONFLICT", "The body version and If-Match value do not agree.", status_code=412)
+    return header_version

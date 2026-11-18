@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import hashlib
 import secrets
 import string
 
@@ -14,8 +15,14 @@ from clinical.concurrency import require_current_consultation_etag
 from clinical.diagnoses import require_signable_diagnosis_state
 from clinical.dispositions import require_signable_disposition
 from clinical.models import ClinicalNote, ClinicalNoteVersion, Encounter, TriageAssessment, VitalsObservation
+from core.idempotency import canonical_json
 from patients.models import Patient
 from scheduling.models import QueueEntry, Visit
+
+
+def _note_content_hash(content):
+    return hashlib.sha256(canonical_json(content or {}).encode("utf-8")).hexdigest()
+
 
 
 def _reference(prefix):
@@ -71,9 +78,10 @@ def start_encounter(*, organisation, facility, actor, queue_entry_id, request=No
             after={"state": visit.state, "version": visit.version},
         )
     queue.status = "IN_CONSULTATION"
+    queue.state = "IN_SERVICE"
     queue.current_stage = "CONSULTATION"
     queue.claimed_by = queue.claimed_by or actor
-    queue.save(update_fields=["status", "current_stage", "claimed_by", "updated_at"])
+    queue.save(update_fields=["status", "state", "current_stage", "claimed_by", "updated_at"])
     record_event(
         request=request,
         organisation=organisation,
@@ -132,8 +140,9 @@ def record_triage(*, organisation, facility, actor, queue_entry_id, data, reques
             }},
         )
     queue.status = "TRIAGED"
+    queue.state = "COMPLETED"
     queue.current_stage = "CONSULTATION"
-    queue.save(update_fields=["status", "current_stage", "updated_at"])
+    queue.save(update_fields=["status", "state", "current_stage", "updated_at"])
     record_event(
         request=request,
         organisation=organisation,
@@ -356,6 +365,7 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, complai
         note=note,
         version_number=note.current_version + 1,
         content=note.content,
+        content_hash=_note_content_hash(note.content),
         created_by=actor,
         reason="Initial signature",
     )
@@ -376,7 +386,7 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, complai
         action="SIGN",
         entity_type="ClinicalNote",
         entity_id=note.id,
-        after={"version": version.version_number, "encounter_id": str(encounter.id)},
+        after={"version": version.version_number, "encounter_id": str(encounter.id), "content_hash": version.content_hash},
     )
     return note
 
@@ -402,6 +412,7 @@ def amend_note(*, organisation, facility, actor, encounter, content, reason, exp
         note=note,
         version_number=note.current_version + 1,
         content=normalized_content,
+        content_hash=_note_content_hash(normalized_content),
         created_by=actor,
         reason=reason,
     )
@@ -417,7 +428,7 @@ def amend_note(*, organisation, facility, actor, encounter, content, reason, exp
         action="AMEND",
         entity_type="ClinicalNote",
         entity_id=note.id,
-        after={"version": version.version_number, "reason": reason},
+        after={"version": version.version_number, "reason": reason, "content_hash": version.content_hash},
         reason=reason,
     )
     return note

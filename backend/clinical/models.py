@@ -1,7 +1,12 @@
 from django.conf import settings
 from django.db import models
 
+from core.clock import now
 from core.models import FacilityScopedModel, OrganisationScopedModel
+
+
+def default_medication_context():
+    return {"medications": [], "chronic_conditions": []}
 
 
 class Encounter(FacilityScopedModel):
@@ -60,7 +65,46 @@ class Encounter(FacilityScopedModel):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["organisation", "encounter_no"], name="uniq_encounter_org_no")
+            models.UniqueConstraint(fields=["organisation", "encounter_no"], name="uniq_encounter_org_no"),
+            models.UniqueConstraint(
+                fields=["organisation", "visit"],
+                condition=models.Q(visit__isnull=False, status="OPEN"),
+                name="uniq_open_encounter_visit",
+            ),
+        ]
+
+
+class EncounterCoAuthor(FacilityScopedModel):
+    """Durable authorship continuity for a queue takeover.
+
+    The primary Encounter clinician is immutable here.  A takeover adds the
+    acting clinician as an explicit co-author so later clinical work can be
+    attributed without rewriting signed or historical authorship.
+    """
+
+    encounter = models.ForeignKey(Encounter, on_delete=models.PROTECT, related_name="co_authors")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="co_authored_encounters",
+    )
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="added_encounter_co_authors",
+    )
+    reason_hash = models.CharField(max_length=64)
+    added_at = models.DateTimeField(default=now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "facility", "encounter", "user"],
+                name="uniq_encounter_co_author_scope",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["organisation", "facility", "encounter", "added_at"]),
         ]
 
 
@@ -98,11 +142,17 @@ class ClinicalNoteVersion(OrganisationScopedModel):
     content = models.JSONField(default=dict)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     reason = models.TextField(blank=True)
+    content_hash = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["note", "version_number"], name="uniq_note_version")
+            models.UniqueConstraint(fields=["note", "version_number"], name="uniq_note_version"),
+            models.CheckConstraint(
+                condition=models.Q(content_hash="")
+                | models.Q(content_hash__regex=r"^[0-9a-f]{64}$"),
+                name="note_version_hash_valid",
+            ),
         ]
 
 
@@ -124,9 +174,115 @@ class TriageAssessment(FacilityScopedModel):
     recorded_at = models.DateTimeField(auto_now_add=True)
 
 
+class TriageRecord(FacilityScopedModel):
+    """PC-008: the one current human-entered triage outcome for a Visit."""
+
+    STATES = [("DRAFT", "Draft"), ("COMPLETED", "Completed")]
+
+    visit = models.OneToOneField(
+        "scheduling.Visit", on_delete=models.PROTECT, related_name="triage_record"
+    )
+    patient = models.ForeignKey(
+        "patients.Patient", on_delete=models.PROTECT, related_name="triage_records"
+    )
+    state = models.CharField(max_length=20, choices=STATES, default="DRAFT")
+    acuity = models.CharField(
+        max_length=20, choices=TriageAssessment.ACUITY_CHOICES, null=True, blank=True
+    )
+    presenting_complaints = models.JSONField(default=list)
+    current_medications = models.JSONField(default=default_medication_context)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="triage_records",
+    )
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="completed_triage_records",
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+    current_version = models.PositiveIntegerField(default=0)
+    row_version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["visit"], name="uniq_triage_record_visit"),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        state="COMPLETED",
+                        acuity__isnull=False,
+                        completed_by__isnull=False,
+                        completed_at__isnull=False,
+                        current_version__gte=1,
+                    )
+                    | models.Q(
+                        state="DRAFT",
+                        completed_by__isnull=True,
+                        completed_at__isnull=True,
+                        current_version=0,
+                    )
+                ),
+                name="triage_record_state_fields_match",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(row_version__gte=1),
+                name="triage_record_row_version_positive",
+            ),
+        ]
+
+
+class TriageRecordVersion(OrganisationScopedModel):
+    """PC-052: append-only immutable clinical snapshot for a TriageRecord."""
+
+    record = models.ForeignKey(
+        TriageRecord, on_delete=models.PROTECT, related_name="versions"
+    )
+    version_number = models.PositiveIntegerField()
+    content = models.JSONField(default=dict)
+    content_hash = models.CharField(max_length=64)
+    reason = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="triage_record_versions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["record", "version_number"], name="uniq_triage_record_version"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version_number__gte=1),
+                name="triage_record_version_positive",
+            ),
+        ]
+
+
 class VitalsObservation(FacilityScopedModel):
     patient = models.ForeignKey("patients.Patient", on_delete=models.PROTECT, related_name="vitals")
+    visit = models.ForeignKey(
+        "scheduling.Visit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="vitals_observations",
+    )
     encounter = models.ForeignKey(Encounter, on_delete=models.PROTECT, related_name="vitals", null=True, blank=True)
+    triage_record = models.ForeignKey(
+        TriageRecord,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="observations",
+    )
+    context = models.CharField(max_length=20, null=True, blank=True)
+    sequence = models.PositiveIntegerField(null=True, blank=True)
     measured_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     systolic = models.PositiveSmallIntegerField(null=True, blank=True)
     diastolic = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -136,7 +292,44 @@ class VitalsObservation(FacilityScopedModel):
     oxygen_saturation = models.PositiveSmallIntegerField(null=True, blank=True)
     weight_kg = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     height_cm = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    muac_cm = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    unable_reason_fields = models.JSONField(default=dict)
+    supersedes = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="superseded_by",
+    )
     measured_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["visit", "context", "sequence"],
+                condition=models.Q(
+                    visit__isnull=False,
+                    context__isnull=False,
+                    sequence__isnull=False,
+                ),
+                name="uniq_vitals_visit_context_sequence",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(context__isnull=True)
+                    | models.Q(visit__isnull=False, sequence__isnull=False)
+                ),
+                name="vitals_canonical_scope_present",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(context__isnull=True)
+                    | models.Q(diastolic__isnull=True)
+                    | models.Q(systolic__isnull=False, diastolic__lt=models.F("systolic"))
+                ),
+                name="vitals_canonical_diastolic_below_systolic",
+            ),
+        ]
 
 
 class Diagnosis(FacilityScopedModel):

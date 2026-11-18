@@ -17,5 +17,12 @@ def query_dispense_projection(*, organisation, facility, patient_ids, visit_id=N
     return {str(patient_id): () for patient_id in patient_ids}
 
 
+def blocking_visit_records(*, organisation, facility, visit_id):
+    """Return pharmacy records which legally block a pre-service closure."""
+
+    assert_transaction_active()
+    return ()
+
+
 prescription_projection = query_prescription_projection
 dispense_projection = query_dispense_projection

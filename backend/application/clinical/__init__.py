@@ -1,1 +1,1 @@
-"""Application-owned clinical read projections."""
+"""Application-owned clinical command boundary."""
