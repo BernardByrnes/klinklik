@@ -378,6 +378,11 @@ def sign_note(*, organisation, facility, actor, encounter, content=None, complai
     encounter.status = "SIGNED"
     encounter.signed_at = now
     encounter.save(update_fields=["status", "signed_at", "updated_at"])
+    # Pharmacy-owned activation is invoked after the signing state is durable in
+    # this transaction; the local import keeps the sibling app boundary explicit.
+    from pharmacy.dispensing import activate_for_encounter
+
+    activate_for_encounter(encounter=encounter, actor=actor, request=request)
     record_event(
         request=request,
         organisation=organisation,

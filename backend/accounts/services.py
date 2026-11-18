@@ -144,6 +144,10 @@ def ensure_default_permissions(organisation):
         ("lab.result.verify", "Verify and release laboratory results", "T2"),
         ("lab.result.amend", "Amend released laboratory results", "T2"),
         ("lab.cancel", "Cancel laboratory items", "T2"),
+        ("pharmacy.prescribe", "Create prescription drafts", "T2"),
+        ("pharmacy.dispense", "Claim, prepare and hand over prescriptions", "T2"),
+        ("pharmacy.otc.sell", "Sell over-the-counter stock", "T1"),
+        ("pharmacy.queue.view", "View the pharmacy queue", "T1"),
         ("catalogue.manage", "Manage the medicine catalogue and prices", "T2"),
         ("catalogue.import", "Import a starter catalogue", "T3"),
         ("billing.payment_method.configure", "Configure payment methods", "T3"),
@@ -179,6 +183,8 @@ def ensure_default_permissions(organisation):
             "billing.payment.record",
             "billing.receipt.print",
             "billing.manual_line",
+            "pharmacy.otc.sell",
+            "pharmacy.queue.view",
         ],
         "NURSE_TRIAGE": [
             "patient.view",
@@ -204,6 +210,8 @@ def ensure_default_permissions(organisation):
             "clinical.note.amend",
             "triage.create",
             "triage.read",
+            "pharmacy.prescribe",
+            "pharmacy.queue.view",
         ],
     }
     for template_code, codes in templates.items():
