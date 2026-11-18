@@ -60,4 +60,3 @@ Red proof on the accepted integration tip `027935c`: the blocked and successful 
 ## Lock-order correction
 
 Payment confirmation now pre-locks the affected Visit before its Invoices, and repricing does the same, matching closure's Visit → Invoice → QueueEntry order. This prevents cross-command deadlocks in the PG close-vs-payment, gate-vs-close and reprice-vs-payment races; no observable behavior changed.
-
