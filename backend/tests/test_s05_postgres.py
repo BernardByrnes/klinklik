@@ -201,6 +201,100 @@ def test_pg_s05_reversal_restores_every_allocated_invoice(
         assert PaymentReceipt.objects.filter(payment=payment).count() == 1
 
 
+def test_pg_s05_payment_and_blind_close_serialize_on_the_shift(tenant):
+    from billing.services import close_shift, open_shift
+
+    with tenant_atomic(tenant.organisation.id):
+        organisation = Organisation.objects.get(id=tenant.organisation.id)
+        facility = Facility.objects.get(id=tenant.facility.id)
+        actor = User.objects.get(id=tenant.user.id)
+        patient = Patient.objects.create(
+            organisation=organisation,
+            patient_no=f"P-PG-S05-CLOSE-{uuid4().hex[:8]}",
+            first_name="S05 PG",
+            last_name="Synthetic",
+            sex="UNKNOWN",
+            date_of_birth=date(1990, 1, 1),
+        )
+        invoice = create_invoice(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            patient_id=patient.id,
+            items=[{"service_id": str(tenant.service.id), "quantity": "1"}],
+        )
+        shift = open_shift(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            opening_float="0.00",
+        )
+        invoice_id = invoice.id
+        shift_id = shift.id
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    barrier = threading.Barrier(2)
+
+    def pay_attempt():
+        close_old_connections()
+        try:
+            barrier.wait(timeout=20)
+            with tenant_atomic(tenant.organisation.id):
+                outcome = confirm_payment(
+                    organisation=organisation,
+                    facility=facility,
+                    actor=actor,
+                    amount="10000.00",
+                    method="CASH",
+                    invoice_id=invoice_id,
+                    require_shift=True,
+                )
+                return ("paid", str(outcome.payment.id))
+        except (CanonicalError, ValueError) as exc:
+            return ("refused", getattr(exc, "code", type(exc).__name__))
+        finally:
+            close_old_connections()
+
+    def close_attempt():
+        close_old_connections()
+        try:
+            barrier.wait(timeout=20)
+            with tenant_atomic(tenant.organisation.id):
+                stored = close_shift(
+                    organisation=organisation,
+                    facility=facility,
+                    actor=actor,
+                    shift_id=shift_id,
+                    declared_cash="10000.00",
+                )
+                return ("closed", str(stored.expected_cash))
+        except (CanonicalError, ValueError) as exc:
+            return ("refused", getattr(exc, "code", type(exc).__name__))
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        payment_future = executor.submit(pay_attempt)
+        close_future = executor.submit(close_attempt)
+        payment_result = payment_future.result()
+        close_result = close_future.result()
+    assert close_result[0] == "closed"
+    with tenant_atomic(tenant.organisation.id):
+        stored = CashierShift.objects.get(id=shift_id)
+        assert stored.status == "CLOSED"
+        payment_count = Payment.objects.filter(shift_id=shift_id).count()
+        if payment_result[0] == "paid":
+            assert stored.expected_cash == Decimal("10000.00")
+            assert payment_count == 1
+            assert Invoice.objects.get(id=invoice_id).amount_paid == Decimal("10000.00")
+        else:
+            assert stored.expected_cash == Decimal("0.00")
+            assert payment_count == 0
+            assert Invoice.objects.get(id=invoice_id).amount_paid == Decimal("0.00")
+
+
 def test_pg_s05_receipt_numbers_are_exact_and_blind_close_reads_committed_cash(
     tenant, authed_client, enabled_mig001_target
 ):

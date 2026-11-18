@@ -15,7 +15,7 @@ the S-01/billing base, re-run here.
 | --- | --- | --- |
 | `backend/tests/test_s05_billing.py` | 9 | S-05 SQLite service/API/permission/shift/method/line/receipt cases |
 | `backend/tests/test_s05_mig005.py` | 2 | MIG-005..009 inventory/verify/constrain/cutover/rollback and blocker case |
-| `backend/tests/test_s05_postgres.py` | 4 | app-role RLS/guards, competing final payment, cross-invoice reversal, exact numbering + blind close |
+| `backend/tests/test_s05_postgres.py` | 5 | app-role RLS/guards, competing final payment, shift/payment serialization, cross-invoice reversal, exact numbering + blind close |
 | `frontend/tests/s05-cashier.spec.ts` | 1 | shift open → canonical payment → exact receipt → reprint → reversal → blind close |
 | `backend/tests/test_visit_invoice_handoff.py` | 8 | PRIOR billing/check-in handoff regression |
 | `backend/tests/test_vertical_slice.py` | 5 | PRIOR end-to-end vertical slice |
