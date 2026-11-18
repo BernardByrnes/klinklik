@@ -45,6 +45,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/billing", label: "Billing & Payments", icon: IconBilling, capability: "billing.invoice.create" },
   { href: "/inventory", label: "Inventory", icon: IconBilling, capability: "inventory.read" },
   { href: "/lab", label: "Laboratory", icon: IconBilling, capability: "lab.result.entry" },
+  { href: "/pharmacy", label: "Pharmacy", icon: IconBilling, capability: "pharmacy.queue.view" },
 ];
 
 function useQueueBadge(enabled: boolean) {

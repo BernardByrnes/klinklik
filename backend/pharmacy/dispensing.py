@@ -304,6 +304,15 @@ def queue(*, organisation, facility):
             "state": prescription.status,
             "dispensed_count": dispensed,
             "age_days": age_days,
+            "items": [
+                {
+                    "id": str(item.id),
+                    "medicine_name": item.medicine_name,
+                    "quantity": str(item.quantity),
+                    "state": item.state,
+                }
+                for item in items
+            ],
         }
         if prescription.status == "ACTIVE" and age_days > window:
             uncollected_rows.append(row)
