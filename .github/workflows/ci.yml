@@ -219,7 +219,7 @@ jobs:
             --deselect backend/tests/test_s02_postgres.py::test_pg_s02_cutover_refuses_a_disabled_state_guard \
             --deselect backend/tests/test_s03_postgres.py::test_pg_s03_disabled_guard_blocks_cutover_from_constrained \
             --deselect backend/tests/test_s04_postgres.py::test_pg_s04_disabled_guard_blocks_cutover_from_constrained \
-            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py backend/tests/test_s03_postgres.py backend/tests/test_s04_postgres.py backend/tests/test_s05_postgres.py backend/tests/test_s06_postgres.py backend/tests/test_s07_postgres.py
+            backend/tests/test_s00_postgres.py backend/tests/test_auth_postgres.py backend/tests/test_s01_postgres.py backend/tests/test_s02_postgres.py backend/tests/test_s03_postgres.py backend/tests/test_s04_postgres.py backend/tests/test_s05_postgres.py backend/tests/test_s06_postgres.py backend/tests/test_s07_postgres.py backend/tests/test_s08_postgres.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -289,5 +289,5 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts tests/s04-encounter.spec.ts tests/clinic-slice.spec.ts tests/billing-handoff-edges.spec.ts tests/s05-cashier.spec.ts tests/s06-corrections.spec.ts tests/s07-repricing.spec.ts
+      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts tests/s04-encounter.spec.ts tests/clinic-slice.spec.ts tests/billing-handoff-edges.spec.ts tests/s05-cashier.spec.ts tests/s06-corrections.spec.ts tests/s07-repricing.spec.ts tests/s08-closure.spec.ts
         working-directory: frontend

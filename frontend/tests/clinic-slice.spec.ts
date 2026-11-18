@@ -250,6 +250,17 @@ test("completes the clinic vertical slice across routed workspaces", async ({ pa
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await expect(page.getByText("This invoice is paid in full.")).toBeVisible();
 
+  // S-08 closes the Visit once the signed encounter and balance checklist clear.
+  await expect(page.getByText("Visit closure", { exact: true })).toBeVisible();
+  const closed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/reception/visits/${visitId}/close/`) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Close visit", exact: true }).click();
+  expect((await closed).status()).toBe(200);
+  await expect(page.getByText(/Visit CLOSED/)).toBeVisible();
+
   // No generic invoice-create request was made anywhere in the focused flow.
   expect(invoiceCreateRequests).toEqual([]);
 });

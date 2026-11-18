@@ -83,6 +83,26 @@ type ZReport = {
   variance_reason: string;
 };
 
+type ClosureBlocker = {
+  code: string;
+  amount?: string;
+  invoice_no?: string;
+  queue_type?: string;
+  state?: string;
+  clinician_id?: string;
+  action?: string;
+};
+
+type VisitClosureResponse = {
+  visit_id: string;
+  state: string;
+  closure_reason: string;
+  version: number;
+  closed: boolean;
+  already_closed: boolean;
+  blockers: ClosureBlocker[];
+};
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message.includes("permission")) {
     return "You don't have permission to perform this action.";
@@ -141,6 +161,8 @@ function BillingWorkspace() {
     line_set_version: number;
   } | null>(null);
   const [zReport, setZReport] = useState<ZReport | null>(null);
+  const [closureBlockers, setClosureBlockers] = useState<ClosureBlocker[]>([]);
+  const [closureResult, setClosureResult] = useState<VisitClosureResponse | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
 
   const [patientSearch, setPatientSearch] = useState("");
@@ -224,6 +246,19 @@ function BillingWorkspace() {
       ? visitInvoice.data
       : null
     : selectedInvoice;
+  const visitClosureKey = useProtectedQueryKey(
+    "visit-closure",
+    activeInvoice?.visit ?? "none",
+  );
+  const visitClosure = useQuery({
+    queryKey: visitClosureKey,
+    queryFn: () =>
+      apiRequest<{ visit: { id: string; state: string; version: number; closure_reason: string } }>(
+        `/api/v1/reception/visits/${activeInvoice?.visit}/context/`,
+      ),
+    enabled: focused && Boolean(activeInvoice?.visit) && can("visit.close"),
+    retry: false,
+  });
   const canRecordPayment = can("billing.payment.record");
   const visitInvoiceMissing =
     visitInvoice.isError &&
@@ -569,6 +604,35 @@ function BillingWorkspace() {
       setError("");
     },
     onError: (reason) => setError(errorMessage(reason)),
+  });
+
+  const closeVisit = useMutation({
+    mutationFn: () =>
+      apiRequest<VisitClosureResponse>(
+        `/api/v1/reception/visits/${activeInvoice?.visit}/close/`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": newIdempotencyKey("s08-close") },
+          body: JSON.stringify({ expected_version: visitClosure.data?.visit.version }),
+        },
+      ),
+    onSuccess: (result) => {
+      setClosureResult(result);
+      setClosureBlockers([]);
+      setNotice(`Visit closed (${result.closure_reason}).`);
+      setError("");
+      queryClient.invalidateQueries({ queryKey: visitClosureKey });
+    },
+    onError: (reason) => {
+      setNotice("");
+      if (reason instanceof ApiRequestError) {
+        const body = reason.data as { blockers?: ClosureBlocker[] };
+        setClosureBlockers(body.blockers ?? []);
+      } else {
+        setClosureBlockers([]);
+      }
+      setError(errorMessage(reason));
+    },
   });
 
   if (!can("billing.invoice.create")) {
@@ -1344,6 +1408,52 @@ function BillingWorkspace() {
           ) : null}
         </div>
       </section>
+
+      {focused && can("visit.close") && activeInvoice?.visit ? (
+        <Card>
+          <CardTitleBar title="Visit closure" />
+          <div className="px-5 py-4 space-y-3">
+            {visitClosure.isLoading ? (
+              <p className="text-[12.5px] font-medium text-secondary" role="status" aria-busy="true">
+                Loading the closure checklist…
+              </p>
+            ) : visitClosure.isError ? (
+              <p className="text-[12.5px] font-medium text-ink" role="alert">
+                The Visit checklist could not be loaded.
+              </p>
+            ) : visitClosure.data?.visit.state === "CLOSED" || closureResult ? (
+              <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink" role="status">
+                <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
+                Visit CLOSED — {closureResult?.closure_reason ?? visitClosure.data?.visit.closure_reason}.
+                History remains readable; new ordinary records are refused.
+              </p>
+            ) : (
+              <>
+                <p className="text-[12.5px] font-medium text-secondary">
+                  Closure is refused until every blocker clears. The checklist names the exact
+                  queue, encounter and balance records.
+                </p>
+                <Button disabled={closeVisit.isPending} onClick={() => closeVisit.mutate()}>
+                  {closeVisit.isPending ? "Checking…" : "Close visit"}
+                </Button>
+                {closureBlockers.length ? (
+                  <ul className="space-y-1.5 rounded-[14px] border border-line-soft p-3.5" role="alert">
+                    {closureBlockers.map((blocker, index) => (
+                      <li key={`${blocker.code}-${index}`} className="text-[12.5px] font-medium text-ink">
+                        <span className="font-bold">{blocker.code}</span>
+                        {blocker.queue_type ? ` · ${blocker.queue_type} ${blocker.state ?? ""}` : ""}
+                        {blocker.invoice_no ? ` · ${blocker.invoice_no} ${blocker.amount ?? ""}` : ""}
+                        {blocker.clinician_id ? ` · clinician ${blocker.clinician_id.slice(0, 8)}` : ""}
+                        {blocker.action ? ` · ${blocker.action}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </>
+            )}
+          </div>
+        </Card>
+      ) : null}
     </>
   );
 }
