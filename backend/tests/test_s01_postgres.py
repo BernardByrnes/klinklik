@@ -849,27 +849,34 @@ def test_pg_concurrent_overlapping_service_prices_have_one_database_winner(tenan
     def attempt():
         connections.close_all()
         try:
-            with tenant_atomic(tenant.organisation.id):
+            barrier.wait(timeout=20)
+
+            def insert():
                 organisation = Organisation.objects.get(id=tenant.organisation.id)
                 facility = Facility.objects.get(id=tenant.facility.id)
                 price_list = PriceList.objects.get(id=tenant.price_list.id)
                 service = ServiceCatalogItem.objects.get(id=service_id)
-                barrier.wait(timeout=20)
-                try:
-                    with transaction.atomic():
-                        ServicePrice.objects.create(
-                            organisation=organisation,
-                            facility=facility,
-                            service=service,
-                            price_list=price_list,
-                            amount="42000.00",
-                            currency="UGX",
-                            effective_from=date(2030, 1, 1),
-                            effective_to=date(2030, 12, 31),
-                        )
-                except DatabaseError as exc:
-                    return ("error", _sqlstate(exc))
-                return ("ok", None)
+                ServicePrice.objects.create(
+                    organisation=organisation,
+                    facility=facility,
+                    service=service,
+                    price_list=price_list,
+                    amount="42000.00",
+                    currency="UGX",
+                    effective_from=date(2030, 1, 1),
+                    effective_to=date(2030, 12, 31),
+                )
+
+            # Production commands run through run_in_tenant, which retries a
+            # PostgreSQL deadlock/serialization failure in a fresh transaction.
+            # Use that production path rather than asserting the SQLSTATE of the
+            # raw first INSERT.
+            run_in_tenant(tenant.organisation.id, insert)
+            return ("ok", None)
+        except DatabaseError as exc:
+            return ("error", _sqlstate(exc))
+        except CanonicalError as exc:
+            return ("error", exc.code)
         finally:
             connections.close_all()
 
