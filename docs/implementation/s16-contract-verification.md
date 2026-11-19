@@ -15,6 +15,13 @@ Status counts: ADR|SETTLED=14, CMD|EVIDENCE LINKED=104, CMD|FENCED=30, MIG|IMPLE
 
 Status meaning: **IMPLEMENTED/EVIDENCE LINKED** means the contract is mapped to the named code or slice test evidence; **PARTIAL** means a legacy/renamed or inline representation; **FENCED** means the applicable registry authority/slice remains blocked and no executable evidence is claimed. **SETTLED** is used only for the blueprint ADR register.
 
+**Verification-depth limit (read this before relying on the counts).** This table verifies registry inventory and evidence pointers, not full contract semantics:
+
+- PC `IMPLEMENTED` means a model/migration file exists for the named aggregate; it does **not** prove every field, constraint, policy, state transition or lifecycle rule in that PC row. The seven `PARTIAL` rows are known representation differences, not a complete field-parity audit.
+- CMD `EVIDENCE LINKED` means the traceability table maps the command to a slice with a checked-in test file; it does **not** prove that command-specific route, service branch, permission, audit or concurrency evidence exists. Several commands use inherited/internal steps and several slice tests do not name the CMD ID.
+- The machine test asserts exact ID inventories, retired exclusions, status counts and pointer existence. It cannot detect a pointer that exists but weakly supports the contract.
+- Section 5 of the dossier records the concrete findings this limited method already exposed. A full branch-by-branch CMD audit remains open and is not claimed here.
+
 ## Contracts
 
 | ID | Family | Name | Owner | Status | Evidence | Note |

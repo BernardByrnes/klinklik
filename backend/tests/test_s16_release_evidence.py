@@ -84,3 +84,5 @@ def test_s16_dossier_states_scope_and_non_authorization():
     assert "439 passed, 92 skipped" in dossier
     assert "102,184 bytes" in dossier
     assert "S-12 CMD idempotency labels are mismatched" in dossier
+    assert "evidence index, not a branch-by-branch contract audit" in dossier
+    assert "Plan-16 scope gaps" in dossier

@@ -25,7 +25,7 @@ This dossier records what was run and what was not run. It is not a release appr
 
 Machine artifact: [`docs/implementation/s16-contract-verification.json`](../implementation/s16-contract-verification.json).
 Human report: [`docs/implementation/s16-contract-verification.md`](../implementation/s16-contract-verification.md).
-Machine assertions: `backend/tests/test_s16_release_evidence.py` — **4 passed**.
+Machine assertions: `backend/tests/test_s16_release_evidence.py` — **5 passed**.
 
 | Family | Active contracts | Verified status counts |
 | --- | --- | --- |
@@ -35,6 +35,8 @@ Machine assertions: `backend/tests/test_s16_release_evidence.py` — **4 passed*
 | ADR | 14 (`ADR-C-01..ADR-C-14`) | 14 `SETTLED` |
 
 `EVIDENCE LINKED` means the contract is mapped to the named slice test evidence; it is not a claim that every branch in that command is complete. The fenced and partial lists below carry the honest limits.
+
+**This table is an evidence index, not a branch-by-branch contract audit.** PC `IMPLEMENTED` only proves a model/migration file exists; it does not prove the PC row's fields, constraints or state rules. CMD `EVIDENCE LINKED` only proves the traceability table points at a slice with a test file; it does not prove that command's route, service branch, permission, audit and concurrency evidence. The machine test checks inventories and pointer existence, not semantic sufficiency. A full CMD-by-CMD audit remains open.
 
 ## Journey drills (J-01..J-05)
 
@@ -91,7 +93,9 @@ The full per-contract fenced list is in the contract report: 11 PC contracts, 30
 1. **S-12 CMD idempotency labels are mismatched with the registry.** `backend/pharmacy/views.py`: claim uses `CMD-055` (registry CMD-124 pharmacy_claim), prepare uses `CMD-057` (registry CMD-056 provisional_dispense_create), prescription cancel uses `CMD-059` (registry CMD-054 prescription_cancel; CMD-059 is dispense_cancel), not-dispensed uses `CMD-060` (registry CMD-115 dispense_item_not_dispensed; CMD-060 is prescription_partial_close), OTC uses `CMD-113` (registry CMD-062 otc_sale; CMD-113 is dispense_substitute). Behavior tests pass, but replay namespaces and audit/idempotency operation identities are mislabeled. No product code was changed here.
 2. **PC partial representations:** PC-017, PC-022, PC-025, PC-037, PC-040, PC-077 and PC-080 are implemented through legacy/renamed or inline models (for example `PrescriptionItem`, `StockBatch`, `InvoiceItem`, `PaymentReceipt`, inline substitution and analyte values). The registry field names are not a one-to-one schema match.
 3. **Command coverage is evidence-linked, not branch-complete.** 30 CMD contracts are fenced and are listed above; the dossier does not claim their execution.
-4. **Reused-database journey timeout:** the earlier `clinic-slice` 120-second timeout on an accumulated e2e database is recorded above; the fresh-database run passed.
+4. **Reused-database journey timeout:** the earlier `clinic-slice` 120-second timeout on an accumulated e2e database is recorded above; the fresh-database run passed. I did not root-cause the earlier timeout: the server log showed a transient 503 on the Visit context, and the same context returned 200 later. Treating it as data-volume/environment is a hypothesis, not proven.
+5. **Plan-16 scope gaps found while executing it:** (a) "all sixteen specs" is the CI canonical set, but this repo contains 26 spec files — the 10 legacy `phase-1*`/`role-handoff` specs were not run and are not in CI; (b) J-05 is fenced, so only J-01/J-02 (clinical), J-03 and J-04 have fresh journey evidence; (c) only MIG-001..004 were explicitly cut over for the browser lane; MIG-005..011 were not re-run as e2e cutovers; (d) the migration drill reversed only scheduling 0008, not all 11 MIG reversals; (e) browser print rendering is not physical-printer certification; (f) the plan asks to "verify" 80/134 contracts but does not define a branch-level acceptance test, which is why this dossier labels CMDs as evidence-linked rather than verified.
+6. **Conflicting S-12 idempotency evidence:** because the S-12 route labels are mismatched (finding 1), the contract table's evidence-linking for CMD-054/056/062/113/115/124 is weaker than a command-by-command reader would assume. Their behavior tests pass, but the CMD ID namespace must be corrected and the table rechecked.
 
 ## Explicit non-authorizations
 
