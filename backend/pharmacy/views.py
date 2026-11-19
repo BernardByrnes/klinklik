@@ -283,7 +283,7 @@ class ProductInstructionTemplateView(TenantAPIView):
     idempotency_operation = "CMD-110"
     requires_idempotency = True
 
-    def patch(self, request, pk):
+    def post(self, request, pk):
         from pharmacy.services import set_instruction_template
 
         serializer = InstructionTemplateSerializer(data=request.data)

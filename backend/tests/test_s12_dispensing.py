@@ -704,7 +704,7 @@ def test_s12_cancel_retains_items_and_cancels_pending_only(tenant, authed_client
 def test_s12_instruction_template_has_version_and_audit(tenant, authed_client):
     stock = _stock(authed_client, tenant)
     product = stock["product"]
-    response = authed_client.patch(
+    response = authed_client.post(
         f"/api/v1/pharmacy/products/{product['id']}/instruction-template/",
         {"content": "Take with food", "expected_version": product["version"]},
         format="json",
@@ -713,7 +713,7 @@ def test_s12_instruction_template_has_version_and_audit(tenant, authed_client):
     assert response.status_code == 200, response.data
     assert response.data["instructions_template"] == "Take with food"
     assert response.data["version"] == product["version"] + 1
-    stale = authed_client.patch(
+    stale = authed_client.post(
         f"/api/v1/pharmacy/products/{product['id']}/instruction-template/",
         {"content": "Take after food", "expected_version": product["version"]},
         format="json",

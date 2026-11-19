@@ -2720,21 +2720,20 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST.",
+      "discrepancy": "Declared audit codes not found in code: ['LAB_RESULT_DRAFT_SAVED', 'LAB_RESULT_ENTERED'].",
       "error_codes": [
         "INVALID_INPUT",
         "REQUIRED_FIELD_MISSING",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:145",
+      "evidence_pointer": "backend/tests/test_s11_lab.py",
       "http_method": "PATCH",
       "id": "CMD-044",
       "idempotency_required": true,
       "idempotency_text": "YES lab.result_save; item, expected ETag, ordered analyte-definition/version IDs, normalized entered values and content hash",
       "internal": false,
       "lock_plan": "exact LabTestDefinition, LabAnalyteDefinition and LabReferenceRange version rows sorted; LabOrderItem; LabResult",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "LAB_RESULT_DRAFT_SAVED",
         "LAB_RESULT_ENTERED"
@@ -2761,14 +2760,14 @@
       "slices": [
         "S-11"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "PARTIAL",
       "views": [
         {
           "capabilities": [],
           "capability": "lab.result.entry",
           "capability_source": "capability",
           "methods": [
-            "post"
+            "patch"
           ],
           "serializer": "LabResultSaveSerializer",
           "url": "items/<uuid:pk>/results/",
@@ -6143,7 +6142,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared POST but view methods are ['patch'].",
+      "discrepancy": "Declared audit codes not found in code: ['DISPOSITION_SET'].",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
@@ -6155,7 +6154,7 @@
       "idempotency_text": "YES disposition.set; encounter, disposition code, supplied target/reason, expected version",
       "internal": false,
       "lock_plan": "Visit; Encounter; ClinicalNote",
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "DISPOSITION_SET"
       ],
@@ -6179,14 +6178,14 @@
       "slices": [
         "S-04"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "PARTIAL",
       "views": [
         {
           "capabilities": [],
           "capability": "clinical.note.create",
           "capability_source": "capability",
           "methods": [
-            "patch"
+            "post"
           ],
           "serializer": "DispositionWriteSerializer",
           "url": "encounters/<uuid:pk>/disposition/",
@@ -6265,7 +6264,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared POST but view methods are ['get', 'patch'].",
+      "discrepancy": "Declared audit codes not found in code: ['FOLLOWUP_RECORDED'].",
       "error_codes": [
         "INVALID_INPUT",
         "UNSUPPORTED_OPERATION"
@@ -6277,7 +6276,7 @@
       "idempotency_text": "YES followup.record; encounter, date/window/text source facts, expected version",
       "internal": false,
       "lock_plan": "Encounter; existing FollowUpRecommendation",
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "FOLLOWUP_RECORDED"
       ],
@@ -6301,7 +6300,7 @@
       "slices": [
         "S-04"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "PARTIAL",
       "views": [
         {
           "capabilities": [],
@@ -6309,7 +6308,7 @@
           "capability_source": "capability",
           "methods": [
             "get",
-            "patch"
+            "post"
           ],
           "serializer": "FollowUpWriteSerializer",
           "url": "encounters/<uuid:pk>/follow-up/",
@@ -6729,20 +6728,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Registry declares POST product_instruction_template_set; ProductInstructionTemplateView implements PATCH only.",
+      "discrepancy": "",
       "error_codes": [
         "UNSUPPORTED_OPERATION",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/pharmacy/views.py:283",
+      "evidence_pointer": "backend/tests/test_s12_dispensing.py",
       "http_method": "POST",
       "id": "CMD-110",
       "idempotency_required": true,
       "idempotency_text": "YES product_instruction_template.set; product, locale if supplied, content hash, expected version",
       "internal": false,
       "lock_plan": "MedicationProduct",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.pharmacy",
@@ -6764,14 +6762,14 @@
       "slices": [
         "S-12"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
           "capability": "catalogue.manage",
           "capability_source": "capability",
           "methods": [
-            "patch"
+            "post"
           ],
           "serializer": "InstructionTemplateSerializer",
           "url": "products/<uuid:pk>/instruction-template/",
@@ -8221,20 +8219,20 @@
     "active_commands": 134,
     "base": "54291e4",
     "generated_at": "2026-11-19",
-    "manual_overrides": 19,
+    "manual_overrides": 17,
     "retired_excluded": [
       "CMD-097",
       "CMD-107"
     ],
     "severity_counts": {
-      "P2": 58
+      "P2": 57
     },
     "url_patterns": 152,
     "verdict_counts": {
       "FENCED": 52,
-      "MISMATCH": 9,
-      "PARTIAL": 49,
-      "VERIFIED": 24
+      "MISMATCH": 5,
+      "PARTIAL": 52,
+      "VERIFIED": 25
     }
   }
 }

@@ -193,7 +193,7 @@ test("S-11 orders from the Encounter, collects, releases and exposes the result"
     facilities: Array<{ id: string }>;
   };
   const admin = { token: adminBody.access_token, facilityId: adminBody.facilities[0].id };
-  const entered = await adminApi.post(
+  const entered = await adminApi.patch(
     `${API}/api/v1/lab/items/${itemId}/results/`,
     {
       headers: { ...headers(admin), "Idempotency-Key": `s11-result-${suffix}` },

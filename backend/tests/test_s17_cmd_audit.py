@@ -119,10 +119,10 @@ def test_s17_summary_and_report_counts_match_the_records():
         for verdict in ("VERIFIED", "PARTIAL", "MISMATCH", "FENCED")
     }
     assert audit["summary"]["verdict_counts"] == expected
-    assert audit["summary"]["severity_counts"] == {"P2": 58}
+    assert audit["summary"]["severity_counts"] == {"P2": 57}
     report = (ROOT / "docs/implementation/s17-cmd-audit.md").read_text(encoding="utf-8")
     assert "P1" not in report.split("## Discrepancy list")[0].split("## Summary")[1]
-    assert "P2 58" in report
+    assert "P2 57" in report
     for verdict, count in expected.items():
         assert f"{verdict} {count}" in report
     assert "P2 | CMD-044" in report
@@ -161,3 +161,21 @@ def test_s19_clinical_enforcement_labels_and_legacy_payment_namespace():
         assert view.requires_idempotency is True, view.__name__
     assert InvoiceCanonicalPaymentView.idempotency_operation == "CMD-075"
     assert InvoicePaymentView.idempotency_operation == "legacy.invoice.payment.compat"
+
+
+def test_s20_view_verb_and_command_triples_are_pinned():
+    from clinical.views import EncounterDispositionView, EncounterFollowUpView
+    from laboratory.views import LabResultSaveView
+    from pharmacy.views import ProductInstructionTemplateView
+
+    expected = {
+        LabResultSaveView: ("patch", "CMD-044"),
+        EncounterDispositionView: ("post", "CMD-099"),
+        EncounterFollowUpView: ("post", "CMD-101"),
+        ProductInstructionTemplateView: ("post", "CMD-110"),
+    }
+    for view, (verb, command_id) in expected.items():
+        assert view.idempotency_operation == command_id, view.__name__
+        assert hasattr(view, verb), (view.__name__, verb)
+        other = "post" if verb == "patch" else "patch"
+        assert not hasattr(view, other), (view.__name__, other)

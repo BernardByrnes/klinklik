@@ -8,10 +8,10 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 ## Summary
 
 - Active commands audited: 134 of 134; retired CMD-097 and CMD-107 excluded.
-- Verdicts: FENCED 52, MISMATCH 9, PARTIAL 49, VERIFIED 24.
+- Verdicts: FENCED 52, MISMATCH 5, PARTIAL 52, VERIFIED 25.
 - Machine inventory: `docs/implementation/s17-cmd-audit.json`; machine assertions: `backend/tests/test_s17_cmd_audit.py`.
-- Discrepancy severity: P2 58.
-- Manual findings applied: 19.
+- Discrepancy severity: P2 57.
+- Manual findings applied: 17.
 
 ## Discrepancy list (severity ordered)
 
@@ -35,7 +35,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-039 | encounter_transfer_takeover | PARTIAL | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. | `backend/clinical/services.py` |
 | P2 | CMD-040 | lab_order | PARTIAL | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-042 | lab_collect | PARTIAL | Declared audit codes not found in code: ['QUEUE_COMPLETED']. | `backend/tests/test_s02_queue.py` |
-| P2 | CMD-044 | lab_result_save | MISMATCH | Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST. | `backend/laboratory/views.py:145` |
+| P2 | CMD-044 | lab_result_save | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_DRAFT_SAVED', 'LAB_RESULT_ENTERED']. | `backend/tests/test_s11_lab.py` |
 | P2 | CMD-045 | lab_verify | PARTIAL | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. | `backend/laboratory/views.py:172` |
 | P2 | CMD-046 | lab_release | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_VERIFIED']. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-047 | lab_cancel | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s02_queue.py` |
@@ -65,13 +65,12 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-094 | allergy_entered_error | PARTIAL | Declared audit codes not found in code: ['ALLERGY_ENTERED_ERROR']. | `backend/tests/test_s03_triage.py` |
 | P2 | CMD-095 | encounter_allergy_review | PARTIAL | Declared audit codes not found in code: ['ALLERGY_REVIEWED']. | `backend/tests/test_s04_encounter.py` |
 | P2 | CMD-096 | diagnosis_save | PARTIAL | Declared audit codes not found in code: ['DIAGNOSIS_SAVED']. | `backend/tests/test_s04_encounter.py` |
-| P2 | CMD-099 | disposition_set | MISMATCH | Declared POST but view methods are ['patch']. | `backend/tests/test_s04_encounter.py` |
-| P2 | CMD-101 | followup_record | MISMATCH | Declared POST but view methods are ['get', 'patch']. | `backend/tests/test_s04_encounter.py` |
+| P2 | CMD-099 | disposition_set | PARTIAL | Declared audit codes not found in code: ['DISPOSITION_SET']. | `backend/tests/test_s04_encounter.py` |
+| P2 | CMD-101 | followup_record | PARTIAL | Declared audit codes not found in code: ['FOLLOWUP_RECORDED']. | `backend/tests/test_s04_encounter.py` |
 | P2 | CMD-104 | stock_location_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-105 | supplier_upsert | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-106 | payment_method_configure | MISMATCH | payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106. | `backend/billing/views.py:PaymentMethodListView` |
 | P2 | CMD-108 | lab_test_catalogue_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s11_lab.py` |
-| P2 | CMD-110 | product_instruction_template_set | MISMATCH | Registry declares POST product_instruction_template_set; ProductInstructionTemplateView implements PATCH only. | `backend/pharmacy/views.py:283` |
 | P2 | CMD-111 | inventory_threshold_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-115 | dispense_item_not_dispensed | PARTIAL | Declared audit codes not found in code: ['DISPENSE_ITEM_NOT_DISPENSED', 'INVOICE_LINE_VOIDED_OR_REDUCED']. | `backend/tests/test_s12_dispensing.py` |
 | P2 | CMD-124 | pharmacy_claim | PARTIAL | Declared audit codes not found in code: ['PRESCRIPTION_ACCESSED']. | `backend/tests/test_s12_dispensing.py` |
@@ -177,7 +176,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-041 | lab_gate_release | S-11,S-13 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-042 | lab_collect | S-02,S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['QUEUE_COMPLETED']. |
 | CMD-043 | lab_reject_specimen | S-11 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s11_lab.py`. |
-| CMD-044 | lab_result_save | S-11 | YES | MISMATCH | P2 | Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST. |
+| CMD-044 | lab_result_save | S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_DRAFT_SAVED', 'LAB_RESULT_ENTERED']. |
 | CMD-045 | lab_verify | S-11 | YES | PARTIAL | P2 | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. |
 | CMD-046 | lab_release | S-02,S-11,S-13,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_VERIFIED']. |
 | CMD-047 | lab_cancel | S-02,S-11 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
@@ -231,9 +230,9 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-095 | encounter_allergy_review | S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ALLERGY_REVIEWED']. |
 | CMD-096 | diagnosis_save | S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['DIAGNOSIS_SAVED']. |
 | CMD-098 | treatment_plan_save | S-04 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
-| CMD-099 | disposition_set | S-04 | YES | MISMATCH | P2 | Declared POST but view methods are ['patch']. |
+| CMD-099 | disposition_set | S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['DISPOSITION_SET']. |
 | CMD-100 | referral_letter_create | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-101 | followup_record | S-04 | YES | MISMATCH | P2 | Declared POST but view methods are ['get', 'patch']. |
+| CMD-101 | followup_record | S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['FOLLOWUP_RECORDED']. |
 | CMD-102 | procedure_order | S-04,S-05,S-14 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-103 | medical_certificate_issue | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-104 | stock_location_configure | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
@@ -241,7 +240,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-106 | payment_method_configure | S-05 | YES | MISMATCH | P2 | payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106. |
 | CMD-108 | lab_test_catalogue_configure | S-11,S-13 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-109 | lab_self_verification_policy_set | S-11 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
-| CMD-110 | product_instruction_template_set | S-12 | YES | MISMATCH | P2 | Registry declares POST product_instruction_template_set; ProductInstructionTemplateView implements PATCH only. |
+| CMD-110 | product_instruction_template_set | S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s12_dispensing.py`. |
 | CMD-111 | inventory_threshold_set | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-112 | invoice_discount_waiver | S-05,S-06 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-113 | dispense_substitute | S-12 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
@@ -278,4 +277,5 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 - FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.
 - At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.
 - Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.
+- S-20 aligned the four registry verbs (CMD-044 PATCH, CMD-099/101/110 POST) with the same paths, payloads and idempotency namespaces. The three clinical/lab rows remain PARTIAL only because declared audit event names differ from code names; CMD-110 is VERIFIED.
 - S-19 closed the clinical P1 class: ten active clinical views now carry their registry CMD id and `requires_idempotency=True`. EncounterDiagnosisDetailView/RemoveView remain unlabelled by design: registry CMD-097 is a retired tombstone and no active id was invented. P1 count is now zero; all remaining discrepancy rows are P2 owner-deferred findings (verbs, duplicate legacy routes, compatibility namespaces, audit-name/test-naming limits).

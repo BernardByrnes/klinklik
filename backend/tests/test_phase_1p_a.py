@@ -81,7 +81,7 @@ def disposition_url(encounter_id):
 
 
 def patch_disposition(client, encounter_id, payload, etag):
-    return client.patch(
+    return client.post(
         disposition_url(encounter_id),
         payload,
         format="json",
@@ -218,7 +218,7 @@ def test_disposition_requires_if_match_and_rejects_stale_shared_etag(tenant, aut
     encounter = create_encounter(tenant, authed_client, "Phase1PAConcurrency")
     initial = read_encounter(authed_client, encounter["id"])
 
-    missing = authed_client.patch(
+    missing = authed_client.post(
         disposition_url(encounter["id"]),
         {"disposition": "TREATED_AND_DISCHARGED", "disposition_note": ""},
         format="json",

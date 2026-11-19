@@ -758,7 +758,7 @@ class EncounterDispositionView(TenantAPIView):
     serializer_class = DispositionWriteSerializer
     response_serializer_class = DispositionResponseSerializer
 
-    def patch(self, request, pk):
+    def post(self, request, pk):
         encounter = get_object_or_404(
             Encounter, id=pk, organisation=request.organisation, facility=request.facility
         )
@@ -820,7 +820,7 @@ class EncounterFollowUpView(TenantAPIView):
         response["ETag"] = etag
         return response
 
-    def patch(self, request, pk):
+    def post(self, request, pk):
         encounter = self._encounter(request, pk)
         expected_etag, error_response = _required_if_match(
             request,

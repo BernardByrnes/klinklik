@@ -108,7 +108,7 @@ def test_pg_s11_concurrent_release_has_one_winner(tenant, authed_client, enabled
 
     with tenant_atomic(tenant.organisation.id):
         analyte = LabAnalyteDefinition.objects.get(test_id=test["id"])
-    saved = authed_client.post(
+    saved = authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {
             "values": [{"analyte_id": str(analyte.id), "value": "10.0"}],

@@ -59,7 +59,7 @@ def follow_up_url(encounter_id):
 
 
 def patch_follow_up(client, encounter_id, payload, etag):
-    return client.patch(
+    return client.post(
         follow_up_url(encounter_id),
         payload,
         HTTP_IF_MATCH=etag,
@@ -83,7 +83,7 @@ def prepare_review_scheduled(tenant, client, label):
     encounter = create_encounter(tenant, client, label)
     establish_synthetic_nka_review(client, encounter["id"])
     diagnosis = establish_synthetic_final_diagnosis(client, encounter["id"], include_disposition=False)
-    disposition = client.patch(
+    disposition = client.post(
         f"/api/v1/clinic/encounters/{encounter['id']}/disposition/",
         {"disposition": "REVIEW_SCHEDULED", "disposition_note": ""},
         HTTP_IF_MATCH=diagnosis["consultation_etag"],

@@ -181,7 +181,7 @@ def test_s11_order_collect_enter_release_and_amend(tenant, authed_client):
         {"analyte_id": str(analytes[0].id), "value": "13.2"},
         {"analyte_id": str(analytes[1].id), "value": "6.0"},
     ]
-    saved = authed_client.post(
+    saved = authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {"values": values, "complete": True, "comments": "Synthetic result"},
         format="json",
@@ -267,7 +267,7 @@ def test_s11_self_verification_policy_allows_when_enabled(tenant, authed_client)
 
     with tenant_atomic(tenant.organisation.id):
         analytes = list(LabAnalyteDefinition.objects.filter(test_id=test["id"]).order_by("sequence"))
-    authed_client.post(
+    authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {
             "values": [
@@ -373,7 +373,7 @@ def test_s11_result_validation_coded_sanity_and_partial_save(tenant, authed_clie
 
     with tenant_atomic(tenant.organisation.id):
         analyte = LabAnalyteDefinition.objects.get(test_id=test["id"])
-    invalid = authed_client.post(
+    invalid = authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {
             "values": [{"analyte_id": str(analyte.id), "value": "INVALID"}],
@@ -383,7 +383,7 @@ def test_s11_result_validation_coded_sanity_and_partial_save(tenant, authed_clie
         HTTP_IDEMPOTENCY_KEY="s11-result-invalid",
     )
     assert invalid.status_code == 400
-    free_text = authed_client.post(
+    free_text = authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {
             "values": [{"analyte_id": str(analyte.id), "value": "MAYBE"}],
@@ -393,7 +393,7 @@ def test_s11_result_validation_coded_sanity_and_partial_save(tenant, authed_clie
         HTTP_IDEMPOTENCY_KEY="s11-result-free",
     )
     assert free_text.status_code == 400
-    draft = authed_client.post(
+    draft = authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {
             "values": [{"analyte_id": str(analyte.id), "value": "NEGATIVE"}],

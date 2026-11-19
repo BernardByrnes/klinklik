@@ -3006,7 +3006,7 @@ function ConsultationsWorkspace() {
   const followUpMutation = useMutation<FollowUpSaveResponse, unknown, FollowUpMutationVariables>({
     mutationFn: ({ encounterId, etag, values }) =>
       apiRequest<FollowUpSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/follow-up/", {
-        method: "PATCH",
+        method: "POST",
         headers: {
           "If-Match": etag,
           "Idempotency-Key": clinicalIntentKey("follow-up-save", { encounterId, etag, values }),
@@ -3237,7 +3237,7 @@ function ConsultationsWorkspace() {
   const dispositionMutation = useMutation<DispositionSaveResponse, unknown, DispositionMutationVariables>({
     mutationFn: ({ encounterId, etag, disposition, disposition_note }) =>
       apiRequest<DispositionSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/disposition/", {
-        method: "PATCH",
+        method: "POST",
         headers: {
           "If-Match": etag,
           "Idempotency-Key": clinicalIntentKey("disposition-save", { encounterId, etag, disposition, disposition_note }),

@@ -202,11 +202,11 @@ export type CreateDiagnosisWriteResponse = DiagnosisStateResponse;
 export type PartialUpdateDiagnosisWriteRequest = DiagnosisWrite;
 export type PartialUpdateDiagnosisWriteResponse = DiagnosisStateResponse;
 export type CreateEncounterDiagnosisRemoveResponse = DiagnosisStateResponse;
-export type PartialUpdateDispositionWriteRequest = DispositionWrite;
-export type PartialUpdateDispositionWriteResponse = DispositionResponse;
+export type CreateDispositionWriteRequest = DispositionWrite;
+export type CreateDispositionWriteResponse = DispositionResponse;
 export type ListFollowUpWritesResponse = FollowUpStateResponse;
-export type PartialUpdateFollowUpWriteRequest = FollowUpWrite;
-export type PartialUpdateFollowUpWriteResponse = FollowUpStateResponse;
+export type CreateFollowUpWriteRequest = FollowUpWrite;
+export type CreateFollowUpWriteResponse = FollowUpStateResponse;
 export type PartialUpdateNoteWriteRequest = NoteWrite;
 export type PartialUpdateNoteWriteResponse = NoteResponse;
 export type CreateNoteWriteRequest = NoteWrite;
@@ -323,8 +323,8 @@ export type CreateLabCancelRequest = LabCancel;
 export type CreateLabCancelResponse = LabCancel;
 export type CreateLabRejectRequest = LabReject;
 export type CreateLabRejectResponse = LabReject;
-export type CreateLabResultSaveRequest = LabResultSave;
-export type CreateLabResultSaveResponse = LabResultSave;
+export type PartialUpdateLabResultSaveRequest = LabResultSave;
+export type PartialUpdateLabResultSaveResponse = LabResultSave;
 export type CreateLabOrderCreateRequest = LabOrderCreate;
 export type CreateLabOrderCreateResponse = LabOrderCreate;
 export type ListLabTestConfiguresResponse = Array<LabTest>;
@@ -350,8 +350,8 @@ export type CreatePrescriptionCancelRequest = PrescriptionCancel;
 export type CreatePrescriptionCancelResponse = PrescriptionCancel;
 export type CreateDispensePrepareRequest = DispensePrepare;
 export type CreateDispensePrepareResponse = DispensePrepare;
-export type PartialUpdateInstructionTemplateRequest = InstructionTemplate;
-export type PartialUpdateInstructionTemplateResponse = InstructionTemplate;
+export type CreateInstructionTemplateRequest = InstructionTemplate;
+export type CreateInstructionTemplateResponse = InstructionTemplate;
 export type ListPrescriptionQueuesResponse = Array<unknown>;
 export type CreateAppointmentNoShowCheckInRequest = AppointmentNoShowCheckIn;
 export type CreateAppointmentNoShowCheckInResponse = AppointmentNoShowCheckInResponse;
@@ -383,7 +383,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "9b884ecc0a4556a0f0d9c751a18461989e22563fab567e87f4af070efe049c70";
+export const GENERATED_API_CONTRACT_SHA256 = "267c853e5d3e9673584589f0fcb24bf35f39628573af93177a2570b38c5e5413";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -582,8 +582,8 @@ export const GENERATED_API_OPERATIONS = [
     "path": "/api/v1/clinic/encounters/{id}/diagnoses/{diagnosis_id}/remove/"
   },
   {
-    "method": "PATCH",
-    "operationId": "partialUpdateDispositionWrite",
+    "method": "POST",
+    "operationId": "createDispositionWrite",
     "path": "/api/v1/clinic/encounters/{id}/disposition/"
   },
   {
@@ -592,8 +592,8 @@ export const GENERATED_API_OPERATIONS = [
     "path": "/api/v1/clinic/encounters/{id}/follow-up/"
   },
   {
-    "method": "PATCH",
-    "operationId": "partialUpdateFollowUpWrite",
+    "method": "POST",
+    "operationId": "createFollowUpWrite",
     "path": "/api/v1/clinic/encounters/{id}/follow-up/"
   },
   {
@@ -957,8 +957,8 @@ export const GENERATED_API_OPERATIONS = [
     "path": "/api/v1/lab/items/{id}/release/"
   },
   {
-    "method": "POST",
-    "operationId": "createLabResultSave",
+    "method": "PATCH",
+    "operationId": "partialUpdateLabResultSave",
     "path": "/api/v1/lab/items/{id}/results/"
   },
   {
@@ -1052,8 +1052,8 @@ export const GENERATED_API_OPERATIONS = [
     "path": "/api/v1/pharmacy/prescriptions/{prescription_id}/dispenses/"
   },
   {
-    "method": "PATCH",
-    "operationId": "partialUpdateInstructionTemplate",
+    "method": "POST",
+    "operationId": "createInstructionTemplate",
     "path": "/api/v1/pharmacy/products/{id}/instruction-template/"
   },
   {

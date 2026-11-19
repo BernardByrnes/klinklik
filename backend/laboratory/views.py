@@ -145,7 +145,7 @@ class LabResultSaveView(TenantAPIView):
     idempotency_operation = "CMD-044"
     requires_idempotency = True
 
-    def post(self, request, pk):
+    def patch(self, request, pk):
         serializer = LabResultSaveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         result, version = save_result(

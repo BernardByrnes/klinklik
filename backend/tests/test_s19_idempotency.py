@@ -22,8 +22,8 @@ ENFORCED_ENDPOINTS = [
     ("POST", "/api/v1/clinic/patients/{id}/allergies/{id}/entered-in-error/"),
     ("POST", "/api/v1/clinic/encounters/{id}/allergies/review/"),
     ("POST", "/api/v1/clinic/encounters/{id}/diagnoses/"),
-    ("PATCH", "/api/v1/clinic/encounters/{id}/disposition/"),
-    ("PATCH", "/api/v1/clinic/encounters/{id}/follow-up/"),
+    ("POST", "/api/v1/clinic/encounters/{id}/disposition/"),
+    ("POST", "/api/v1/clinic/encounters/{id}/follow-up/"),
 ]
 
 
