@@ -1,0 +1,2181 @@
+{
+  "base": "db19523",
+  "counts": {
+    "ADR": {
+      "total": 14
+    },
+    "CMD": {
+      "active_range": "CMD-001..CMD-136 minus CMD-097/CMD-107",
+      "total": 134
+    },
+    "MIG": {
+      "total": 11
+    },
+    "PC": {
+      "active_range": "PC-001..PC-081 minus PC-061",
+      "total": 80
+    }
+  },
+  "records": [
+    {
+      "app": "tenancy",
+      "evidence": "backend/tenancy/models.py",
+      "family": "PC",
+      "id": "PC-001",
+      "name": "Organisation",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "tenancy",
+      "evidence": "backend/tenancy/models.py",
+      "family": "PC",
+      "id": "PC-002",
+      "name": "Facility",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "tenancy",
+      "evidence": "backend/tenancy/models.py",
+      "family": "PC",
+      "id": "PC-003",
+      "name": "Department",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "accounts",
+      "evidence": "backend/accounts/models.py",
+      "family": "PC",
+      "id": "PC-004",
+      "name": "User/member authority references",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "patients",
+      "evidence": "backend/patients/models.py",
+      "family": "PC",
+      "id": "PC-005",
+      "name": "Patient",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "scheduling",
+      "evidence": "backend/scheduling/models.py",
+      "family": "PC",
+      "id": "PC-006",
+      "name": "Visit",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "scheduling",
+      "evidence": "backend/scheduling/models.py",
+      "family": "PC",
+      "id": "PC-007",
+      "name": "QueueEntry",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-008",
+      "name": "TriageRecord",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-009",
+      "name": "VitalsObservation",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-010",
+      "name": "Encounter",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-011",
+      "name": "ClinicalNote",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-012",
+      "name": "ClinicalNoteVersion",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-013",
+      "name": "PatientAllergy",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-014",
+      "name": "PatientAllergyState",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-015",
+      "name": "LabOrder",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-016",
+      "name": "LabOrderItem",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-017",
+      "name": "LabSpecimenCustody",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-018",
+      "name": "LabResult",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-019",
+      "name": "LabResultVersion",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-020",
+      "name": "MedicationProduct",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-021",
+      "name": "Prescription",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-022",
+      "name": "PrescriptionLine",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-023",
+      "name": "Dispense",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-024",
+      "name": "DispenseLine",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-025",
+      "name": "Batch",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-026",
+      "name": "StockLocation",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-027",
+      "name": "BatchLocationBalance",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-028",
+      "name": "StockMovement",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-029",
+      "name": "StockReceipt",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-030",
+      "name": "StockReceiptLine",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-031",
+      "name": "StockCount",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-032",
+      "name": "StockCountLine",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-033",
+      "name": "StockAdjustment",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-034",
+      "name": "QuarantineRecord",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-035",
+      "name": "DisposalRecord",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-036",
+      "name": "Invoice",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-037",
+      "name": "InvoiceLine",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-038",
+      "name": "Payment",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-039",
+      "name": "PaymentAllocation",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-040",
+      "name": "Receipt",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-041",
+      "name": "CashierShift",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-042",
+      "name": "CreditNote",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-043",
+      "name": "RefundRequest",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-044",
+      "name": "Refund",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "scheduling",
+      "evidence": "backend/scheduling/models.py",
+      "family": "PC",
+      "id": "PC-045",
+      "name": "Appointment fragment record",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-046",
+      "name": "ANCEnrolment",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "audit",
+      "evidence": "backend/audit/models.py",
+      "family": "PC",
+      "id": "PC-047",
+      "name": "AuditEvent",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/models.py",
+      "family": "PC",
+      "id": "PC-048",
+      "name": "IdempotencyRecord",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/models.py",
+      "family": "PC",
+      "id": "PC-049",
+      "name": "NumberSequence",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/models.py",
+      "family": "PC",
+      "id": "PC-050",
+      "name": "MigrationReconciliation",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "scheduling",
+      "evidence": "backend/scheduling/models.py",
+      "family": "PC",
+      "id": "PC-051",
+      "name": "ArrivalEnquiry",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-052",
+      "name": "TriageRecordVersion",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-053",
+      "name": "Diagnosis",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-054",
+      "name": "ProcedureOrder",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "backend/clinical/models.py",
+      "family": "PC",
+      "id": "PC-055",
+      "name": "Referral",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "scheduling",
+      "evidence": "backend/scheduling/models.py",
+      "family": "PC",
+      "id": "PC-056",
+      "name": "FollowUpRecommendation",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-057",
+      "name": "MedicalCertificate",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-058",
+      "name": "LabTestDefinition",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-059",
+      "name": "Supplier",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-060",
+      "name": "PaymentMethodConfiguration",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "inventory",
+      "evidence": "backend/inventory/models.py",
+      "family": "PC",
+      "id": "PC-062",
+      "name": "InventoryThreshold",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-063",
+      "name": "ProductPrice",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-064",
+      "name": "ServiceDefinition",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-065",
+      "name": "PriceList",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-066",
+      "name": "ServicePrice",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "backend/billing/models.py",
+      "family": "PC",
+      "id": "PC-067",
+      "name": "VisitPayerBinding",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "billing",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-068",
+      "name": "DiscountWaiver",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-069",
+      "name": "LateResultReview",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-070",
+      "name": "PatientProblem",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-071",
+      "name": "PatientObstetricSummary",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-072",
+      "name": "ANCVisit",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-073",
+      "name": "ANCHistoryVersion",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-074",
+      "name": "ANCRiskFactor",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "PC",
+      "id": "PC-075",
+      "name": "ANCObstetricExamination",
+      "note": "Owner authority remains blocked for this contract's slice.",
+      "status": "FENCED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-076",
+      "name": "PharmacyClaim",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "pharmacy",
+      "evidence": "backend/pharmacy/models.py",
+      "family": "PC",
+      "id": "PC-077",
+      "name": "DispenseSubstitution",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-078",
+      "name": "LabAnalyteDefinition",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-079",
+      "name": "LabReferenceRange",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "laboratory",
+      "evidence": "backend/laboratory/models.py",
+      "family": "PC",
+      "id": "PC-080",
+      "name": "LabResultAnalyteValue",
+      "note": "Implemented under a legacy/renamed or inline representation; registry field naming differs.",
+      "status": "PARTIAL"
+    },
+    {
+      "app": "tenancy",
+      "evidence": "backend/tenancy/models.py",
+      "family": "PC",
+      "id": "PC-081",
+      "name": "FacilityWorkflowPolicy",
+      "note": "Model/migration evidence present.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-001",
+      "name": "visit_check_in",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-002",
+      "name": "patient_register",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s07_repricing.py",
+      "family": "CMD",
+      "id": "CMD-003",
+      "name": "visit_payer_reprice",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-004",
+      "name": "emergency_visit_start",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-005",
+      "name": "emergency_setup_complete",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-006",
+      "name": "visit_cancel_error",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-007",
+      "name": "visit_close_lwbs",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s08_closure.py",
+      "family": "CMD",
+      "id": "CMD-008",
+      "name": "visit_close",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.operations",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-009",
+      "name": "stale_visit_zero_record",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-010",
+      "name": "visit_referral_source_record",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-011",
+      "name": "arrival_enquiry_record",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.documents",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-012",
+      "name": "visit_slip_reprint",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-013",
+      "name": "queue_call",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-014",
+      "name": "queue_start_service",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-015",
+      "name": "queue_assign",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-016",
+      "name": "queue_hold",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-017",
+      "name": "queue_resume",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-018",
+      "name": "queue_transfer",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-019",
+      "name": "queue_complete",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-020",
+      "name": "queue_no_response",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-021",
+      "name": "queue_requeue",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-022",
+      "name": "queue_cancel",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-023",
+      "name": "queue_takeover",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.operations",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-024",
+      "name": "queue_expire_sweep",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-025",
+      "name": "triage_start",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s03_triage.py",
+      "family": "CMD",
+      "id": "CMD-026",
+      "name": "triage_save",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-027",
+      "name": "triage_complete",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s03_triage.py",
+      "family": "CMD",
+      "id": "CMD-028",
+      "name": "triage_amend",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s03_triage.py",
+      "family": "CMD",
+      "id": "CMD-029",
+      "name": "repeat_vitals_record",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-030",
+      "name": "encounter_open",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-031",
+      "name": "encounter_draft_save",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-032",
+      "name": "encounter_park_awaiting_results",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-033",
+      "name": "encounter_results_readiness",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-034",
+      "name": "encounter_resume",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-035",
+      "name": "encounter_sign",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-036",
+      "name": "encounter_sign_pending",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-037",
+      "name": "encounter_void_entered_error",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-038",
+      "name": "encounter_addendum",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-039",
+      "name": "encounter_transfer_takeover",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-040",
+      "name": "lab_order",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-041",
+      "name": "lab_gate_release",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-042",
+      "name": "lab_collect",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-043",
+      "name": "lab_reject_specimen",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-044",
+      "name": "lab_result_save",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-045",
+      "name": "lab_verify",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-046",
+      "name": "lab_release",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-047",
+      "name": "lab_cancel",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-048",
+      "name": "lab_refer_out",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-049",
+      "name": "lab_result_correct",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-050",
+      "name": "lab_late_result",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-051",
+      "name": "lab_external_order",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-052",
+      "name": "prescription_draft_save",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-053",
+      "name": "prescription_activate",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-054",
+      "name": "prescription_cancel",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-055",
+      "name": "prescription_repeat",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-056",
+      "name": "provisional_dispense_create",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-057",
+      "name": "dispense_gate_release",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-058",
+      "name": "dispense_handover",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-059",
+      "name": "dispense_cancel",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-060",
+      "name": "prescription_partial_close",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-061",
+      "name": "dispense_reverse_return",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-062",
+      "name": "otc_sale",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-063",
+      "name": "stock_receive",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-064",
+      "name": "stock_transfer",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s10_counts.py",
+      "family": "CMD",
+      "id": "CMD-065",
+      "name": "stock_count_submit",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-066",
+      "name": "stock_count_approve",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-067",
+      "name": "stock_adjust",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-068",
+      "name": "stock_quarantine",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-069",
+      "name": "stock_dispose",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-070",
+      "name": "stock_correction",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-071",
+      "name": "invoice_issue",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-072",
+      "name": "invoice_source_line_add",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-073",
+      "name": "invoice_manual_line_add",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-074",
+      "name": "invoice_line_void",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-075",
+      "name": "payment_confirm_allocate",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-076",
+      "name": "payment_reverse",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-077",
+      "name": "credit_note_create",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-078",
+      "name": "refund_request",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-079",
+      "name": "refund_process",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-080",
+      "name": "receipt_issue",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.documents",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-081",
+      "name": "receipt_reprint",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-082",
+      "name": "cashier_shift_open",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-083",
+      "name": "cashier_shift_close",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-084",
+      "name": "invoice_void",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-085",
+      "name": "anc_enroll",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-086",
+      "name": "anc_contact_compose",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-087",
+      "name": "appointment_no_show_check_in",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.catalogue",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-088",
+      "name": "medication_product_create",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.catalogue",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-089",
+      "name": "product_price_set",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.catalogue",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-090",
+      "name": "medication_product_deactivate",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.catalogue",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-091",
+      "name": "catalogue_import",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s03_triage.py",
+      "family": "CMD",
+      "id": "CMD-092",
+      "name": "patient_allergy_record",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s03_triage.py",
+      "family": "CMD",
+      "id": "CMD-093",
+      "name": "patient_allergy_status_set",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s03_triage.py",
+      "family": "CMD",
+      "id": "CMD-094",
+      "name": "allergy_entered_error",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-095",
+      "name": "encounter_allergy_review",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-096",
+      "name": "diagnosis_save",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-098",
+      "name": "treatment_plan_save",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-099",
+      "name": "disposition_set",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.documents",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-100",
+      "name": "referral_letter_create",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-101",
+      "name": "followup_record",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "backend/tests/test_s04_encounter.py",
+      "family": "CMD",
+      "id": "CMD-102",
+      "name": "procedure_order",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.documents",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-103",
+      "name": "medical_certificate_issue",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-104",
+      "name": "stock_location_configure",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-105",
+      "name": "supplier_upsert",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "backend/tests/test_s05_billing.py",
+      "family": "CMD",
+      "id": "CMD-106",
+      "name": "payment_method_configure",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-108",
+      "name": "lab_test_catalogue_configure",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-109",
+      "name": "lab_self_verification_policy_set",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-110",
+      "name": "product_instruction_template_set",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-111",
+      "name": "inventory_threshold_set",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-112",
+      "name": "invoice_discount_waiver",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-113",
+      "name": "dispense_substitute",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-114",
+      "name": "dispense_basket_update",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-115",
+      "name": "dispense_item_not_dispensed",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-116",
+      "name": "late_result_acknowledge",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-117",
+      "name": "expired_delivery_quarantine_intake",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-118",
+      "name": "patient_problem_add",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-119",
+      "name": "patient_problem_resolve",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-120",
+      "name": "patient_obstetric_summary_update",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-121",
+      "name": "anc_history_update",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-122",
+      "name": "anc_risk_factors_record",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-123",
+      "name": "anc_obstetric_exam_record",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.pharmacy",
+      "evidence": "backend/tests/test_s12_dispensing.py",
+      "family": "CMD",
+      "id": "CMD-124",
+      "name": "pharmacy_claim",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-125",
+      "name": "anc_dating_basis_update",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.maternity",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-126",
+      "name": "anc_contact_sequence_update",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.queue",
+      "evidence": "backend/tests/test_s02_queue.py",
+      "family": "CMD",
+      "id": "CMD-127",
+      "name": "queue_priority_change",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-128",
+      "name": "repeat_vitals_request",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.operations",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-129",
+      "name": "stale_visit_abandonment",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-130",
+      "name": "second_visit_override",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-131",
+      "name": "stock_adjustment_approve",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.clinical",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-132",
+      "name": "procedure_perform",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.billing",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "CMD",
+      "id": "CMD-133",
+      "name": "service_gate_override",
+      "note": "Fenced by the named slice/owner decision; no executable evidence claimed.",
+      "status": "FENCED"
+    },
+    {
+      "app": "application.laboratory",
+      "evidence": "backend/tests/test_s11_lab.py",
+      "family": "CMD",
+      "id": "CMD-134",
+      "name": "lab_result_entry_reject",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.reception",
+      "evidence": "backend/tests/test_s01_reception.py",
+      "family": "CMD",
+      "id": "CMD-135",
+      "name": "arrival_enquiry_convert",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "application.inventory",
+      "evidence": "backend/tests/test_s09_inventory.py",
+      "family": "CMD",
+      "id": "CMD-136",
+      "name": "stock_ledger_reconcile",
+      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "status": "EVIDENCE LINKED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-001",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s01_postgres.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-002",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s02_postgres.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/mig003.py",
+      "family": "MIG",
+      "id": "MIG-003",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/mig003.py, backend/tests/test_s03_mig003.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/mig004.py",
+      "family": "MIG",
+      "id": "MIG-004",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/mig004.py, backend/tests/test_s04_mig004.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-005",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s05_mig005.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-006",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s06_mig010.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-007",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s06_mig010.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-008",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s06_mig010.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-009",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s06_mig010.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/migration_reconciliation.py",
+      "family": "MIG",
+      "id": "MIG-010",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/migration_reconciliation.py, backend/tests/test_s06_mig010.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "core",
+      "evidence": "backend/core/rls.py",
+      "family": "MIG",
+      "id": "MIG-011",
+      "name": "migration reconciliation",
+      "note": "Reconciliation/RLS evidence: backend/core/rls.py, backend/tests/test_s00_postgres.py",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-01",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-02",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-03",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-04",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-05",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-06",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-07",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-08",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-09",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-10",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-11",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-12",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-13",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    },
+    {
+      "app": "blueprint",
+      "evidence": "IMPLEMENTATION_BLUEPRINT.md",
+      "family": "ADR",
+      "id": "ADR-C-14",
+      "name": "architecture decision",
+      "note": "ADR-C-01..14 register state retained; no implementation override claimed.",
+      "status": "SETTLED"
+    }
+  ],
+  "status_counts": {
+    "ADR|SETTLED": 14,
+    "CMD|EVIDENCE LINKED": 104,
+    "CMD|FENCED": 30,
+    "MIG|IMPLEMENTED": 11,
+    "PC|FENCED": 11,
+    "PC|IMPLEMENTED": 62,
+    "PC|PARTIAL": 7
+  }
+}
