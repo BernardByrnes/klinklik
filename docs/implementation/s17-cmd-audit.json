@@ -2547,21 +2547,20 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "lab_collect is implemented by LabItemCollectView but that view declares CMD-043; CMD-042 has no correct idempotency namespace.",
+      "discrepancy": "Declared audit codes not found in code: ['QUEUE_COMPLETED'].",
       "error_codes": [
         "ALREADY_EXISTS",
         "INVALID_STATE",
         "PAYMENT_REQUIRED"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:108",
+      "evidence_pointer": "backend/tests/test_s02_queue.py",
       "http_method": "POST",
       "id": "CMD-042",
       "idempotency_required": true,
       "idempotency_text": "YES lab.collect; item, lab queue, specimen identifier, collected_at, collector, expected versions",
       "internal": false,
       "lock_plan": "Visit; LAB QueueEntry; LabOrderItem; existing custody row",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "QUEUE_COMPLETED"
       ],
@@ -2588,14 +2587,27 @@
           "token": "scheduling.services.queue.complete_collection"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-02",
         "S-11"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "lab.result.entry",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "",
+          "url": "items/<uuid:pk>/collect/",
+          "url_name": "lab-item-collect",
+          "view": "laboratory.views.LabItemCollectView"
+        }
+      ]
     },
     {
       "actor": "authorized LAB_TECH; item READY_FOR_COLLECTION or SAMPLE_COLLECTED under the supplied rejection path, mandatory reason",
@@ -2608,19 +2620,18 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "lab_reject_specimen is implemented by LabItemRejectView but that view declares CMD-044.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:125",
+      "evidence_pointer": "backend/tests/test_s11_lab.py",
       "http_method": "POST",
       "id": "CMD-043",
       "idempotency_required": true,
       "idempotency_text": "YES lab.reject_specimen; item, lab queue/custody if present, reason, expected versions",
       "internal": false,
       "lock_plan": "Visit; LAB QueueEntry if present; Encounter if linked; LabOrderItem; LabSpecimenCustody if present",
-      "manual_finding": true,
       "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
@@ -2638,12 +2649,12 @@
           "token": "laboratory.services.specimen.reject"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": true,
       "slices": [
         "S-11"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -2652,10 +2663,10 @@
           "methods": [
             "post"
           ],
-          "serializer": "",
-          "url": "items/<uuid:pk>/collect/",
-          "url_name": "lab-item-collect",
-          "view": "laboratory.views.LabItemCollectView"
+          "serializer": "LabRejectSerializer",
+          "url": "items/<uuid:pk>/reject/",
+          "url_name": "lab-item-reject",
+          "view": "laboratory.views.LabItemRejectView"
         }
       ]
     },
@@ -2672,7 +2683,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "lab_result_save is implemented by LabResultSaveView but that view declares CMD-047; the registry verb is PATCH while the view implements POST.",
+      "discrepancy": "Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST.",
       "error_codes": [
         "INVALID_INPUT",
         "REQUIRED_FIELD_MISSING",
@@ -2708,7 +2719,7 @@
           "token": "laboratory.services.results.save_draft"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": true,
       "slices": [
         "S-11"
@@ -2722,10 +2733,10 @@
           "methods": [
             "post"
           ],
-          "serializer": "LabRejectSerializer",
-          "url": "items/<uuid:pk>/reject/",
-          "url_name": "lab-item-reject",
-          "view": "laboratory.views.LabItemRejectView"
+          "serializer": "LabResultSaveSerializer",
+          "url": "items/<uuid:pk>/results/",
+          "url_name": "lab-result-save",
+          "view": "laboratory.views.LabResultSaveView"
         }
       ]
     },
@@ -2747,7 +2758,7 @@
         "SELF_VERIFICATION_NOT_ALLOWED",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:173",
+      "evidence_pointer": "backend/laboratory/views.py:172",
       "http_method": "POST",
       "id": "CMD-045",
       "idempotency_required": true,
@@ -2797,7 +2808,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "lab_release is implemented by LabResultReleaseView but that view declares CMD-048.",
+      "discrepancy": "Declared audit codes not found in code: ['LAB_RESULT_VERIFIED'].",
       "error_codes": [
         "INVALID_STATE",
         "PERMISSION_DENIED",
@@ -2805,15 +2816,14 @@
         "SELF_VERIFICATION_NOT_ALLOWED",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:173",
+      "evidence_pointer": "backend/tests/test_s02_queue.py",
       "http_method": "POST",
       "id": "CMD-046",
       "idempotency_required": true,
       "idempotency_text": "YES lab.release; item, result version/hash, releaser authority revision, facility policy version, release mode, complete linked Encounter/Visit blocker snapshot",
       "internal": false,
       "lock_plan": "FacilityWorkflowPolicy; Visit; consultation QueueEntry if linked; Encounter if linked; LabOrder; LabOrderItems sorted; LabResult; existing LateResultReview; NumberSequence only when assigning the order's first report number",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "LAB_RESULT_VERIFIED"
       ],
@@ -2834,7 +2844,7 @@
           "token": "laboratory.services.results.verify_if_result_entered"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-02",
@@ -2842,8 +2852,21 @@
         "S-13",
         "S-14"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "lab.result.verify",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "",
+          "url": "items/<uuid:pk>/release/",
+          "url_name": "lab-result-release",
+          "view": "laboratory.views.LabResultReleaseView"
+        }
+      ]
     },
     {
       "actor": "authorized actor; supplied cancellable item and reason; RELEASED item prohibited",
@@ -2856,19 +2879,18 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "lab_cancel is implemented by LabItemCancelView but that view declares CMD-051.",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:224",
+      "evidence_pointer": "backend/tests/test_s02_queue.py",
       "http_method": "POST",
       "id": "CMD-047",
       "idempotency_required": true,
       "idempotency_text": "YES lab.cancel; item, reason, expected version, linked Encounter snapshot",
       "internal": false,
       "lock_plan": "Visit; consultation QueueEntry if linked; Encounter if linked; LabOrderItems sorted",
-      "manual_finding": true,
       "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
@@ -2886,25 +2908,25 @@
           "token": "laboratory.services.items.cancel"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-02",
         "S-11"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "PARTIAL",
       "views": [
         {
           "capabilities": [],
-          "capability": "lab.result.entry",
+          "capability": "lab.cancel",
           "capability_source": "capability",
           "methods": [
             "post"
           ],
-          "serializer": "LabResultSaveSerializer",
-          "url": "items/<uuid:pk>/results/",
-          "url_name": "lab-result-save",
-          "view": "laboratory.views.LabResultSaveView"
+          "serializer": "LabCancelSerializer",
+          "url": "items/<uuid:pk>/cancel/",
+          "url_name": "lab-item-cancel",
+          "view": "laboratory.views.LabItemCancelView"
         }
       ]
     },
@@ -2930,7 +2952,7 @@
       "idempotency_text": "YES lab.refer_out; item, destination reference, supplied safe referral facts, expected version",
       "internal": false,
       "lock_plan": "LabOrderItem",
-      "method_match": true,
+      "method_match": false,
       "missing_audit_codes": [
         "LAB_REFERRED_OUT"
       ],
@@ -2957,20 +2979,7 @@
         "S-11"
       ],
       "verdict": "FENCED",
-      "views": [
-        {
-          "capabilities": [],
-          "capability": "lab.result.verify",
-          "capability_source": "capability",
-          "methods": [
-            "post"
-          ],
-          "serializer": "",
-          "url": "items/<uuid:pk>/release/",
-          "url_name": "lab-result-release",
-          "view": "laboratory.views.LabResultReleaseView"
-        }
-      ]
+      "views": []
     },
     {
       "actor": "authorized correction actor; existing result, mandatory reason, current version; released result remains retained",
@@ -3108,21 +3117,20 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "CMD-051 (lab_external_order) is declared on LabItemCancelView, a cancel operation; no external-order route is evidenced.",
+      "discrepancy": "lab_external_order is fenced by the S-11 slice; no external-order route is expected. The former wrong reference from LabItemCancelView was removed with the label fix.",
       "error_codes": [
         "ALREADY_EXISTS",
         "OUT_OF_SCOPE",
         "TEST_NOT_AVAILABLE"
       ],
-      "evidence_pointer": "backend/laboratory/views.py:224",
+      "evidence_pointer": "IMPLEMENTATION_BLUEPRINT.md",
       "http_method": "POST",
       "id": "CMD-051",
       "idempotency_required": true,
       "idempotency_text": "YES lab.external_order; patient, facility, external source reference, ordered test IDs",
       "internal": false,
       "lock_plan": "Patient; existing Visit if supplied; existing LabOrderItems sorted",
-      "manual_finding": true,
-      "method_match": true,
+      "method_match": false,
       "missing_audit_codes": [
         "LAB_EXTERNAL_ORDER_RECORDED"
       ],
@@ -3143,26 +3151,13 @@
           "token": "laboratory.services.orders.create_external"
         }
       ],
-      "severity": "P1",
-      "slice_test_references_command": true,
+      "severity": "P3",
+      "slice_test_references_command": false,
       "slices": [
         "S-11"
       ],
-      "verdict": "MISMATCH",
-      "views": [
-        {
-          "capabilities": [],
-          "capability": "lab.cancel",
-          "capability_source": "capability",
-          "methods": [
-            "post"
-          ],
-          "serializer": "LabCancelSerializer",
-          "url": "items/<uuid:pk>/cancel/",
-          "url_name": "lab-item-cancel",
-          "view": "laboratory.views.LabItemCancelView"
-        }
-      ]
+      "verdict": "FENCED",
+      "views": []
     },
     {
       "actor": "authorized prescriber; active Encounter; human-entered product/instruction values; no dosing/CDS; BP-BL-03/06/08",
@@ -3970,22 +3965,21 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "stock_transfer is implemented by StockTransferView but its idempotency_operation is the non-registry label 'inventory.stock_transfer' instead of CMD-064.",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_STATE",
         "OUT_OF_SCOPE",
         "OUT_OF_STOCK",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/inventory/views.py:329",
+      "evidence_pointer": "backend/tests/test_s09_inventory.py",
       "http_method": "POST",
       "id": "CMD-064",
       "idempotency_required": true,
       "idempotency_text": "YES stock.transfer; source/destination locations and usability flags, ordered batch/expiry/quantities, source projection versions",
       "internal": false,
       "lock_plan": "source and destination BatchLocationBalances globally sorted",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.inventory",
@@ -4002,14 +3996,27 @@
           "token": "inventory.services.ledger.transfer"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-09",
         "S-12"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "inventory.adjust",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "TransferSerializer",
+          "url": "transfers/",
+          "url_name": "inventory-transfers",
+          "view": "inventory.views.StockTransferView"
+        }
+      ]
     },
     {
       "actor": "counter; active count with captured lines; approval rule unresolved but submission bounded; BP-BL-04/08/11",
@@ -8103,21 +8110,21 @@
     "active_commands": 134,
     "base": "54291e4",
     "generated_at": "2026-11-19",
-    "manual_overrides": 34,
+    "manual_overrides": 29,
     "retired_excluded": [
       "CMD-097",
       "CMD-107"
     ],
     "severity_counts": {
-      "P1": 18,
-      "P2": 43
+      "P1": 11,
+      "P2": 48
     },
     "url_patterns": 152,
     "verdict_counts": {
-      "FENCED": 51,
-      "MISMATCH": 24,
-      "PARTIAL": 37,
-      "VERIFIED": 22
+      "FENCED": 52,
+      "MISMATCH": 18,
+      "PARTIAL": 41,
+      "VERIFIED": 23
     }
   }
 }

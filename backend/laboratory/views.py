@@ -105,7 +105,7 @@ class LabWorklistView(TenantAPIView):
 
 class LabItemCollectView(TenantAPIView):
     capability = "lab.result.entry"
-    idempotency_operation = "CMD-043"
+    idempotency_operation = "CMD-042"
     requires_idempotency = True
 
     def post(self, request, pk):
@@ -122,7 +122,7 @@ class LabItemCollectView(TenantAPIView):
 class LabItemRejectView(TenantAPIView):
     capability = "lab.result.entry"
     serializer_class = LabRejectSerializer
-    idempotency_operation = "CMD-044"
+    idempotency_operation = "CMD-043"
     requires_idempotency = True
 
     def post(self, request, pk):
@@ -142,7 +142,7 @@ class LabItemRejectView(TenantAPIView):
 class LabResultSaveView(TenantAPIView):
     capability = "lab.result.entry"
     serializer_class = LabResultSaveSerializer
-    idempotency_operation = "CMD-047"
+    idempotency_operation = "CMD-044"
     requires_idempotency = True
 
     def post(self, request, pk):
@@ -169,7 +169,7 @@ class LabResultSaveView(TenantAPIView):
 
 class LabResultReleaseView(TenantAPIView):
     capability = "lab.result.verify"
-    idempotency_operation = "CMD-048"
+    idempotency_operation = "CMD-046"
     requires_idempotency = True
 
     def post(self, request, pk):
@@ -221,7 +221,7 @@ class LabResultAmendView(TenantAPIView):
 class LabItemCancelView(TenantAPIView):
     capability = "lab.cancel"
     serializer_class = LabCancelSerializer
-    idempotency_operation = "CMD-051"
+    idempotency_operation = "CMD-047"
     requires_idempotency = True
 
     def post(self, request, pk):

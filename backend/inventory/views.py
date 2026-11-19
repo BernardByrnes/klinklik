@@ -326,7 +326,7 @@ class MovementListView(TenantAPIView):
 class StockTransferView(TenantAPIView):
     capability = "inventory.adjust"
     serializer_class = TransferSerializer
-    idempotency_operation = "inventory.stock_transfer"
+    idempotency_operation = "CMD-064"
     requires_idempotency = True
 
     def post(self, request):

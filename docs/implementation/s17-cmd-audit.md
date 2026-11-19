@@ -8,10 +8,10 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 ## Summary
 
 - Active commands audited: 134 of 134; retired CMD-097 and CMD-107 excluded.
-- Verdicts: FENCED 51, MISMATCH 24, PARTIAL 37, VERIFIED 22.
+- Verdicts: FENCED 52, MISMATCH 18, PARTIAL 41, VERIFIED 23.
 - Machine inventory: `docs/implementation/s17-cmd-audit.json`; machine assertions: `backend/tests/test_s17_cmd_audit.py`.
-- Discrepancy severity: P1 18, P2 43.
-- Manual findings applied: 34.
+- Discrepancy severity: P1 11, P2 48.
+- Manual findings applied: 29.
 
 ## Discrepancy list (severity ordered)
 
@@ -20,13 +20,6 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P1 | CMD-031 | encounter_draft_save | MISMATCH | encounter_draft_save is implemented by EncounterNoteView (POST/PATCH notes) which declares no idempotency_operation, so the registry idempotency namespace is absent. | `backend/clinical/views.py:EncounterNoteView` |
 | P1 | CMD-035 | encounter_sign | MISMATCH | encounter_sign is implemented by EncounterSignView (POST sign) which declares no idempotency_operation. | `backend/clinical/views.py:EncounterSignView` |
 | P1 | CMD-038 | encounter_addendum | MISMATCH | encounter_addendum is implemented by EncounterAmendView (POST amend) which declares no idempotency_operation. | `backend/clinical/views.py:EncounterAmendView` |
-| P1 | CMD-042 | lab_collect | MISMATCH | lab_collect is implemented by LabItemCollectView but that view declares CMD-043; CMD-042 has no correct idempotency namespace. | `backend/laboratory/views.py:108` |
-| P1 | CMD-043 | lab_reject_specimen | MISMATCH | lab_reject_specimen is implemented by LabItemRejectView but that view declares CMD-044. | `backend/laboratory/views.py:125` |
-| P1 | CMD-044 | lab_result_save | MISMATCH | lab_result_save is implemented by LabResultSaveView but that view declares CMD-047; the registry verb is PATCH while the view implements POST. | `backend/laboratory/views.py:145` |
-| P1 | CMD-046 | lab_release | MISMATCH | lab_release is implemented by LabResultReleaseView but that view declares CMD-048. | `backend/laboratory/views.py:173` |
-| P1 | CMD-047 | lab_cancel | MISMATCH | lab_cancel is implemented by LabItemCancelView but that view declares CMD-051. | `backend/laboratory/views.py:224` |
-| P1 | CMD-051 | lab_external_order | MISMATCH | CMD-051 (lab_external_order) is declared on LabItemCancelView, a cancel operation; no external-order route is evidenced. | `backend/laboratory/views.py:224` |
-| P1 | CMD-064 | stock_transfer | MISMATCH | stock_transfer is implemented by StockTransferView but its idempotency_operation is the non-registry label 'inventory.stock_transfer' instead of CMD-064. | `backend/inventory/views.py:329` |
 | P1 | CMD-075 | payment_confirm_allocate | MISMATCH | Legacy InvoicePaymentView shares CMD-075 with the canonical InvoiceCanonicalPaymentView but does not set requires_idempotency; the same namespace covers a non-idempotent compatibility route. | `backend/billing/views.py:175,203` |
 | P1 | CMD-092 | patient_allergy_record | MISMATCH | patient_allergy_record is implemented by PatientAllergyView (POST allergies) without an idempotency_operation label. | `backend/clinical/views.py:PatientAllergyView` |
 | P1 | CMD-093 | patient_allergy_status_set | MISMATCH | patient_allergy_status_set is implemented by PatientAllergyStatusView (POST allergy-status) without an idempotency_operation label. | `backend/clinical/views.py:PatientAllergyStatusView` |
@@ -50,12 +43,17 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-034 | encounter_resume | PARTIAL | encounter_resume service exists but no dedicated route declares CMD-034; resume appears folded into the encounter open path under CMD-030. | `backend/clinical/services.py` |
 | P2 | CMD-039 | encounter_transfer_takeover | PARTIAL | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. | `backend/clinical/services.py` |
 | P2 | CMD-040 | lab_order | PARTIAL | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. | `backend/tests/test_s05_billing.py` |
-| P2 | CMD-045 | lab_verify | PARTIAL | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. | `backend/laboratory/views.py:173` |
+| P2 | CMD-042 | lab_collect | PARTIAL | Declared audit codes not found in code: ['QUEUE_COMPLETED']. | `backend/tests/test_s02_queue.py` |
+| P2 | CMD-044 | lab_result_save | MISMATCH | Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST. | `backend/laboratory/views.py:145` |
+| P2 | CMD-045 | lab_verify | PARTIAL | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. | `backend/laboratory/views.py:172` |
+| P2 | CMD-046 | lab_release | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_VERIFIED']. | `backend/tests/test_s02_queue.py` |
+| P2 | CMD-047 | lab_cancel | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-049 | lab_result_correct | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_CORRECTED']. | `backend/tests/test_s11_lab.py` |
 | P2 | CMD-056 | provisional_dispense_create | PARTIAL | Declared audit codes not found in code: ['DISPENSE_CREATED', 'INVOICE_LINES_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-058 | dispense_handover | PARTIAL | Declared audit codes not found in code: ['PRESCRIPTION_CLAIM_RELEASED', 'PRESCRIPTION_OUTCOME']. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-062 | otc_sale | PARTIAL | Declared audit codes not found in code: ['OTC_SALE_CONFIRMED', 'RECEIPT_ISSUED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-063 | stock_receive | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
+| P2 | CMD-064 | stock_transfer | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-065 | stock_count_submit | MISMATCH | StockCountOpenView and StockCountSubmitView both declare CMD-065; open and submit are distinct operations sharing one idempotency namespace. | `backend/inventory/views.py:416,462` |
 | P2 | CMD-066 | stock_count_approve | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-068 | stock_quarantine | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
@@ -93,6 +91,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P3 | CMD-041 | lab_gate_release | FENCED | INTERNAL step: declared service function not found. | `backend/tests/test_s11_lab.py` |
 | P3 | CMD-048 | lab_refer_out | FENCED | No lab_refer_out route exists; external referral/notification remains a registry fence. | `IMPLEMENTATION_BLUEPRINT.md` |
 | P3 | CMD-050 | lab_late_result | FENCED | Registry/slice authority fence active; no implementation claim. | `IMPLEMENTATION_BLUEPRINT.md` |
+| P3 | CMD-051 | lab_external_order | FENCED | lab_external_order is fenced by the S-11 slice; no external-order route is expected. The former wrong reference from LabItemCancelView was removed with the label fix. | `IMPLEMENTATION_BLUEPRINT.md` |
 | P3 | CMD-053 | prescription_activate | FENCED | INTERNAL step: declared service function not found. | `backend/tests/test_s12_dispensing.py` |
 | P3 | CMD-055 | prescription_repeat | FENCED | Registry/slice authority fence active; no implementation claim. | `IMPLEMENTATION_BLUEPRINT.md` |
 | P3 | CMD-057 | dispense_gate_release | FENCED | INTERNAL step: declared service function not found. | `backend/tests/test_s12_dispensing.py` |
@@ -177,16 +176,16 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-039 | encounter_transfer_takeover | S-04 | YES | PARTIAL | P2 | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. |
 | CMD-040 | lab_order | S-05,S-11,S-13,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. |
 | CMD-041 | lab_gate_release | S-11,S-13 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
-| CMD-042 | lab_collect | S-02,S-11 | YES | MISMATCH | P1 | lab_collect is implemented by LabItemCollectView but that view declares CMD-043; CMD-042 has no correct idempotency namespace. |
-| CMD-043 | lab_reject_specimen | S-11 | YES | MISMATCH | P1 | lab_reject_specimen is implemented by LabItemRejectView but that view declares CMD-044. |
-| CMD-044 | lab_result_save | S-11 | YES | MISMATCH | P1 | lab_result_save is implemented by LabResultSaveView but that view declares CMD-047; the registry verb is PATCH while the view implements POST. |
+| CMD-042 | lab_collect | S-02,S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['QUEUE_COMPLETED']. |
+| CMD-043 | lab_reject_specimen | S-11 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s11_lab.py`. |
+| CMD-044 | lab_result_save | S-11 | YES | MISMATCH | P2 | Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST. |
 | CMD-045 | lab_verify | S-11 | YES | PARTIAL | P2 | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. |
-| CMD-046 | lab_release | S-02,S-11,S-13,S-14 | YES | MISMATCH | P1 | lab_release is implemented by LabResultReleaseView but that view declares CMD-048. |
-| CMD-047 | lab_cancel | S-02,S-11 | YES | MISMATCH | P1 | lab_cancel is implemented by LabItemCancelView but that view declares CMD-051. |
+| CMD-046 | lab_release | S-02,S-11,S-13,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_VERIFIED']. |
+| CMD-047 | lab_cancel | S-02,S-11 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-048 | lab_refer_out | S-11 | YES | FENCED | P3 | No lab_refer_out route exists; external referral/notification remains a registry fence. |
 | CMD-049 | lab_result_correct | S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_CORRECTED']. |
 | CMD-050 | lab_late_result | S-11,S-13 | NO | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-051 | lab_external_order | S-11 | YES | MISMATCH | P1 | CMD-051 (lab_external_order) is declared on LabItemCancelView, a cancel operation; no external-order route is evidenced. |
+| CMD-051 | lab_external_order | S-11 | YES | FENCED | P3 | lab_external_order is fenced by the S-11 slice; no external-order route is expected. The former wrong reference from LabItemCancelView was removed with the label fix. |
 | CMD-052 | prescription_draft_save | S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s12_dispensing.py`. |
 | CMD-053 | prescription_activate | S-12,S-14 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-054 | prescription_cancel | S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s12_dispensing.py`. |
@@ -199,7 +198,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-061 | dispense_reverse_return | S-09,S-12 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-062 | otc_sale | S-05,S-09,S-12,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['OTC_SALE_CONFIRMED', 'RECEIPT_ISSUED']. |
 | CMD-063 | stock_receive | S-09,S-12 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-064 | stock_transfer | S-09,S-12 | YES | MISMATCH | P1 | stock_transfer is implemented by StockTransferView but its idempotency_operation is the non-registry label 'inventory.stock_transfer' instead of CMD-064. |
+| CMD-064 | stock_transfer | S-09,S-12 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-065 | stock_count_submit | S-10 | YES | MISMATCH | P2 | StockCountOpenView and StockCountSubmitView both declare CMD-065; open and submit are distinct operations sharing one idempotency namespace. |
 | CMD-066 | stock_count_approve | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-067 | stock_adjust | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
@@ -278,6 +277,6 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 - Many registry audit event names differ from implementation names (for example `DISPENSE_CREATED` vs `DISPENSE_PREPARED`). Those rows are `PARTIAL`, not `VERIFIED`.
 - Capability declarations use role names in the registry and code strings in views; direct equality is rarely possible, so capability enforcement is checked qualitatively, not machine-asserted.
 - FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.
-- The P1 label misroutes in laboratory, inventory and clinical/billing routes, and the non-registry 'inventory.stock_transfer' label, are findings only. No product code was changed; fixing them is an owner decision.
+- At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.
 - Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.
 - A systemic finding of this manual pass is mutating views with no `idempotency_operation` at all (clinical note/sign/diagnosis/disposition/allergy/follow-up, legacy patient/check-in/claim/create routes). These are MISMATCH rows because the registry requires idempotency for every active CMD; no route or code was added to repair them.

@@ -107,35 +107,15 @@ OVERRIDES = {
         "discrepancy": "dispense_cancel has service code but no route; S-12 scope fence leaves dispense cancellation out of the supplied slice.",
         "evidence_pointer": "IMPLEMENTATION_BLUEPRINT.md",
     },
-    "CMD-042": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "lab_collect is implemented by LabItemCollectView but that view declares CMD-043; CMD-042 has no correct idempotency namespace.",
-        "evidence_pointer": "backend/laboratory/views.py:108",
-    },
-    "CMD-043": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "lab_reject_specimen is implemented by LabItemRejectView but that view declares CMD-044.",
-        "evidence_pointer": "backend/laboratory/views.py:125",
-    },
     "CMD-044": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "lab_result_save is implemented by LabResultSaveView but that view declares CMD-047; the registry verb is PATCH while the view implements POST.",
+        "verdict": "MISMATCH", "severity": "P2",
+        "discrepancy": "Label corrected to CMD-044; the separate API-contract finding remains: registry declares PATCH lab_result_save while LabResultSaveView implements POST.",
         "evidence_pointer": "backend/laboratory/views.py:145",
     },
     "CMD-045": {
         "verdict": "PARTIAL", "severity": "P2",
         "discrepancy": "No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced.",
-        "evidence_pointer": "backend/laboratory/views.py:173",
-    },
-    "CMD-046": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "lab_release is implemented by LabResultReleaseView but that view declares CMD-048.",
-        "evidence_pointer": "backend/laboratory/views.py:173",
-    },
-    "CMD-047": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "lab_cancel is implemented by LabItemCancelView but that view declares CMD-051.",
-        "evidence_pointer": "backend/laboratory/views.py:224",
+        "evidence_pointer": "backend/laboratory/views.py:172",
     },
     "CMD-048": {
         "verdict": "FENCED", "severity": "P3",
@@ -143,14 +123,9 @@ OVERRIDES = {
         "evidence_pointer": "IMPLEMENTATION_BLUEPRINT.md",
     },
     "CMD-051": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "CMD-051 (lab_external_order) is declared on LabItemCancelView, a cancel operation; no external-order route is evidenced.",
-        "evidence_pointer": "backend/laboratory/views.py:224",
-    },
-    "CMD-064": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "stock_transfer is implemented by StockTransferView but its idempotency_operation is the non-registry label 'inventory.stock_transfer' instead of CMD-064.",
-        "evidence_pointer": "backend/inventory/views.py:329",
+        "verdict": "FENCED", "severity": "P3",
+        "discrepancy": "lab_external_order is fenced by the S-11 slice; no external-order route is expected. The former wrong reference from LabItemCancelView was removed with the label fix.",
+        "evidence_pointer": "IMPLEMENTATION_BLUEPRINT.md",
     },
     "CMD-065": {
         "verdict": "MISMATCH", "severity": "P2",
@@ -263,7 +238,7 @@ def main():
         "- Many registry audit event names differ from implementation names (for example `DISPENSE_CREATED` vs `DISPENSE_PREPARED`). Those rows are `PARTIAL`, not `VERIFIED`.",
         "- Capability declarations use role names in the registry and code strings in views; direct equality is rarely possible, so capability enforcement is checked qualitatively, not machine-asserted.",
         "- FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.",
-        "- The P1 label misroutes in laboratory, inventory and clinical/billing routes, and the non-registry 'inventory.stock_transfer' label, are findings only. No product code was changed; fixing them is an owner decision.",
+        "- At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.",
         "- Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.",
         "- A systemic finding of this manual pass is mutating views with no `idempotency_operation` at all (clinical note/sign/diagnosis/disposition/allergy/follow-up, legacy patient/check-in/claim/create routes). These are MISMATCH rows because the registry requires idempotency for every active CMD; no route or code was added to repair them.",
     ]

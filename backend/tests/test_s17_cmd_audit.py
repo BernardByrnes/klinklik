@@ -60,12 +60,29 @@ def test_s17_code_idempotency_labels_are_registered_or_documented_as_mismatch():
         text = path.read_text(encoding="utf-8")
         labels.update(re.findall(r'idempotency_operation\s*=\s*"([^"]+)"', text))
     unknown = labels - active
-    assert unknown == {"inventory.stock_transfer"}, unknown
-    mismatch = next(
-        command for command in audit["commands"] if command["id"] == "CMD-064"
+    assert unknown == set(), unknown
+
+
+def test_s18_lab_and_inventory_labels_match_registry_ids():
+    from inventory.views import StockTransferView
+    from laboratory.views import (
+        LabItemCancelView,
+        LabItemCollectView,
+        LabItemRejectView,
+        LabResultReleaseView,
+        LabResultSaveView,
     )
-    assert mismatch["verdict"] == "MISMATCH"
-    assert "inventory.stock_transfer" in mismatch["discrepancy"]
+
+    expected = {
+        LabItemCollectView: "CMD-042",
+        LabItemRejectView: "CMD-043",
+        LabResultSaveView: "CMD-044",
+        LabResultReleaseView: "CMD-046",
+        LabItemCancelView: "CMD-047",
+        StockTransferView: "CMD-064",
+    }
+    for view, command_id in expected.items():
+        assert view.idempotency_operation == command_id, view.__name__
 
 
 def test_s17_declared_routes_and_methods_match_for_non_mismatch_commands():
@@ -102,11 +119,11 @@ def test_s17_summary_and_report_counts_match_the_records():
         for verdict in ("VERIFIED", "PARTIAL", "MISMATCH", "FENCED")
     }
     assert audit["summary"]["verdict_counts"] == expected
-    assert audit["summary"]["severity_counts"] == {"P1": 18, "P2": 43}
+    assert audit["summary"]["severity_counts"] == {"P1": 11, "P2": 48}
     report = (ROOT / "docs/implementation/s17-cmd-audit.md").read_text(encoding="utf-8")
-    assert "P1 18" in report
-    assert "P2 43" in report
+    assert "P1 11" in report
+    assert "P2 48" in report
     for verdict, count in expected.items():
         assert f"{verdict} {count}" in report
-    assert "P1 | CMD-042" in report
-    assert "P1 | CMD-064" in report
+    assert "P1 | CMD-031" in report
+    assert "P2 | CMD-044" in report
