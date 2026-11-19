@@ -78,6 +78,43 @@ class VisitCheckInSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True, max_length=1000)
 
 
+class AppointmentNoShowCheckInSerializer(serializers.Serializer):
+    visit_type = serializers.ChoiceField(
+        choices=Visit.VISIT_TYPE_CHOICES, default="OUTPATIENT_NEW"
+    )
+    payer_type = serializers.ChoiceField(
+        choices=[("CASH", "Cash"), ("SELF_PAY_MOMO", "Self-pay mobile money")],
+        default="CASH",
+    )
+    reason_for_visit = serializers.CharField(
+        required=False, allow_blank=True, max_length=120
+    )
+    referral_source_type = serializers.ChoiceField(
+        choices=Visit.REFERRAL_SOURCE_CHOICES, required=False, default="SELF"
+    )
+    referral_source_name = serializers.CharField(
+        required=False, allow_blank=True, max_length=100
+    )
+    price_list_id = serializers.UUIDField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+
+
+class AppointmentNoShowCheckInResponseSerializer(serializers.Serializer):
+    appointment_id = serializers.UUIDField()
+    appointment_status = serializers.ChoiceField(choices=["CHECKED_IN"])
+    already_checked_in = serializers.BooleanField()
+    visit_id = serializers.UUIDField()
+    queue_id = serializers.UUIDField(allow_null=True)
+    invoice_id = serializers.UUIDField(allow_null=True)
+    patient_id = serializers.UUIDField()
+    next_action = serializers.ChoiceField(
+        choices=[
+            ("CHECK_IN_COMPLETE", "Check-in complete"),
+            ("LAB_REQUEST_CAPTURE", "Capture laboratory request"),
+        ]
+    )
+
+
 class VisitSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.display_name", read_only=True)
 
@@ -352,6 +389,7 @@ __all__ = [
     "PatientDuplicateResponseSerializer",
     "PayerBindingSerializer",
     "VisitCheckInResponseSerializer",
+    "AppointmentNoShowCheckInResponseSerializer",
     "ArrivalEnquiryResponseSerializer",
     "ReferralSourceResponseSerializer",
     "QueueHistoryEntrySerializer",

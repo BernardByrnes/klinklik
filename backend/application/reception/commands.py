@@ -27,7 +27,8 @@ from core.services import assert_transaction_active
 from clinical.models import Encounter, TriageAssessment, VitalsObservation
 from patients.models import Patient
 from patients.services import create_registered_patient, find_duplicate_candidates
-from scheduling.models import ArrivalEnquiry, QueueEntry, Visit
+from scheduling.models import ArrivalEnquiry, Appointment, QueueEntry, Visit
+from scheduling.appointment import link_checked_in_visit
 from scheduling.services import (
     cancel_error_visit,
     convert_arrival_enquiry,
@@ -66,6 +67,20 @@ CMD_002_SPEC = CommandSpec(
     capability="patient.create",
     owner_service="patients.create_or_authorized_duplicate_resolution",
     lock_plan=("Patient", "NumberSequence"),
+)
+CMD_087_SPEC = CommandSpec(
+    operation_id="CMD-087",
+    rank1_id="REC-001",
+    capability="appointment.no_show_check_in",
+    owner_service="scheduling.appointment.assert_no_show_fragment",
+    lock_plan=(
+        "Patient",
+        "Visit",
+        "QueueEntry",
+        "Appointment",
+        "Invoice",
+        "NumberSequence",
+    ),
 )
 CMD_010_SPEC = CommandSpec(
     operation_id="CMD-010",
@@ -135,6 +150,15 @@ class VisitCheckInOutcome:
     invoice: object | None
     payer_binding: object
     arrival_enquiry: ArrivalEnquiry | None = None
+
+
+@dataclass(frozen=True)
+class AppointmentCheckInOutcome:
+    appointment: Appointment
+    visit: Visit
+    queue: object | None
+    invoice: Invoice | None
+    already_checked_in: bool = False
 
 
 @dataclass(frozen=True)
@@ -335,6 +359,7 @@ def visit_check_in(
     arrival_enquiry_id=None,
     arrival_enquiry_version=None,
     notes="",
+    before_invoice=None,
     request=None,
 ):
     assert_transaction_active()
@@ -517,6 +542,8 @@ def visit_check_in(
         )
 
     invoice = None
+    if before_invoice is not None:
+        before_invoice(visit=visit, queue=queue, patient=patient)
     if visit_type in CHARGEABLE_VISIT_TYPES:
         invoice, _ = issue_exact_source_lines(
             organisation=organisation,
@@ -625,6 +652,175 @@ def visit_check_in(
         invoice=invoice,
         payer_binding=payer_binding,
         arrival_enquiry=enquiry,
+    )
+
+
+def _appointment_replay_outcome(*, organisation, facility, appointment):
+    visit = Visit.objects.filter(
+        id=appointment.checked_in_visit_id,
+        organisation=organisation,
+        facility=facility,
+    ).first()
+    if visit is None:
+        raise CanonicalError(
+            "ALREADY_EXISTS",
+            "The appointment is already checked in.",
+            status_code=409,
+        )
+    queue = (
+        QueueEntry.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            visit=visit,
+            state__in=QueueEntry.ACTIVE_STATES,
+        )
+        .order_by("queue_time", "sequence", "id")
+        .first()
+    )
+    invoice = (
+        Invoice.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            visit=visit,
+        )
+        .exclude(status__in={"VOID", "VOIDED"})
+        .order_by("created_at", "id")
+        .first()
+    )
+    return AppointmentCheckInOutcome(
+        appointment=appointment,
+        visit=visit,
+        queue=queue,
+        invoice=invoice,
+        already_checked_in=True,
+    )
+
+
+def appointment_no_show_check_in(
+    *,
+    organisation,
+    facility,
+    actor,
+    appointment_id,
+    visit_type="OUTPATIENT_NEW",
+    payer_type="CASH",
+    reason_for_visit="",
+    referral_source_type="SELF",
+    referral_source_name="",
+    price_list_id=None,
+    notes="",
+    request=None,
+):
+    """CMD-087: the supplied NO_SHOW -> CHECKED_IN fragment only."""
+
+    assert_transaction_active()
+    appointment = Appointment.objects.filter(
+        id=appointment_id,
+        organisation=organisation,
+        facility=facility,
+    ).first()
+    if appointment is None:
+        raise CanonicalError(
+            "NOT_FOUND",
+            "The appointment was not found in this facility.",
+            status_code=404,
+        )
+    if appointment.status == "CHECKED_IN":
+        if appointment.checked_in_visit_id is not None:
+            return _appointment_replay_outcome(
+                organisation=organisation,
+                facility=facility,
+                appointment=appointment,
+            )
+        raise CanonicalError(
+            "ALREADY_EXISTS",
+            "The appointment is already checked in.",
+            status_code=409,
+        )
+    if appointment.status != "NO_SHOW":
+        raise CanonicalError(
+            "UNSUPPORTED_OPERATION",
+            "Only a no-show appointment can use the supplied check-in fragment.",
+            status_code=409,
+        )
+
+    linked = {}
+
+    def link_appointment(*, visit, queue, patient):
+        # Rank 7 in LOCK-01: Visit and QueueEntry are already held/created by
+        # the ordinary check-in sequence; Invoice has not been created yet.
+        locked = Appointment.objects.select_for_update().filter(
+            id=appointment.id,
+            organisation=organisation,
+            facility=facility,
+        ).first()
+        if locked is None:
+            raise CanonicalError(
+                "NOT_FOUND",
+                "The appointment was not found in this facility.",
+                status_code=404,
+            )
+        linked["appointment"] = link_checked_in_visit(
+            appointment=locked,
+            visit=visit,
+        )
+        record_fact(
+            organisation=organisation,
+            actor=actor,
+            facility=facility,
+            event_code="APPOINTMENT_CHECKED_IN",
+            action="UPDATE",
+            entity_type="Appointment",
+            entity_id=locked.id,
+            source_ids={
+                "appointment_id": locked.id,
+                "visit_id": visit.id,
+                "queue_entry_id": queue.id if queue is not None else None,
+            },
+            after={"state": "CHECKED_IN"},
+        )
+
+    try:
+        outcome = visit_check_in(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            patient_id=appointment.patient_id,
+            department_id=appointment.department_id,
+            visit_type=visit_type,
+            payer_type=payer_type,
+            reason_for_visit=reason_for_visit,
+            referral_source_type=referral_source_type,
+            referral_source_name=referral_source_name,
+            price_list_id=price_list_id,
+            notes=notes,
+            before_invoice=link_appointment,
+            request=request,
+        )
+    except CanonicalError as exc:
+        if exc.code == "VISIT_ALREADY_OPEN":
+            current = Appointment.objects.select_for_update().filter(
+                id=appointment.id,
+                organisation=organisation,
+                facility=facility,
+            ).first()
+            if (
+                current is not None
+                and current.status == "CHECKED_IN"
+                and current.checked_in_visit_id is not None
+            ):
+                return _appointment_replay_outcome(
+                    organisation=organisation,
+                    facility=facility,
+                    appointment=current,
+                )
+        raise
+    return AppointmentCheckInOutcome(
+        appointment=linked.get("appointment", appointment),
+        visit=outcome.visit,
+        queue=outcome.queue,
+        invoice=outcome.invoice,
+        already_checked_in=False,
     )
 
 

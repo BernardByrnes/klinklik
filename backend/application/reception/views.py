@@ -2,6 +2,7 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from application.reception.commands import (
+    appointment_no_show_check_in,
     arrival_enquiry_record,
     patient_register,
     visit_cancel_error,
@@ -17,6 +18,8 @@ from application.reception.visit_query import (
     get_visit_projection,
 )
 from application.reception.serializers import (
+    AppointmentNoShowCheckInSerializer,
+    AppointmentNoShowCheckInResponseSerializer,
     ArrivalEnquiryResponseSerializer,
     ArrivalEnquiryWriteSerializer,
     PatientRegisterSerializer,
@@ -174,6 +177,57 @@ class VisitCheckInView(TenantAPIView):
         # invoice, payer, and enquiry identifiers are already represented by
         # the PHI-minimal response body and are not needed to replay it.
         response.result_reference = {"entity_type": "Visit", "entity_id": str(outcome.visit.id)}
+        return response
+
+
+class AppointmentNoShowCheckInView(TenantAPIView):
+    capability = "appointment.no_show_check_in"
+    idempotency_operation = "CMD-087"
+    requires_idempotency = True
+    serializer_class = AppointmentNoShowCheckInSerializer
+    response_serializer_class = AppointmentNoShowCheckInResponseSerializer
+
+    def replay_idempotent_response(self, record):
+        return record.response_body
+
+    def post(self, request, pk):
+        serializer = AppointmentNoShowCheckInSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        outcome = appointment_no_show_check_in(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+            appointment_id=pk,
+            request=request,
+            **serializer.validated_data,
+        )
+        body = {
+            "appointment_id": str(outcome.appointment.id),
+            "appointment_status": outcome.appointment.status,
+            "already_checked_in": outcome.already_checked_in,
+            "visit_id": str(outcome.visit.id),
+            "queue_id": str(outcome.queue.id) if outcome.queue is not None else None,
+            "invoice_id": str(outcome.invoice.id) if outcome.invoice is not None else None,
+            "patient_id": str(outcome.visit.patient_id),
+            "next_action": (
+                "LAB_REQUEST_CAPTURE"
+                if outcome.visit.visit_type == "LAB_ONLY"
+                else "CHECK_IN_COMPLETE"
+            ),
+        }
+        response = Response(
+            body,
+            status=(
+                status.HTTP_200_OK
+                if outcome.already_checked_in
+                else status.HTTP_201_CREATED
+            ),
+        )
+        _store_exact_idempotent_response(response, stored_body=body)
+        response.result_reference = {
+            "entity_type": "Appointment",
+            "entity_id": str(outcome.appointment.id),
+        }
         return response
 
 

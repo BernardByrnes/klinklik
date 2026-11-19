@@ -459,6 +459,30 @@ class Appointment(FacilityScopedModel):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="BOOKED")
     reason = models.CharField(max_length=200, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    service_day = models.DateField()
+    checked_in_visit = models.ForeignKey(
+        "scheduling.Visit",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="appointment_fragments",
+    )
+    version = models.PositiveBigIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organisation", "checked_in_visit"],
+                condition=models.Q(checked_in_visit__isnull=False),
+                name="uniq_appointment_checked_in_visit",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["organisation", "facility", "service_day"],
+                name="appt_fragment_day_idx",
+            )
+        ]
 
 
 class FollowUpRecommendation(FacilityScopedModel):

@@ -10,6 +10,8 @@ export type AllergyCreate = { substance: string; reaction?: string; severity: "M
 export type AllergyEnteredInError = { reason: string; };
 export type AllergyStateResponse = { patient?: string; allergy?: { id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }; allergy_status: "NOT_RECORDED" | "NKA" | "UNKNOWN" | "RECORDED"; active_allergies: Array<{ id: string; substance: string; reaction: string; severity: "MILD" | "MODERATE" | "SEVERE"; }>; allergy_revision: number; allergy_state_etag: string; allergies_reviewed_at?: string; allergies_reviewed_revision?: number | null; allergies_review_is_current?: boolean; };
 export type AllergyStatusWrite = { status: "NKA" | "UNKNOWN"; };
+export type AppointmentNoShowCheckIn = { visit_type?: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; payer_type?: "CASH" | "SELF_PAY_MOMO"; reason_for_visit?: string; referral_source_type?: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; referral_source_name?: string; price_list_id?: string | null; notes?: string; };
+export type AppointmentNoShowCheckInResponse = { appointment_id: string; appointment_status: "CHECKED_IN"; already_checked_in: boolean; visit_id: string; queue_id: string | null; invoice_id: string | null; patient_id: string; next_action: "CHECK_IN_COMPLETE" | "LAB_REQUEST_CAPTURE"; };
 export type ArrivalEnquiryResponse = { enquiry_id: string; };
 export type ArrivalEnquiryWrite = { reason_code: "NO_CLINICIAN" | "SERVICE_UNAVAILABLE" | "PRICE" | "REFERRED_OUT" | "OTHER"; source_event_id: string; safe_notes?: string; };
 export type CatalogueImport = { content: string; mode?: "ALL_OR_NOTHING" | "VALID_ROWS_ONLY"; template_version?: string; file_name?: string; file_hash?: string; };
@@ -20,6 +22,7 @@ export type CreditNoteResult = { id: string; credit_no: string; invoice_id: stri
 export type DepartmentEnvelope = { departments: Array<{ id: string; name: string; code: string; is_active?: boolean; facility: string; }>; };
 export type DiagnosisStateResponse = { diagnoses: Array<{ id: string; encounter: string; diagnosis_type: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code: string; label: string; coded: boolean; certainty_note: string; is_primary: boolean; no_diagnosis_reason: string; status: "ACTIVE"; recorded_by: string; created_at: string; updated_at: string; }>; consultation_etag: string; };
 export type DiagnosisWrite = { diagnosis_type?: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code?: string; label?: string; certainty_note?: string; is_primary?: boolean; no_diagnosis_reason?: string; };
+export type DispensePrepare = { lines: Array<{ prescription_item_id: string; product_id?: string | null; quantity?: string; substitution_reason?: string; prescriber_consulted?: boolean; prescriber_consulted_name?: string; }>; };
 export type Disposal = { batch_id: string; location_id: string; quantity: string; reason: string; source_event_id?: string; };
 export type DispositionResponse = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note: string; consultation_etag: string; encounter_status: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; };
 export type DispositionWrite = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note?: string; };
@@ -28,6 +31,7 @@ export type FacilityEnvelope = { facilities: Array<{ id: string; name: string; c
 export type Fefo = { product_id: string; quantity: string; location_id?: string | null; };
 export type FollowUpStateResponse = { follow_up: { id: string; patient: string; encounter: string; recommended_date: string | null; interval_value: number | null; interval_unit: string | null; instructions: string; status: string; created_by: string; created_at: string; updated_at: string; } | null; consultation_etag: string; encounter_status: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; };
 export type FollowUpWrite = { recommended_date?: string | null; interval_value?: number | null; interval_unit?: string | null; instructions?: string; };
+export type InstructionTemplate = { content: string; expected_version: number; };
 export type InvoiceCreate = { patient_id: string; encounter_id?: string; items: Array<{  }>; discount?: string; };
 export type InvoiceLineCreate = { service_id?: string; description?: string; quantity?: string; amount?: string; reason?: string; manual?: boolean; };
 export type InvoiceLineVoid = { reason: string; };
@@ -44,9 +48,11 @@ export type LabTestConfigure = { code: string; name: string; service_id?: string
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Movement = { id: string; product: string; batch: string; batch_no: string; expiry_date: string; location: string; location_name: string; movement_type: "IN_GRN" | "OUT_DISPENSE" | "OUT_SALE" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT" | "WRITE_OFF" | "QUARANTINE" | "REVERSAL" | "OPENING"; quantity: string; source_type: string; source_id: string; reason_code?: string; occurred_at?: string; };
+export type NotDispensed = { reason: "OUT_OF_STOCK" | "PATIENT_DECLINED" | "PATIENT_CANNOT_AFFORD" | "PRESCRIBER_CANCELLED" | "NOT_STOCKED" | "OTHER"; };
 export type NoteAmend = { content: {  }; reason: string; };
 export type NoteResponse = { note: string; status: string; content: { consultation?: string; presenting_complaint?: string; hpi?: string; past_medical_history?: string; past_surgical_history?: string; family_history?: string; social_history?: string; general_examination?: string; cardiovascular_examination?: string; respiratory_examination?: string; abdominal_examination?: string; neurological_examination?: string; genitourinary_examination?: string; musculoskeletal_examination?: string; treatment_plan?: string; [key: string]: unknown; }; complaints: Array<{ text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; }>; etag: string; saved_at: string; current_version?: number; };
 export type NoteWrite = { content: {  }; complaints?: {  }; };
+export type OTCSaleCreate = { patient_id?: string | null; customer_name?: string; method?: string; reference?: string; lines: Array<{ product_id: string; quantity: string; }>; };
 export type OperationalQueueEnvelope = { entries: Array<{ id: string; visit_id?: string | null; patient_id?: string; patient_no: string; patient_name: string; sex: string; age?: string | null; queue_label: string; token: string; department_id: string; department_name: string; queue_type: string; state: string; status: string; current_stage: string; source_stage: string; priority: string; priority_reason: string; queue_time: string; called_at?: string | null; started_at?: string | null; service_started_at?: string | null; completed_at?: string | null; wait_seconds: number; service_seconds?: number | null; hold_reason: string; hold_ref?: string | null; hold_age_seconds?: number | null; call_attempts: number; no_show_count: number; assigned_user_id?: string | null; assigned_user_name?: string | null; called_by_id?: string | null; called_by_name?: string | null; served_by_id?: string | null; served_by_name?: string | null; handoff_note: string; version: number; stale: boolean; stale_review_required: boolean; follow_up_required: boolean; final_attempt: boolean; lwbs_action_available: boolean; emergency_escalation: boolean; sla_minutes?: number | null; sla_breached: boolean; longest_wait_seconds?: number; triage_acuity?: string; test_names?: Array<string>; invoice_no?: string; amount_due?: string; currency?: string; invoice_status?: string; }>; count: number; row_count: number; longest_wait_seconds: number; page: number; page_size: number; has_next: boolean; server_time: string; refresh_after_seconds: number; };
 export type OperationalQueueRow = { id: string; visit_id?: string | null; patient_id?: string; patient_no: string; patient_name: string; sex: string; age?: string | null; queue_label: string; token: string; department_id: string; department_name: string; queue_type: string; state: string; status: string; current_stage: string; source_stage: string; priority: string; priority_reason: string; queue_time: string; called_at?: string | null; started_at?: string | null; service_started_at?: string | null; completed_at?: string | null; wait_seconds: number; service_seconds?: number | null; hold_reason: string; hold_ref?: string | null; hold_age_seconds?: number | null; call_attempts: number; no_show_count: number; assigned_user_id?: string | null; assigned_user_name?: string | null; called_by_id?: string | null; called_by_name?: string | null; served_by_id?: string | null; served_by_name?: string | null; handoff_note: string; version: number; stale: boolean; stale_review_required: boolean; follow_up_required: boolean; final_attempt: boolean; lwbs_action_available: boolean; emergency_escalation: boolean; sla_minutes?: number | null; sla_breached: boolean; longest_wait_seconds?: number; triage_acuity?: string; test_names?: Array<string>; invoice_no?: string; amount_due?: string; currency?: string; invoice_status?: string; };
 export type PatientCheckInSummary = { patient: { id: string; patient_no: string; display_name: string; sex: "FEMALE" | "MALE" | "INTERSEX" | "UNKNOWN" | "NOT_STATED"; date_of_birth: string | null; version: number; }; outstanding_balance: string; outstanding_invoice_no: string | null; outstanding_visit_id: string | null; active_visit: { id: string; local_service_date: string; visit_type: "OUTPATIENT_NEW" | "OUTPATIENT_REVIEW" | "ANC" | "LAB_ONLY" | "PHARMACY_ONLY" | "FOLLOW_UP_RESULTS"; state: "OPEN" | "IN_PROGRESS" | "CLOSED" | "CANCELLED_ERROR"; opened_at: string; version: number; } | null; active_queue_label: string | null; };
@@ -61,6 +67,8 @@ export type PaymentMethod = { code: string; label: string; kind: string; referen
 export type PaymentMethodConfigure = { code: string; label: string; kind: "MOBILE_MONEY_MANUAL" | "MANUAL"; reference_required?: boolean; provider_label?: string; is_active?: boolean; };
 export type PaymentResult = { id: string; receipt_no: string; receipt_id: string; amount: string; method: string; status: string; allocations: Array<{ invoice_id: string; invoice_no?: string; amount: string; }>; invoices: Array<{ id: string; status: string; total?: string; balance: string; }>; };
 export type PaymentReverseResult = { id: string; receipt_no: string; status: string; invoices: Array<{ id: string; status: string; total?: string; balance: string; }>; };
+export type PrescriptionCancel = { reason: string; };
+export type PrescriptionDraft = { encounter_id: string; source_prescription_id?: string | null; items: Array<{ product_id?: string | null; medicine_name?: string; dose_amount?: string; dose_unit?: string; route?: string; frequency?: string; duration_value?: number; duration_unit?: string; quantity: string; instructions?: string; }>; };
 export type Product = { id: string; code: string; generic_name: string; brand_name?: string; dosage_form: "TABLET" | "CAPSULE" | "SYRUP" | "SUSPENSION" | "INJECTION" | "CREAM" | "OINTMENT" | "DROPS" | "INHALER" | "SUPPOSITORY" | "SACHET" | "VIAL" | "TUBE" | "PIECE"; strength?: string; pack_description?: string; dispensing_unit: "TABLET" | "CAPSULE" | "ML" | "BOTTLE" | "SACHET" | "VIAL" | "TUBE" | "PIECE"; category?: "MEDICINE" | "CONSUMABLE" | "SUNDRY"; prescription_only?: boolean; controlled?: boolean; active?: boolean; instructions_template?: string; version?: number; };
 export type ProductCreate = { code: string; generic_name: string; brand_name?: string; dosage_form: string; strength?: string; pack_description?: string; dispensing_unit: string; category?: string; prescription_only?: boolean; controlled?: boolean; active?: boolean; confirm_duplicate?: boolean; };
 export type ProductDeactivate = { reason: string; expected_version: number; };
@@ -331,6 +339,22 @@ export type PartialUpdatePatientRequest = Patient;
 export type PartialUpdatePatientResponse = Patient;
 export type CreatePatientLinkRequest = PatientLink;
 export type CreatePatientLinkResponse = PatientLinkResponse;
+export type CreateNotDispensedRequest = NotDispensed;
+export type CreateNotDispensedResponse = NotDispensed;
+export type CreateOTCSaleCreateRequest = OTCSaleCreate;
+export type CreateOTCSaleCreateResponse = OTCSaleCreate;
+export type ListOTCSalesResponse = Array<unknown>;
+export type PartialUpdatePrescriptionDraftRequest = PrescriptionDraft;
+export type PartialUpdatePrescriptionDraftResponse = PrescriptionDraft;
+export type CreatePrescriptionCancelRequest = PrescriptionCancel;
+export type CreatePrescriptionCancelResponse = PrescriptionCancel;
+export type CreateDispensePrepareRequest = DispensePrepare;
+export type CreateDispensePrepareResponse = DispensePrepare;
+export type PartialUpdateInstructionTemplateRequest = InstructionTemplate;
+export type PartialUpdateInstructionTemplateResponse = InstructionTemplate;
+export type ListPrescriptionQueuesResponse = Array<unknown>;
+export type CreateAppointmentNoShowCheckInRequest = AppointmentNoShowCheckIn;
+export type CreateAppointmentNoShowCheckInResponse = AppointmentNoShowCheckInResponse;
 export type CreateArrivalEnquiryWriteRequest = ArrivalEnquiryWrite;
 export type CreateArrivalEnquiryWriteResponse = ArrivalEnquiryResponse;
 export type CreatePatientRegisterRequest = PatientRegister;
@@ -359,7 +383,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "3848f0aa16fbbfa673378cc8e1ffe86fe3e5dc3c14db158885f739fe19644aac";
+export const GENERATED_API_CONTRACT_SHA256 = "9b884ecc0a4556a0f0d9c751a18461989e22563fab567e87f4af070efe049c70";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -981,6 +1005,66 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createPatientLink",
     "path": "/api/v1/patients/{id}/link/"
+  },
+  {
+    "method": "GET",
+    "operationId": "retrieveDispenseDetail",
+    "path": "/api/v1/pharmacy/dispenses/{id}/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createDispenseConfirm",
+    "path": "/api/v1/pharmacy/dispenses/{id}/confirm/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createNotDispensed",
+    "path": "/api/v1/pharmacy/items/{item_id}/not-dispensed/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createOTCSaleCreate",
+    "path": "/api/v1/pharmacy/otc/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listOTCSales",
+    "path": "/api/v1/pharmacy/otc/sales/"
+  },
+  {
+    "method": "PATCH",
+    "operationId": "partialUpdatePrescriptionDraft",
+    "path": "/api/v1/pharmacy/prescriptions/draft/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createPrescriptionCancel",
+    "path": "/api/v1/pharmacy/prescriptions/{id}/cancel/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createPrescriptionClaim",
+    "path": "/api/v1/pharmacy/prescriptions/{id}/claim/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createDispensePrepare",
+    "path": "/api/v1/pharmacy/prescriptions/{prescription_id}/dispenses/"
+  },
+  {
+    "method": "PATCH",
+    "operationId": "partialUpdateInstructionTemplate",
+    "path": "/api/v1/pharmacy/products/{id}/instruction-template/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listPrescriptionQueues",
+    "path": "/api/v1/pharmacy/queue/"
+  },
+  {
+    "method": "POST",
+    "operationId": "createAppointmentNoShowCheckIn",
+    "path": "/api/v1/reception/appointments/{id}/no-show-check-in/"
   },
   {
     "method": "POST",
