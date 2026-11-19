@@ -25,12 +25,12 @@ This dossier records what was run and what was not run. It is not a release appr
 
 Machine artifact: [`docs/implementation/s16-contract-verification.json`](../implementation/s16-contract-verification.json).
 Human report: [`docs/implementation/s16-contract-verification.md`](../implementation/s16-contract-verification.md).
-Machine assertions: `backend/tests/test_s16_release_evidence.py` — **5 passed**.
+Machine assertions: `backend/tests/test_s16_release_evidence.py` — **6 passed**.
 
 | Family | Active contracts | Verified status counts |
 | --- | --- | --- |
 | PC | 80 (`PC-001..PC-081` minus retired `PC-061`) | 62 `IMPLEMENTED`, 7 `PARTIAL`, 11 `FENCED` |
-| CMD | 134 (`CMD-001..CMD-136` minus retired `CMD-097`/`CMD-107`) | 104 `EVIDENCE LINKED`, 30 `FENCED` |
+| CMD | 134 (`CMD-001..CMD-136` minus retired `CMD-097`/`CMD-107`) | 103 `EVIDENCE LINKED`, 1 `PARTIAL`, 30 `FENCED` |
 | MIG | 11 (`MIG-001..MIG-011`) | 11 `IMPLEMENTED` |
 | ADR | 14 (`ADR-C-01..ADR-C-14`) | 14 `SETTLED` |
 
@@ -65,7 +65,7 @@ Note: an earlier run against a reused e2e database hit the 120-second Playwright
 | Restored runtime gate | `check_s00_postgres.py` against the restored database | **PASS** |
 | Restored RLS gate | `check_rls --require-postgres` against the restored database | **PASS** — 82 tables, all FORCE RLS, same app role |
 | Migration reversal/reapply | `migrate scheduling 0007`, then `migrate scheduling 0008` | reverse OK, forward OK |
-| Full backend regression | `PYTHONPATH=.. python -m pytest -q` | **439 passed, 92 skipped** in 230.31s |
+| Full backend regression | `PYTHONPATH=.. python -m pytest -q` | **440 passed, 92 skipped** in 230.31s |
 | Static gates | `manage.py check`, `makemigrations --check`, frontend `typecheck`, `lint`, production `build` | clean |
 
 ## Accessibility, low bandwidth and print
@@ -88,14 +88,14 @@ Note: an earlier run against a reused e2e database hit the 120-second Playwright
 
 The full per-contract fenced list is in the contract report: 11 PC contracts, 30 CMD contracts, plus J-05 and the general APT lifecycle.
 
-## Findings routed to the supervisor (not fixed in this verification slice)
+## Findings and corrections
 
-1. **S-12 CMD idempotency labels are mismatched with the registry.** `backend/pharmacy/views.py`: claim uses `CMD-055` (registry CMD-124 pharmacy_claim), prepare uses `CMD-057` (registry CMD-056 provisional_dispense_create), prescription cancel uses `CMD-059` (registry CMD-054 prescription_cancel; CMD-059 is dispense_cancel), not-dispensed uses `CMD-060` (registry CMD-115 dispense_item_not_dispensed; CMD-060 is prescription_partial_close), OTC uses `CMD-113` (registry CMD-062 otc_sale; CMD-113 is dispense_substitute). Behavior tests pass, but replay namespaces and audit/idempotency operation identities are mislabeled. No product code was changed here.
+1. **S-12 CMD idempotency labels were mismatched with the registry — FIXED in this S-16 corrective commit.** `backend/pharmacy/views.py` now uses CMD-124 for claim, CMD-056 for prepare, CMD-054 for prescription cancel, CMD-115 for not-dispensed, and CMD-062 for OTC. The old CMD-055/057/059/060/113 labels are gone. Historical IdempotencyRecords under those labels are retained as historical rows and are not migrated; this lineage is synthetic. The contract table re-points the affected rows and marks CMD-113 `PARTIAL` because substitution evidence is inline in CMD-056, with no standalone dispense_substitute route.
 2. **PC partial representations:** PC-017, PC-022, PC-025, PC-037, PC-040, PC-077 and PC-080 are implemented through legacy/renamed or inline models (for example `PrescriptionItem`, `StockBatch`, `InvoiceItem`, `PaymentReceipt`, inline substitution and analyte values). The registry field names are not a one-to-one schema match.
 3. **Command coverage is evidence-linked, not branch-complete.** 30 CMD contracts are fenced and are listed above; the dossier does not claim their execution.
 4. **Reused-database journey timeout:** the earlier `clinic-slice` 120-second timeout on an accumulated e2e database is recorded above; the fresh-database run passed. I did not root-cause the earlier timeout: the server log showed a transient 503 on the Visit context, and the same context returned 200 later. Treating it as data-volume/environment is a hypothesis, not proven.
 5. **Plan-16 scope gaps found while executing it:** (a) "all sixteen specs" is the CI canonical set, but this repo contains 26 spec files — the 10 legacy `phase-1*`/`role-handoff` specs were not run and are not in CI; (b) J-05 is fenced, so only J-01/J-02 (clinical), J-03 and J-04 have fresh journey evidence; (c) only MIG-001..004 were explicitly cut over for the browser lane; MIG-005..011 were not re-run as e2e cutovers; (d) the migration drill reversed only scheduling 0008, not all 11 MIG reversals; (e) browser print rendering is not physical-printer certification; (f) the plan asks to "verify" 80/134 contracts but does not define a branch-level acceptance test, which is why this dossier labels CMDs as evidence-linked rather than verified.
-6. **Conflicting S-12 idempotency evidence:** because the S-12 route labels are mismatched (finding 1), the contract table's evidence-linking for CMD-054/056/062/113/115/124 is weaker than a command-by-command reader would assume. Their behavior tests pass, but the CMD ID namespace must be corrected and the table rechecked.
+6. **Resolved S-12 namespace conflict:** after the label correction, CMD-054/056/062/115/124 point at the corrected views and their S-12 behavior tests. CMD-113 remains `PARTIAL` honestly: substitution is recorded through the prepare/dispense line, not through a standalone command route. A table-driven regression test now asserts every pharmacy view's idempotency label against the registry identifier.
 
 ## Explicit non-authorizations
 

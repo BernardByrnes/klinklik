@@ -1220,7 +1220,7 @@
       "family": "CMD",
       "id": "CMD-054",
       "name": "prescription_cancel",
-      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "note": "Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier.",
       "status": "EVIDENCE LINKED"
     },
     {
@@ -1238,7 +1238,7 @@
       "family": "CMD",
       "id": "CMD-056",
       "name": "provisional_dispense_create",
-      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "note": "Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier.",
       "status": "EVIDENCE LINKED"
     },
     {
@@ -1292,7 +1292,7 @@
       "family": "CMD",
       "id": "CMD-062",
       "name": "otc_sale",
-      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "note": "Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier.",
       "status": "EVIDENCE LINKED"
     },
     {
@@ -1733,8 +1733,8 @@
       "family": "CMD",
       "id": "CMD-113",
       "name": "dispense_substitute",
-      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
-      "status": "EVIDENCE LINKED"
+      "note": "Substitution evidence is recorded inline by DispensePrepareView/CMD-056; no standalone dispense_substitute route or CMD-113 idempotency namespace exists.",
+      "status": "PARTIAL"
     },
     {
       "app": "application.pharmacy",
@@ -1751,7 +1751,7 @@
       "family": "CMD",
       "id": "CMD-115",
       "name": "dispense_item_not_dispensed",
-      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "note": "Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier.",
       "status": "EVIDENCE LINKED"
     },
     {
@@ -1832,7 +1832,7 @@
       "family": "CMD",
       "id": "CMD-124",
       "name": "pharmacy_claim",
-      "note": "Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings.",
+      "note": "Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier.",
       "status": "EVIDENCE LINKED"
     },
     {
@@ -2171,8 +2171,9 @@
   ],
   "status_counts": {
     "ADR|SETTLED": 14,
-    "CMD|EVIDENCE LINKED": 104,
+    "CMD|EVIDENCE LINKED": 103,
     "CMD|FENCED": 30,
+    "CMD|PARTIAL": 1,
     "MIG|IMPLEMENTED": 11,
     "PC|FENCED": 11,
     "PC|IMPLEMENTED": 62,

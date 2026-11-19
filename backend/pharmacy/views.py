@@ -152,7 +152,7 @@ class PrescriptionQueueView(TenantAPIView):
 
 class PrescriptionClaimView(TenantAPIView):
     capability = "pharmacy.dispense"
-    idempotency_operation = "CMD-055"
+    idempotency_operation = "CMD-124"
     requires_idempotency = True
 
     def post(self, request, pk):
@@ -177,7 +177,7 @@ class PrescriptionClaimView(TenantAPIView):
 class DispensePrepareView(TenantAPIView):
     capability = "pharmacy.dispense"
     serializer_class = DispensePrepareSerializer
-    idempotency_operation = "CMD-057"
+    idempotency_operation = "CMD-056"
     requires_idempotency = True
 
     def post(self, request, prescription_id):
@@ -233,7 +233,7 @@ class DispenseDetailView(TenantAPIView):
 class PrescriptionCancelView(TenantAPIView):
     capability = "pharmacy.prescribe"
     serializer_class = PrescriptionCancelSerializer
-    idempotency_operation = "CMD-059"
+    idempotency_operation = "CMD-054"
     requires_idempotency = True
 
     def post(self, request, pk):
@@ -253,7 +253,7 @@ class PrescriptionCancelView(TenantAPIView):
 class PrescriptionItemNotDispensedView(TenantAPIView):
     capability = "pharmacy.dispense"
     serializer_class = NotDispensedSerializer
-    idempotency_operation = "CMD-060"
+    idempotency_operation = "CMD-115"
     requires_idempotency = True
 
     def post(self, request, item_id):
@@ -308,7 +308,7 @@ class ProductInstructionTemplateView(TenantAPIView):
 class OTCSaleCreateView(TenantAPIView):
     capability = "pharmacy.otc.sell"
     serializer_class = OTCSaleCreateSerializer
-    idempotency_operation = "CMD-113"
+    idempotency_operation = "CMD-062"
     requires_idempotency = True
 
     def post(self, request):

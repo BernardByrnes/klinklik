@@ -11,7 +11,7 @@ Base: `db19523` (published main / `release/v1-clinic-spine`).
 | MIG | 11 | MIG-001..MIG-011 |
 | ADR | 14 | ADR-C-01..ADR-C-14 |
 
-Status counts: ADR|SETTLED=14, CMD|EVIDENCE LINKED=104, CMD|FENCED=30, MIG|IMPLEMENTED=11, PC|FENCED=11, PC|IMPLEMENTED=62, PC|PARTIAL=7.
+Status counts: ADR|SETTLED=14, CMD|EVIDENCE LINKED=103, CMD|FENCED=30, CMD|PARTIAL=1, MIG|IMPLEMENTED=11, PC|FENCED=11, PC|IMPLEMENTED=62, PC|PARTIAL=7.
 
 Status meaning: **IMPLEMENTED/EVIDENCE LINKED** means the contract is mapped to the named code or slice test evidence; **PARTIAL** means a legacy/renamed or inline representation; **FENCED** means the applicable registry authority/slice remains blocked and no executable evidence is claimed. **SETTLED** is used only for the blueprint ADR register.
 
@@ -159,15 +159,15 @@ Status meaning: **IMPLEMENTED/EVIDENCE LINKED** means the contract is mapped to 
 | CMD-051 | CMD | lab_external_order | application.laboratory | EVIDENCE LINKED | `backend/tests/test_s11_lab.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-052 | CMD | prescription_draft_save | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-053 | CMD | prescription_activate | application.clinical | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
-| CMD-054 | CMD | prescription_cancel | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
+| CMD-054 | CMD | prescription_cancel | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier. |
 | CMD-055 | CMD | prescription_repeat | application.pharmacy | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
-| CMD-056 | CMD | provisional_dispense_create | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s05_billing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
+| CMD-056 | CMD | provisional_dispense_create | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s05_billing.py` | Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier. |
 | CMD-057 | CMD | dispense_gate_release | application.billing | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-058 | CMD | dispense_handover | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s09_inventory.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-059 | CMD | dispense_cancel | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-060 | CMD | prescription_partial_close | application.pharmacy | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
 | CMD-061 | CMD | dispense_reverse_return | application.pharmacy | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
-| CMD-062 | CMD | otc_sale | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s05_billing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
+| CMD-062 | CMD | otc_sale | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s05_billing.py` | Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier. |
 | CMD-063 | CMD | stock_receive | application.inventory | EVIDENCE LINKED | `backend/tests/test_s09_inventory.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-064 | CMD | stock_transfer | application.inventory | EVIDENCE LINKED | `backend/tests/test_s09_inventory.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-065 | CMD | stock_count_submit | application.inventory | EVIDENCE LINKED | `backend/tests/test_s10_counts.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
@@ -216,9 +216,9 @@ Status meaning: **IMPLEMENTED/EVIDENCE LINKED** means the contract is mapped to 
 | CMD-110 | CMD | product_instruction_template_set | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-111 | CMD | inventory_threshold_set | application.inventory | EVIDENCE LINKED | `backend/tests/test_s09_inventory.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-112 | CMD | invoice_discount_waiver | application.billing | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
-| CMD-113 | CMD | dispense_substitute | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
+| CMD-113 | CMD | dispense_substitute | application.pharmacy | PARTIAL | `backend/tests/test_s12_dispensing.py` | Substitution evidence is recorded inline by DispensePrepareView/CMD-056; no standalone dispense_substitute route or CMD-113 idempotency namespace exists. |
 | CMD-114 | CMD | dispense_basket_update | application.pharmacy | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
-| CMD-115 | CMD | dispense_item_not_dispensed | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
+| CMD-115 | CMD | dispense_item_not_dispensed | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier. |
 | CMD-116 | CMD | late_result_acknowledge | application.clinical | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
 | CMD-117 | CMD | expired_delivery_quarantine_intake | application.inventory | EVIDENCE LINKED | `backend/tests/test_s09_inventory.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
 | CMD-118 | CMD | patient_problem_add | application.clinical | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
@@ -227,7 +227,7 @@ Status meaning: **IMPLEMENTED/EVIDENCE LINKED** means the contract is mapped to 
 | CMD-121 | CMD | anc_history_update | application.maternity | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
 | CMD-122 | CMD | anc_risk_factors_record | application.maternity | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
 | CMD-123 | CMD | anc_obstetric_exam_record | application.maternity | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
-| CMD-124 | CMD | pharmacy_claim | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |
+| CMD-124 | CMD | pharmacy_claim | application.pharmacy | EVIDENCE LINKED | `backend/tests/test_s12_dispensing.py` | Evidence pointer is the S-12 behavior/maintenance tests; the view idempotency label now matches this registry CMD identifier. |
 | CMD-125 | CMD | anc_dating_basis_update | application.maternity | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
 | CMD-126 | CMD | anc_contact_sequence_update | application.maternity | FENCED | `IMPLEMENTATION_BLUEPRINT.md` | Fenced by the named slice/owner decision; no executable evidence claimed. |
 | CMD-127 | CMD | queue_priority_change | application.queue | EVIDENCE LINKED | `backend/tests/test_s02_queue.py` | Contract mapped to the slice test evidence; branch-level gaps are listed in the dossier findings. |

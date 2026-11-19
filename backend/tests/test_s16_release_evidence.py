@@ -46,12 +46,13 @@ def test_s16_contract_status_map_matches_the_declared_evidence_classes():
     records = _records()
     statuses = {(record["family"], record["id"]): record["status"] for record in records}
     assert {key[1] for key, value in statuses.items() if value == "FENCED" and key[0] == "PC"} == FENCED_PC
-    assert {key[1] for key, value in statuses.items() if value == "PARTIAL"} == PARTIAL_PC
+    assert {key[1] for key, value in statuses.items() if value == "PARTIAL" and key[0] == "PC"} == PARTIAL_PC
     assert FENCED_CMD_REQUIRED <= {
         key[1] for key, value in statuses.items() if value == "FENCED"
     }
-    assert sum(1 for key, value in statuses.items() if key[0] == "CMD" and value == "EVIDENCE LINKED") == 104
+    assert sum(1 for key, value in statuses.items() if key[0] == "CMD" and value == "EVIDENCE LINKED") == 103
     assert sum(1 for key, value in statuses.items() if key[0] == "CMD" and value == "FENCED") == 30
+    assert sum(1 for key, value in statuses.items() if key[0] == "CMD" and value == "PARTIAL") == 1
     assert sum(1 for key, value in statuses.items() if key[0] == "PC" and value == "IMPLEMENTED") == 62
     assert sum(1 for key, value in statuses.items() if key[0] == "MIG" and value == "IMPLEMENTED") == 11
     assert sum(1 for key, value in statuses.items() if key[0] == "ADR" and value == "SETTLED") == 14
@@ -81,8 +82,35 @@ def test_s16_dossier_states_scope_and_non_authorization():
     dossier = (ROOT / "docs/release/v1-evidence.md").read_text(encoding="utf-8")
     assert "Deployment is not authorized" in dossier
     assert "J-05 ANC" in dossier
-    assert "439 passed, 92 skipped" in dossier
+    assert "440 passed, 92 skipped" in dossier
     assert "102,184 bytes" in dossier
-    assert "S-12 CMD idempotency labels are mismatched" in dossier
+    assert "S-12 CMD idempotency labels were mismatched with the registry — FIXED" in dossier
     assert "evidence index, not a branch-by-branch contract audit" in dossier
     assert "Plan-16 scope gaps" in dossier
+
+
+def test_s16_pharmacy_views_use_the_registry_command_identifiers():
+    from pharmacy.views import (
+        DispenseConfirmView,
+        DispensePrepareView,
+        OTCSaleCreateView,
+        PrescriptionCancelView,
+        PrescriptionClaimView,
+        PrescriptionDraftView,
+        PrescriptionItemNotDispensedView,
+        ProductInstructionTemplateView,
+    )
+
+    expected = {
+        PrescriptionDraftView: "CMD-052",
+        PrescriptionClaimView: "CMD-124",
+        DispensePrepareView: "CMD-056",
+        DispenseConfirmView: "CMD-058",
+        PrescriptionCancelView: "CMD-054",
+        PrescriptionItemNotDispensedView: "CMD-115",
+        ProductInstructionTemplateView: "CMD-110",
+        OTCSaleCreateView: "CMD-062",
+    }
+    for view, command_id in expected.items():
+        assert view.idempotency_operation == command_id, view.__name__
+    assert "CMD-113" not in {view.idempotency_operation for view in expected}
