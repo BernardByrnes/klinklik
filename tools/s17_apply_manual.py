@@ -32,60 +32,10 @@ OVERRIDES = {
         "discrepancy": "QueueExpireSweepView declares CMD-024, but S-16 fenced the slice and no operational cutoff/authorization evidence was found; route exists, authority not evidenced.",
         "evidence_pointer": "backend/application/queue/views.py:QueueExpireSweepView",
     },
-    "CMD-031": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "encounter_draft_save is implemented by EncounterNoteView (POST/PATCH notes) which declares no idempotency_operation, so the registry idempotency namespace is absent.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterNoteView",
-    },
-    "CMD-035": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "encounter_sign is implemented by EncounterSignView (POST sign) which declares no idempotency_operation.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterSignView",
-    },
-    "CMD-038": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "encounter_addendum is implemented by EncounterAmendView (POST amend) which declares no idempotency_operation.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterAmendView",
-    },
     "CMD-071": {
         "verdict": "MISMATCH", "severity": "P2",
         "discrepancy": "invoice_issue is also exposed by InvoiceListCreateView (POST invoices/) without declaring CMD-071; the canonical issue path runs through visit check-in.",
         "evidence_pointer": "backend/billing/views.py:InvoiceListCreateView",
-    },
-    "CMD-092": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "patient_allergy_record is implemented by PatientAllergyView (POST allergies) without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:PatientAllergyView",
-    },
-    "CMD-093": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "patient_allergy_status_set is implemented by PatientAllergyStatusView (POST allergy-status) without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:PatientAllergyStatusView",
-    },
-    "CMD-094": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "allergy_entered_error is implemented by PatientAllergyEnteredInErrorView without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:PatientAllergyEnteredInErrorView",
-    },
-    "CMD-095": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "encounter_allergy_review is implemented by EncounterAllergyReviewView (POST allergies/review) without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterAllergyReviewView",
-    },
-    "CMD-096": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "diagnosis_save is implemented by EncounterDiagnosisListCreateView (POST diagnoses) without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterDiagnosisListCreateView",
-    },
-    "CMD-099": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "disposition_set is implemented by EncounterDispositionView (PATCH disposition) without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterDispositionView",
-    },
-    "CMD-101": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "followup_record is implemented by EncounterFollowUpView (PATCH follow-up) without an idempotency_operation label.",
-        "evidence_pointer": "backend/clinical/views.py:EncounterFollowUpView",
     },
     "CMD-106": {
         "verdict": "MISMATCH", "severity": "P2",
@@ -138,9 +88,9 @@ OVERRIDES = {
         "evidence_pointer": "backend/clinical/views.py:119,1287",
     },
     "CMD-075": {
-        "verdict": "MISMATCH", "severity": "P1",
-        "discrepancy": "Legacy InvoicePaymentView shares CMD-075 with the canonical InvoiceCanonicalPaymentView but does not set requires_idempotency; the same namespace covers a non-idempotent compatibility route.",
-        "evidence_pointer": "backend/billing/views.py:175,203",
+        "verdict": "PARTIAL", "severity": "P2",
+        "discrepancy": "Owner-authorised compatibility namespace: legacy InvoicePaymentView uses 'legacy.invoice.payment.compat' and is allowlisted in the machine test; canonical InvoiceCanonicalPaymentView retains CMD-075. No route retired.",
+        "evidence_pointer": "backend/billing/views.py:175,205",
     },
     "CMD-078": {
         "verdict": "FENCED", "severity": "P3",
@@ -240,7 +190,7 @@ def main():
         "- FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.",
         "- At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.",
         "- Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.",
-        "- A systemic finding of this manual pass is mutating views with no `idempotency_operation` at all (clinical note/sign/diagnosis/disposition/allergy/follow-up, legacy patient/check-in/claim/create routes). These are MISMATCH rows because the registry requires idempotency for every active CMD; no route or code was added to repair them.",
+        "- S-19 closed the clinical P1 class: ten active clinical views now carry their registry CMD id and `requires_idempotency=True`. EncounterDiagnosisDetailView/RemoveView remain unlabelled by design: registry CMD-097 is a retired tombstone and no active id was invented. P1 count is now zero; all remaining discrepancy rows are P2 owner-deferred findings (verbs, duplicate legacy routes, compatibility namespaces, audit-name/test-naming limits).",
     ]
     MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(data["summary"])

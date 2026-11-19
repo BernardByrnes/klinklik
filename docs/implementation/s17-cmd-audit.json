@@ -1892,20 +1892,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "encounter_draft_save is implemented by EncounterNoteView (POST/PATCH notes) which declares no idempotency_operation, so the registry idempotency namespace is absent.",
+      "discrepancy": "",
       "error_codes": [
         "PRESENTING_COMPLAINT_REQUIRED",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterNoteView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "PATCH",
       "id": "CMD-031",
       "idempotency_required": true,
       "idempotency_text": "YES encounter.draft_save; encounter, expected ETag, changed supplied sections/complaints",
       "internal": false,
       "lock_plan": "Encounter; ClinicalNote",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
@@ -1922,14 +1921,28 @@
           "token": "clinical.services.notes.save_draft"
         }
       ],
-      "severity": "P1",
-      "slice_test_references_command": false,
+      "severity": "P2",
+      "slice_test_references_command": true,
       "slices": [
         "S-04",
         "S-13"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "VERIFIED",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.create",
+          "capability_source": "capability",
+          "methods": [
+            "patch",
+            "post"
+          ],
+          "serializer": "NoteWriteSerializer",
+          "url": "encounters/<uuid:pk>/notes/",
+          "url_name": "encounter-note",
+          "view": "clinical.views.EncounterNoteView"
+        }
+      ]
     },
     {
       "actor": "clinician; Encounter OPEN, order exists, consultation entry IN_SERVICE",
@@ -2121,21 +2134,20 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "encounter_sign is implemented by EncounterSignView (POST sign) which declares no idempotency_operation.",
+      "discrepancy": "Declared audit codes not found in code: ['CLINICAL_NOTE_SIGNED', 'QUEUE_COMPLETED'].",
       "error_codes": [
         "CREDENTIAL_REQUIRED",
         "PREREQUISITE_MISSING",
         "UNSUPPORTED_OPERATION"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterSignView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "POST",
       "id": "CMD-035",
       "idempotency_required": true,
       "idempotency_text": "YES encounter.sign; encounter, note ETag/hash, diagnosis/disposition versions, prescription draft source IDs, credential revision",
       "internal": false,
       "lock_plan": "referenced MedicationProduct rows sorted; PatientAllergy and AllergyState rows sorted; Visit; QueueEntry; Encounter; ClinicalNote and Diagnosis children; existing Prescriptions; NumberSequence when a printable prescription outcome exists",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "CLINICAL_NOTE_SIGNED",
         "QUEUE_COMPLETED"
@@ -2163,14 +2175,27 @@
           "token": "scheduling.services.queue.complete"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-04",
         "S-14"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.sign",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "NoteWriteSerializer",
+          "url": "encounters/<uuid:pk>/sign/",
+          "url_name": "encounter-sign",
+          "view": "clinical.views.EncounterSignView"
+        }
+      ]
     },
     {
       "actor": "clinician; AWAITING_RESULTS, explicit sign-now choice, supplied sign guards; BP-BL-03/06/08",
@@ -2292,20 +2317,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "encounter_addendum is implemented by EncounterAmendView (POST amend) which declares no idempotency_operation.",
+      "discrepancy": "Declared audit codes not found in code: ['CLINICAL_NOTE_AMENDED'].",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterAmendView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "POST",
       "id": "CMD-038",
       "idempotency_required": true,
       "idempotency_text": "YES encounter.addendum; encounter, current version/hash, addendum content hash, reason",
       "internal": false,
       "lock_plan": "Encounter; ClinicalNote",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "CLINICAL_NOTE_AMENDED"
       ],
@@ -2324,14 +2348,27 @@
           "token": "clinical.services.notes.append_addendum"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-04",
         "S-11"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.amend",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "NoteAmendSerializer",
+          "url": "encounters/<uuid:pk>/amend/",
+          "url_name": "encounter-amend",
+          "view": "clinical.views.EncounterAmendView"
+        }
+      ]
     },
     {
       "actor": "supplied clinician/supervisor capability; reason and current ownership; BP-BL-03",
@@ -4650,13 +4687,13 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Legacy InvoicePaymentView shares CMD-075 with the canonical InvoiceCanonicalPaymentView but does not set requires_idempotency; the same namespace covers a non-idempotent compatibility route.",
+      "discrepancy": "Owner-authorised compatibility namespace: legacy InvoicePaymentView uses 'legacy.invoice.payment.compat' and is allowlisted in the machine test; canonical InvoiceCanonicalPaymentView retains CMD-075. No route retired.",
       "error_codes": [
         "ALREADY_EXISTS",
         "INVALID_INPUT",
         "PREREQUISITE_MISSING"
       ],
-      "evidence_pointer": "backend/billing/views.py:175,203",
+      "evidence_pointer": "backend/billing/views.py:175,205",
       "http_method": "POST",
       "id": "CMD-075",
       "idempotency_required": true,
@@ -4692,7 +4729,7 @@
           "token": "scheduling.services.queue.release_ordinary_payment_gate"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": true,
       "slices": [
         "S-05",
@@ -4700,20 +4737,8 @@
         "S-12",
         "S-13"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "PARTIAL",
       "views": [
-        {
-          "capabilities": [],
-          "capability": "billing.payment.record",
-          "capability_source": "capability",
-          "methods": [
-            "post"
-          ],
-          "serializer": "PaymentCreateSerializer",
-          "url": "invoices/<uuid:pk>/pay/",
-          "url_name": "invoice-pay",
-          "view": "billing.views.InvoicePaymentView"
-        },
         {
           "capabilities": [],
           "capability": "billing.payment.record",
@@ -5754,20 +5779,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "patient_allergy_record is implemented by PatientAllergyView (POST allergies) without an idempotency_operation label.",
+      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_RECORDED'].",
       "error_codes": [
         "ALREADY_EXISTS",
         "REQUIRED_FIELD_MISSING"
       ],
-      "evidence_pointer": "backend/clinical/views.py:PatientAllergyView",
+      "evidence_pointer": "backend/tests/test_s03_triage.py",
       "http_method": "POST",
       "id": "CMD-092",
       "idempotency_required": true,
       "idempotency_text": "YES allergy.record; patient, supplied normalized display/source event, status, content hash",
       "internal": false,
       "lock_plan": "Patient; existing PatientAllergy; PatientAllergyState",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "ALLERGY_RECORDED"
       ],
@@ -5788,15 +5812,28 @@
           "token": "clinical.services.allergy.record"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-03",
         "S-04",
         "S-13"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "allergy.manage",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "AllergyCreateSerializer",
+          "url": "patients/<uuid:patient_id>/allergies/",
+          "url_name": "patient-allergy-add",
+          "view": "clinical.views.PatientAllergyView"
+        }
+      ]
     },
     {
       "actor": "authorized supplied allergy actor; explicit NKA/UNKNOWN/current-record evidence and current revision; no interpretation",
@@ -5808,20 +5845,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "patient_allergy_status_set is implemented by PatientAllergyStatusView (POST allergy-status) without an idempotency_operation label.",
+      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_STATUS_SET'].",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:PatientAllergyStatusView",
+      "evidence_pointer": "backend/tests/test_s03_triage.py",
       "http_method": "POST",
       "id": "CMD-093",
       "idempotency_required": true,
       "idempotency_text": "YES allergy.status_set; patient, target status, evidence reference, expected version",
       "internal": false,
       "lock_plan": "Patient; PatientAllergyState",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "ALLERGY_STATUS_SET"
       ],
@@ -5840,13 +5876,26 @@
           "token": "clinical.services.allergy.set_status"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-03"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "allergy.manage",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "AllergyStatusWriteSerializer",
+          "url": "patients/<uuid:patient_id>/allergy-status/",
+          "url_name": "patient-allergy-status",
+          "view": "clinical.views.PatientAllergyStatusView"
+        }
+      ]
     },
     {
       "actor": "CLINICIAN or higher supplied correction actor; existing allergy, mandatory reason, expected version",
@@ -5858,20 +5907,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "allergy_entered_error is implemented by PatientAllergyEnteredInErrorView without an idempotency_operation label.",
+      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_ENTERED_ERROR'].",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:PatientAllergyEnteredInErrorView",
+      "evidence_pointer": "backend/tests/test_s03_triage.py",
       "http_method": "POST",
       "id": "CMD-094",
       "idempotency_required": true,
       "idempotency_text": "YES allergy.entered_error; allergy, reason, expected version",
       "internal": false,
       "lock_plan": "Patient; PatientAllergy",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "ALLERGY_ENTERED_ERROR"
       ],
@@ -5890,13 +5938,26 @@
           "token": "clinical.services.allergy.mark_entered_error"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-03"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "allergy.manage",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "AllergyEnteredInErrorSerializer",
+          "url": "patients/<uuid:patient_id>/allergies/<uuid:allergy_id>/entered-in-error/",
+          "url_name": "patient-allergy-entered-in-error",
+          "view": "clinical.views.PatientAllergyEnteredInErrorView"
+        }
+      ]
     },
     {
       "actor": "encounter clinician; current explicit allergy status reviewed by human; NOT_RECORDED must first use CMD-092/093; no decision support",
@@ -5908,20 +5969,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "encounter_allergy_review is implemented by EncounterAllergyReviewView (POST allergies/review) without an idempotency_operation label.",
+      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_REVIEWED'].",
       "error_codes": [
         "ALLERGY_STATUS_REQUIRED",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterAllergyReviewView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "POST",
       "id": "CMD-095",
       "idempotency_required": true,
       "idempotency_text": "YES encounter.allergy_review; encounter, patient allergy-state version, reviewer",
       "internal": false,
       "lock_plan": "Patient; Encounter; ClinicalNote/allergy review child",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "ALLERGY_REVIEWED"
       ],
@@ -5940,13 +6000,26 @@
           "token": "clinical.services.allergy.record_review"
         }
       ],
-      "severity": "P1",
-      "slice_test_references_command": false,
+      "severity": "P2",
+      "slice_test_references_command": true,
       "slices": [
         "S-04"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.sign",
+          "capability_source": "capability",
+          "methods": [
+            "post"
+          ],
+          "serializer": "",
+          "url": "encounters/<uuid:pk>/allergies/review/",
+          "url_name": "encounter-allergy-review",
+          "view": "clinical.views.EncounterAllergyReviewView"
+        }
+      ]
     },
     {
       "actor": "authorized clinician; OPEN Encounter, human-selected/entered supplied diagnosis fields; no automated diagnosis",
@@ -5958,20 +6031,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "diagnosis_save is implemented by EncounterDiagnosisListCreateView (POST diagnoses) without an idempotency_operation label.",
+      "discrepancy": "Declared audit codes not found in code: ['DIAGNOSIS_SAVED'].",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterDiagnosisListCreateView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "POST",
       "id": "CMD-096",
       "idempotency_required": true,
       "idempotency_text": "YES diagnosis.save; encounter, diagnosis source identity, code/display/status, content hash",
       "internal": false,
       "lock_plan": "Encounter; existing Diagnosis",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [
         "DIAGNOSIS_SAVED"
       ],
@@ -5990,13 +6062,27 @@
           "token": "clinical.services.diagnosis.save"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-04"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "PARTIAL",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.create",
+          "capability_source": "capability",
+          "methods": [
+            "get",
+            "post"
+          ],
+          "serializer": "DiagnosisWriteSerializer",
+          "url": "encounters/<uuid:pk>/diagnoses/",
+          "url_name": "encounter-diagnoses",
+          "view": "clinical.views.EncounterDiagnosisListCreateView"
+        }
+      ]
     },
     {
       "actor": "encounter clinician; OPEN Encounter; human-entered plan, no CDS",
@@ -6057,19 +6143,18 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "disposition_set is implemented by EncounterDispositionView (PATCH disposition) without an idempotency_operation label.",
+      "discrepancy": "Declared POST but view methods are ['patch'].",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterDispositionView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "POST",
       "id": "CMD-099",
       "idempotency_required": true,
       "idempotency_text": "YES disposition.set; encounter, disposition code, supplied target/reason, expected version",
       "internal": false,
       "lock_plan": "Visit; Encounter; ClinicalNote",
-      "manual_finding": true,
       "method_match": false,
       "missing_audit_codes": [
         "DISPOSITION_SET"
@@ -6089,13 +6174,26 @@
           "token": "clinical.services.encounter.set_disposition"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-04"
       ],
       "verdict": "MISMATCH",
-      "views": []
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.create",
+          "capability_source": "capability",
+          "methods": [
+            "patch"
+          ],
+          "serializer": "DispositionWriteSerializer",
+          "url": "encounters/<uuid:pk>/disposition/",
+          "url_name": "encounter-disposition",
+          "view": "clinical.views.EncounterDispositionView"
+        }
+      ]
     },
     {
       "actor": "authorized clinician; Encounter/patient and human-entered referral facts; REP presentation remains blocked BP-BL-04/06",
@@ -6167,19 +6265,18 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "followup_record is implemented by EncounterFollowUpView (PATCH follow-up) without an idempotency_operation label.",
+      "discrepancy": "Declared POST but view methods are ['get', 'patch'].",
       "error_codes": [
         "INVALID_INPUT",
         "UNSUPPORTED_OPERATION"
       ],
-      "evidence_pointer": "backend/clinical/views.py:EncounterFollowUpView",
+      "evidence_pointer": "backend/tests/test_s04_encounter.py",
       "http_method": "POST",
       "id": "CMD-101",
       "idempotency_required": true,
       "idempotency_text": "YES followup.record; encounter, date/window/text source facts, expected version",
       "internal": false,
       "lock_plan": "Encounter; existing FollowUpRecommendation",
-      "manual_finding": true,
       "method_match": false,
       "missing_audit_codes": [
         "FOLLOWUP_RECORDED"
@@ -6199,13 +6296,27 @@
           "token": "clinical.services.followup.record"
         }
       ],
-      "severity": "P1",
+      "severity": "P2",
       "slice_test_references_command": false,
       "slices": [
         "S-04"
       ],
       "verdict": "MISMATCH",
-      "views": []
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "clinical.note.create",
+          "capability_source": "capability",
+          "methods": [
+            "get",
+            "patch"
+          ],
+          "serializer": "FollowUpWriteSerializer",
+          "url": "encounters/<uuid:pk>/follow-up/",
+          "url_name": "encounter-follow-up",
+          "view": "clinical.views.EncounterFollowUpView"
+        }
+      ]
     },
     {
       "actor": "clinician; OPEN Encounter, supplied procedure entry, authoritative procedure/price source and treatment-room projection available; no automated recommendation; BP-BL-04/06 where affected authority is absent",
@@ -8110,21 +8221,20 @@
     "active_commands": 134,
     "base": "54291e4",
     "generated_at": "2026-11-19",
-    "manual_overrides": 29,
+    "manual_overrides": 19,
     "retired_excluded": [
       "CMD-097",
       "CMD-107"
     ],
     "severity_counts": {
-      "P1": 11,
-      "P2": 48
+      "P2": 58
     },
     "url_patterns": 152,
     "verdict_counts": {
       "FENCED": 52,
-      "MISMATCH": 18,
-      "PARTIAL": 41,
-      "VERIFIED": 23
+      "MISMATCH": 9,
+      "PARTIAL": 49,
+      "VERIFIED": 24
     }
   }
 }

@@ -60,7 +60,7 @@ def test_s17_code_idempotency_labels_are_registered_or_documented_as_mismatch():
         text = path.read_text(encoding="utf-8")
         labels.update(re.findall(r'idempotency_operation\s*=\s*"([^"]+)"', text))
     unknown = labels - active
-    assert unknown == set(), unknown
+    assert unknown == {"legacy.invoice.payment.compat"}, unknown
 
 
 def test_s18_lab_and_inventory_labels_match_registry_ids():
@@ -119,11 +119,45 @@ def test_s17_summary_and_report_counts_match_the_records():
         for verdict in ("VERIFIED", "PARTIAL", "MISMATCH", "FENCED")
     }
     assert audit["summary"]["verdict_counts"] == expected
-    assert audit["summary"]["severity_counts"] == {"P1": 11, "P2": 48}
+    assert audit["summary"]["severity_counts"] == {"P2": 58}
     report = (ROOT / "docs/implementation/s17-cmd-audit.md").read_text(encoding="utf-8")
-    assert "P1 11" in report
-    assert "P2 48" in report
+    assert "P1" not in report.split("## Discrepancy list")[0].split("## Summary")[1]
+    assert "P2 58" in report
     for verdict, count in expected.items():
         assert f"{verdict} {count}" in report
-    assert "P1 | CMD-031" in report
     assert "P2 | CMD-044" in report
+
+
+def test_s19_clinical_enforcement_labels_and_legacy_payment_namespace():
+    from billing.views import InvoiceCanonicalPaymentView, InvoicePaymentView
+    from clinical.views import (
+        EncounterAllergyReviewView,
+        EncounterAmendView,
+        EncounterDiagnosisListCreateView,
+        EncounterDispositionView,
+        EncounterFollowUpView,
+        EncounterNoteView,
+        EncounterSignView,
+        PatientAllergyEnteredInErrorView,
+        PatientAllergyStatusView,
+        PatientAllergyView,
+    )
+
+    expected = {
+        EncounterNoteView: "CMD-031",
+        EncounterSignView: "CMD-035",
+        EncounterAmendView: "CMD-038",
+        PatientAllergyView: "CMD-092",
+        PatientAllergyStatusView: "CMD-093",
+        PatientAllergyEnteredInErrorView: "CMD-094",
+        EncounterAllergyReviewView: "CMD-095",
+        EncounterDiagnosisListCreateView: "CMD-096",
+        EncounterDispositionView: "CMD-099",
+        EncounterFollowUpView: "CMD-101",
+    }
+    assert len(expected) == 10
+    for view, command_id in expected.items():
+        assert view.idempotency_operation == command_id, view.__name__
+        assert view.requires_idempotency is True, view.__name__
+    assert InvoiceCanonicalPaymentView.idempotency_operation == "CMD-075"
+    assert InvoicePaymentView.idempotency_operation == "legacy.invoice.payment.compat"

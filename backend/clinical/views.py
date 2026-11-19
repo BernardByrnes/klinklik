@@ -373,6 +373,8 @@ def _allergy_state_response(*, snapshot, status_code=status.HTTP_200_OK, patient
 
 class PatientAllergyView(TenantAPIView):
     capability = "allergy.manage"
+    idempotency_operation = "CMD-092"
+    requires_idempotency = True
     serializer_class = AllergyCreateSerializer
     response_serializer_class = AllergyStateResponseSerializer
 
@@ -403,6 +405,8 @@ class PatientAllergyView(TenantAPIView):
 
 class PatientAllergyStatusView(TenantAPIView):
     capability = "allergy.manage"
+    idempotency_operation = "CMD-093"
+    requires_idempotency = True
     serializer_class = AllergyStatusWriteSerializer
     response_serializer_class = AllergyStateResponseSerializer
 
@@ -435,6 +439,8 @@ class PatientAllergyStatusView(TenantAPIView):
 
 class PatientAllergyEnteredInErrorView(TenantAPIView):
     capability = "allergy.manage"
+    idempotency_operation = "CMD-094"
+    requires_idempotency = True
     serializer_class = AllergyEnteredInErrorSerializer
     response_serializer_class = AllergyStateResponseSerializer
 
@@ -479,6 +485,8 @@ class PatientAllergyEnteredInErrorView(TenantAPIView):
 
 class EncounterAllergyReviewView(TenantAPIView):
     capability = "clinical.note.sign"
+    idempotency_operation = "CMD-095"
+    requires_idempotency = True
     response_serializer_class = AllergyStateResponseSerializer
 
     def post(self, request, pk):
@@ -581,6 +589,8 @@ class EncounterListCreateView(TenantAPIView):
 
 class EncounterDiagnosisListCreateView(TenantAPIView):
     capability = "clinical.note.create"
+    idempotency_operation = "CMD-096"
+    requires_idempotency = True
     serializer_class = DiagnosisWriteSerializer
     response_serializer_class = DiagnosisStateResponseSerializer
     response_is_list = False
@@ -635,6 +645,9 @@ class EncounterDiagnosisListCreateView(TenantAPIView):
 
 
 class EncounterDiagnosisDetailView(TenantAPIView):
+    # Registry CMD-097 (diagnosis_remove) is a RETIRED tombstone. This route
+    # supports draft diagnosis amendment/removal only; no active CMD exists to
+    # label, so it is intentionally left outside idempotency enforcement.
     capability = "clinical.note.create"
     serializer_class = DiagnosisWriteSerializer
     response_serializer_class = DiagnosisStateResponseSerializer
@@ -691,6 +704,8 @@ class EncounterDiagnosisDetailView(TenantAPIView):
 
 
 class EncounterDiagnosisRemoveView(TenantAPIView):
+    # See EncounterDiagnosisDetailView: the registry's remove command is retired.
+    # No active idempotency namespace is invented for this retained draft route.
     capability = "clinical.note.create"
     response_serializer_class = DiagnosisStateResponseSerializer
 
@@ -738,6 +753,8 @@ class EncounterDiagnosisRemoveView(TenantAPIView):
 
 class EncounterDispositionView(TenantAPIView):
     capability = "clinical.note.create"
+    idempotency_operation = "CMD-099"
+    requires_idempotency = True
     serializer_class = DispositionWriteSerializer
     response_serializer_class = DispositionResponseSerializer
 
@@ -775,6 +792,8 @@ class EncounterDispositionView(TenantAPIView):
 
 class EncounterFollowUpView(TenantAPIView):
     capability = "clinical.note.create"
+    idempotency_operation = "CMD-101"
+    requires_idempotency = True
     serializer_class = FollowUpWriteSerializer
     response_serializer_class = FollowUpStateResponseSerializer
     response_is_list = False
@@ -878,6 +897,8 @@ class EncounterDetailView(TenantAPIView):
 
 class EncounterNoteView(TenantAPIView):
     capability = "clinical.note.create"
+    idempotency_operation = "CMD-031"
+    requires_idempotency = True
     serializer_class = NoteWriteSerializer
     response_serializer_class = NoteResponseSerializer
 
@@ -915,6 +936,8 @@ class EncounterNoteView(TenantAPIView):
 
 class EncounterSignView(TenantAPIView):
     capability = "clinical.note.sign"
+    idempotency_operation = "CMD-035"
+    requires_idempotency = True
     operation_id = "signEncounter"
     serializer_class = NoteWriteSerializer
     response_serializer_class = NoteResponseSerializer
@@ -971,6 +994,8 @@ class EncounterSignView(TenantAPIView):
 
 class EncounterAmendView(TenantAPIView):
     capability = "clinical.note.amend"
+    idempotency_operation = "CMD-038"
+    requires_idempotency = True
     serializer_class = NoteAmendSerializer
     response_serializer_class = NoteResponseSerializer
 

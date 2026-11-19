@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 def note_headers(client, encounter_id):
     response = client.get(f"/api/v1/clinic/encounters/{encounter_id}/")
     assert response.status_code == 200
@@ -12,6 +14,7 @@ def establish_synthetic_nka_review(client, encounter_id):
         f"/api/v1/clinic/patients/{encounter.data['patient']}/allergy-status/",
         {"status": "NKA"},
         HTTP_IF_MATCH=encounter.data["allergy_state_etag"],
+        HTTP_IDEMPOTENCY_KEY=f"s19-helper-allergy-status-{uuid4()}",
         format="json",
     )
     assert status.status_code == 200, status.data
@@ -19,6 +22,7 @@ def establish_synthetic_nka_review(client, encounter_id):
         f"/api/v1/clinic/encounters/{encounter_id}/allergies/review/",
         {},
         HTTP_IF_MATCH=status.data["allergy_state_etag"],
+        HTTP_IDEMPOTENCY_KEY=f"s19-helper-allergy-review-{uuid4()}",
         format="json",
     )
     assert review.status_code == 200, review.data
@@ -33,6 +37,7 @@ def establish_synthetic_disposition(client, encounter_id, disposition="TREATED_A
         f"/api/v1/clinic/encounters/{encounter_id}/disposition/",
         {"disposition": disposition, "disposition_note": disposition_note},
         HTTP_IF_MATCH=encounter.data["consultation_etag"],
+        HTTP_IDEMPOTENCY_KEY=f"s19-helper-disposition-{uuid4()}",
         format="json",
     )
     assert response.status_code == 200, response.data
@@ -52,6 +57,7 @@ def establish_synthetic_final_diagnosis(client, encounter_id, *, include_disposi
             "is_primary": True,
         },
         HTTP_IF_MATCH=encounter.data["consultation_etag"],
+        HTTP_IDEMPOTENCY_KEY=f"s19-helper-diagnosis-{uuid4()}",
         format="json",
     )
     assert diagnosis.status_code == 201, diagnosis.data

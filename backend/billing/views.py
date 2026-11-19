@@ -172,7 +172,9 @@ class InvoicePaymentView(TenantAPIView):
     capability = "billing.payment.record"
     serializer_class = PaymentCreateSerializer
     response_serializer_class = PaymentSerializer
-    idempotency_operation = "CMD-075"
+    # Owner-authorised compatibility namespace: deliberately distinct from the
+    # canonical CMD-075 view so a non-idempotent legacy route cannot claim it.
+    idempotency_operation = "legacy.invoice.payment.compat"
     operation_id = "createInvoicePaymentLegacy"
 
     def post(self, request, pk):

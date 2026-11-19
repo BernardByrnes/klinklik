@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import re
 
 import pytest
 from rest_framework.test import APIClient
@@ -93,3 +94,41 @@ def authed_client(tenant):
     client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
     client.credentials(HTTP_AUTHORIZATION="Bearer " + response.data["access_token"])
     return client
+
+
+_S19_ENFORCED_PATH = re.compile(
+    r"/api/v1/(?:clinic|clinical)/(?:"
+    r"encounters/[^/]+/(?:notes|sign|amend|diagnoses|disposition|follow-up|allergies/review)"
+    r"|patients/[^/]+/(?:allergies|allergy-status)"
+    r")"
+)
+
+
+@pytest.fixture(autouse=True)
+def s19_legacy_test_idempotency(request, monkeypatch):
+    """Give legacy backend tests a unique key for newly enforced clinical calls.
+
+    Explicit S-19 tests opt out by module name so they can assert missing-key,
+    replay and conflict behaviour directly.
+    """
+    if request.module.__name__.endswith("test_s19_idempotency"):
+        return
+    from django.test import Client
+    import itertools
+
+    original_request = Client.request
+    counter = itertools.count(1)
+
+    def request_with_key(self, **kwargs):
+        path = kwargs.get("PATH_INFO", "")
+        method = kwargs.get("REQUEST_METHOD", "")
+        if (
+            method in {"POST", "PATCH", "PUT"}
+            and _S19_ENFORCED_PATH.search(path)
+            and "HTTP_IDEMPOTENCY_KEY" not in kwargs
+        ):
+            kwargs = dict(kwargs)
+            kwargs["HTTP_IDEMPOTENCY_KEY"] = f"s19-legacy-auto-{next(counter)}"
+        return original_request(self, **kwargs)
+
+    monkeypatch.setattr(Client, "request", request_with_key)

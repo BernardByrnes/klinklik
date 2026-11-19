@@ -8,26 +8,15 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 ## Summary
 
 - Active commands audited: 134 of 134; retired CMD-097 and CMD-107 excluded.
-- Verdicts: FENCED 52, MISMATCH 18, PARTIAL 41, VERIFIED 23.
+- Verdicts: FENCED 52, MISMATCH 9, PARTIAL 49, VERIFIED 24.
 - Machine inventory: `docs/implementation/s17-cmd-audit.json`; machine assertions: `backend/tests/test_s17_cmd_audit.py`.
-- Discrepancy severity: P1 11, P2 48.
-- Manual findings applied: 29.
+- Discrepancy severity: P2 58.
+- Manual findings applied: 19.
 
 ## Discrepancy list (severity ordered)
 
 | Severity | CMD | Operation | Verdict | Discrepancy | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| P1 | CMD-031 | encounter_draft_save | MISMATCH | encounter_draft_save is implemented by EncounterNoteView (POST/PATCH notes) which declares no idempotency_operation, so the registry idempotency namespace is absent. | `backend/clinical/views.py:EncounterNoteView` |
-| P1 | CMD-035 | encounter_sign | MISMATCH | encounter_sign is implemented by EncounterSignView (POST sign) which declares no idempotency_operation. | `backend/clinical/views.py:EncounterSignView` |
-| P1 | CMD-038 | encounter_addendum | MISMATCH | encounter_addendum is implemented by EncounterAmendView (POST amend) which declares no idempotency_operation. | `backend/clinical/views.py:EncounterAmendView` |
-| P1 | CMD-075 | payment_confirm_allocate | MISMATCH | Legacy InvoicePaymentView shares CMD-075 with the canonical InvoiceCanonicalPaymentView but does not set requires_idempotency; the same namespace covers a non-idempotent compatibility route. | `backend/billing/views.py:175,203` |
-| P1 | CMD-092 | patient_allergy_record | MISMATCH | patient_allergy_record is implemented by PatientAllergyView (POST allergies) without an idempotency_operation label. | `backend/clinical/views.py:PatientAllergyView` |
-| P1 | CMD-093 | patient_allergy_status_set | MISMATCH | patient_allergy_status_set is implemented by PatientAllergyStatusView (POST allergy-status) without an idempotency_operation label. | `backend/clinical/views.py:PatientAllergyStatusView` |
-| P1 | CMD-094 | allergy_entered_error | MISMATCH | allergy_entered_error is implemented by PatientAllergyEnteredInErrorView without an idempotency_operation label. | `backend/clinical/views.py:PatientAllergyEnteredInErrorView` |
-| P1 | CMD-095 | encounter_allergy_review | MISMATCH | encounter_allergy_review is implemented by EncounterAllergyReviewView (POST allergies/review) without an idempotency_operation label. | `backend/clinical/views.py:EncounterAllergyReviewView` |
-| P1 | CMD-096 | diagnosis_save | MISMATCH | diagnosis_save is implemented by EncounterDiagnosisListCreateView (POST diagnoses) without an idempotency_operation label. | `backend/clinical/views.py:EncounterDiagnosisListCreateView` |
-| P1 | CMD-099 | disposition_set | MISMATCH | disposition_set is implemented by EncounterDispositionView (PATCH disposition) without an idempotency_operation label. | `backend/clinical/views.py:EncounterDispositionView` |
-| P1 | CMD-101 | followup_record | MISMATCH | followup_record is implemented by EncounterFollowUpView (PATCH follow-up) without an idempotency_operation label. | `backend/clinical/views.py:EncounterFollowUpView` |
 | P2 | CMD-001 | visit_check_in | VERIFIED | Legacy scheduling.CheckInView also exposes a POST check-ins route without declaring CMD-001; the canonical CMD-001 view is correctly labelled. | `backend/scheduling/views.py` |
 | P2 | CMD-002 | patient_register | VERIFIED | Legacy patients.PatientListCreateView also exposes a POST patient-create route without declaring CMD-002; the canonical reception view is correctly labelled. | `backend/patients/views.py` |
 | P2 | CMD-007 | visit_close_lwbs | PARTIAL | Declared audit codes not found in code: ['INVOICE_STATE', 'QUEUE_LWBS']. | `backend/tests/test_s01_reception.py` |
@@ -41,6 +30,8 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-027 | triage_complete | PARTIAL | TriageView and TriageRecordCompleteView both declare CMD-027; they are MIG-002 mode-gated compatibility/canonical routes, so no simultaneous collision was proven, but one namespace serves two routes. | `backend/clinical/views.py:119,1287` |
 | P2 | CMD-030 | encounter_open | PARTIAL | Declared audit codes not found in code: ['ENCOUNTER_RESUMED']. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-034 | encounter_resume | PARTIAL | encounter_resume service exists but no dedicated route declares CMD-034; resume appears folded into the encounter open path under CMD-030. | `backend/clinical/services.py` |
+| P2 | CMD-035 | encounter_sign | PARTIAL | Declared audit codes not found in code: ['CLINICAL_NOTE_SIGNED', 'QUEUE_COMPLETED']. | `backend/tests/test_s04_encounter.py` |
+| P2 | CMD-038 | encounter_addendum | PARTIAL | Declared audit codes not found in code: ['CLINICAL_NOTE_AMENDED']. | `backend/tests/test_s04_encounter.py` |
 | P2 | CMD-039 | encounter_transfer_takeover | PARTIAL | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. | `backend/clinical/services.py` |
 | P2 | CMD-040 | lab_order | PARTIAL | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-042 | lab_collect | PARTIAL | Declared audit codes not found in code: ['QUEUE_COMPLETED']. | `backend/tests/test_s02_queue.py` |
@@ -60,6 +51,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-069 | stock_dispose | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-071 | invoice_issue | MISMATCH | invoice_issue is also exposed by InvoiceListCreateView (POST invoices/) without declaring CMD-071; the canonical issue path runs through visit check-in. | `backend/billing/views.py:InvoiceListCreateView` |
 | P2 | CMD-073 | invoice_manual_line_add | PARTIAL | Declared audit codes not found in code: ['INVOICE_MANUAL_LINE_ADDED']. | `backend/tests/test_s05_billing.py` |
+| P2 | CMD-075 | payment_confirm_allocate | PARTIAL | Owner-authorised compatibility namespace: legacy InvoicePaymentView uses 'legacy.invoice.payment.compat' and is allowlisted in the machine test; canonical InvoiceCanonicalPaymentView retains CMD-075. No route retired. | `backend/billing/views.py:175,205` |
 | P2 | CMD-076 | payment_reverse | PARTIAL | Declared audit codes not found in code: ['ALLOCATIONS_REVERSED', 'INVOICE_STATE']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-077 | credit_note_create | PARTIAL | Declared audit codes not found in code: ['CREDIT_NOTE_CREATED', 'INVOICE_STATE']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-079 | refund_process | PARTIAL | Declared audit codes not found in code: ['REFUND_PROCESSED']. | `backend/tests/test_s05_billing.py` |
@@ -68,6 +60,13 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-087 | appointment_no_show_check_in | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s01_reception.py` |
 | P2 | CMD-088 | medication_product_create | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-089 | product_price_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
+| P2 | CMD-092 | patient_allergy_record | PARTIAL | Declared audit codes not found in code: ['ALLERGY_RECORDED']. | `backend/tests/test_s03_triage.py` |
+| P2 | CMD-093 | patient_allergy_status_set | PARTIAL | Declared audit codes not found in code: ['ALLERGY_STATUS_SET']. | `backend/tests/test_s03_triage.py` |
+| P2 | CMD-094 | allergy_entered_error | PARTIAL | Declared audit codes not found in code: ['ALLERGY_ENTERED_ERROR']. | `backend/tests/test_s03_triage.py` |
+| P2 | CMD-095 | encounter_allergy_review | PARTIAL | Declared audit codes not found in code: ['ALLERGY_REVIEWED']. | `backend/tests/test_s04_encounter.py` |
+| P2 | CMD-096 | diagnosis_save | PARTIAL | Declared audit codes not found in code: ['DIAGNOSIS_SAVED']. | `backend/tests/test_s04_encounter.py` |
+| P2 | CMD-099 | disposition_set | MISMATCH | Declared POST but view methods are ['patch']. | `backend/tests/test_s04_encounter.py` |
+| P2 | CMD-101 | followup_record | MISMATCH | Declared POST but view methods are ['get', 'patch']. | `backend/tests/test_s04_encounter.py` |
 | P2 | CMD-104 | stock_location_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-105 | supplier_upsert | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-106 | payment_method_configure | MISMATCH | payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106. | `backend/billing/views.py:PaymentMethodListView` |
@@ -165,14 +164,14 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-028 | triage_amend | S-03 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-029 | repeat_vitals_record | S-03 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-030 | encounter_open | S-02,S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ENCOUNTER_RESUMED']. |
-| CMD-031 | encounter_draft_save | S-04,S-13 | YES | MISMATCH | P1 | encounter_draft_save is implemented by EncounterNoteView (POST/PATCH notes) which declares no idempotency_operation, so the registry idempotency namespace is absent. |
+| CMD-031 | encounter_draft_save | S-04,S-13 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s04_encounter.py`. |
 | CMD-032 | encounter_park_awaiting_results | S-02,S-04,S-13 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-033 | encounter_results_readiness | S-02,S-11,S-13 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-034 | encounter_resume | S-02,S-04,S-13 | YES | PARTIAL | P2 | encounter_resume service exists but no dedicated route declares CMD-034; resume appears folded into the encounter open path under CMD-030. |
-| CMD-035 | encounter_sign | S-04,S-14 | YES | MISMATCH | P1 | encounter_sign is implemented by EncounterSignView (POST sign) which declares no idempotency_operation. |
+| CMD-035 | encounter_sign | S-04,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['CLINICAL_NOTE_SIGNED', 'QUEUE_COMPLETED']. |
 | CMD-036 | encounter_sign_pending | S-02,S-04,S-13,S-14 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-037 | encounter_void_entered_error | S-04 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
-| CMD-038 | encounter_addendum | S-04,S-11 | YES | MISMATCH | P1 | encounter_addendum is implemented by EncounterAmendView (POST amend) which declares no idempotency_operation. |
+| CMD-038 | encounter_addendum | S-04,S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['CLINICAL_NOTE_AMENDED']. |
 | CMD-039 | encounter_transfer_takeover | S-04 | YES | PARTIAL | P2 | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. |
 | CMD-040 | lab_order | S-05,S-11,S-13,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. |
 | CMD-041 | lab_gate_release | S-11,S-13 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
@@ -209,7 +208,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-072 | invoice_source_line_add | S-04,S-05,S-09,S-11,S-12 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-073 | invoice_manual_line_add | S-05 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['INVOICE_MANUAL_LINE_ADDED']. |
 | CMD-074 | invoice_line_void | S-05,S-11 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s05_billing.py`. |
-| CMD-075 | payment_confirm_allocate | S-05,S-11,S-12,S-13 | YES | MISMATCH | P1 | Legacy InvoicePaymentView shares CMD-075 with the canonical InvoiceCanonicalPaymentView but does not set requires_idempotency; the same namespace covers a non-idempotent compatibility route. |
+| CMD-075 | payment_confirm_allocate | S-05,S-11,S-12,S-13 | YES | PARTIAL | P2 | Owner-authorised compatibility namespace: legacy InvoicePaymentView uses 'legacy.invoice.payment.compat' and is allowlisted in the machine test; canonical InvoiceCanonicalPaymentView retains CMD-075. No route retired. |
 | CMD-076 | payment_reverse | S-05,S-06 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ALLOCATIONS_REVERSED', 'INVOICE_STATE']. |
 | CMD-077 | credit_note_create | S-05,S-06,S-11,S-12,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['CREDIT_NOTE_CREATED', 'INVOICE_STATE']. |
 | CMD-078 | refund_request | S-05,S-06,S-11,S-12 | YES | FENCED | P3 | RefundFencedView and RefundRejectFencedView both declare CMD-078, but both refuse the command until §973 MFA authority; no state-changing route is active. |
@@ -226,15 +225,15 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-089 | product_price_set | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-090 | medication_product_deactivate | S-09 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-091 | catalogue_import | S-09,S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
-| CMD-092 | patient_allergy_record | S-03,S-04,S-13 | YES | MISMATCH | P1 | patient_allergy_record is implemented by PatientAllergyView (POST allergies) without an idempotency_operation label. |
-| CMD-093 | patient_allergy_status_set | S-03 | YES | MISMATCH | P1 | patient_allergy_status_set is implemented by PatientAllergyStatusView (POST allergy-status) without an idempotency_operation label. |
-| CMD-094 | allergy_entered_error | S-03 | YES | MISMATCH | P1 | allergy_entered_error is implemented by PatientAllergyEnteredInErrorView without an idempotency_operation label. |
-| CMD-095 | encounter_allergy_review | S-04 | YES | MISMATCH | P1 | encounter_allergy_review is implemented by EncounterAllergyReviewView (POST allergies/review) without an idempotency_operation label. |
-| CMD-096 | diagnosis_save | S-04 | YES | MISMATCH | P1 | diagnosis_save is implemented by EncounterDiagnosisListCreateView (POST diagnoses) without an idempotency_operation label. |
+| CMD-092 | patient_allergy_record | S-03,S-04,S-13 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ALLERGY_RECORDED']. |
+| CMD-093 | patient_allergy_status_set | S-03 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ALLERGY_STATUS_SET']. |
+| CMD-094 | allergy_entered_error | S-03 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ALLERGY_ENTERED_ERROR']. |
+| CMD-095 | encounter_allergy_review | S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['ALLERGY_REVIEWED']. |
+| CMD-096 | diagnosis_save | S-04 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['DIAGNOSIS_SAVED']. |
 | CMD-098 | treatment_plan_save | S-04 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
-| CMD-099 | disposition_set | S-04 | YES | MISMATCH | P1 | disposition_set is implemented by EncounterDispositionView (PATCH disposition) without an idempotency_operation label. |
+| CMD-099 | disposition_set | S-04 | YES | MISMATCH | P2 | Declared POST but view methods are ['patch']. |
 | CMD-100 | referral_letter_create | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-101 | followup_record | S-04 | YES | MISMATCH | P1 | followup_record is implemented by EncounterFollowUpView (PATCH follow-up) without an idempotency_operation label. |
+| CMD-101 | followup_record | S-04 | YES | MISMATCH | P2 | Declared POST but view methods are ['get', 'patch']. |
 | CMD-102 | procedure_order | S-04,S-05,S-14 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-103 | medical_certificate_issue | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-104 | stock_location_configure | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
@@ -279,4 +278,4 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 - FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.
 - At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.
 - Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.
-- A systemic finding of this manual pass is mutating views with no `idempotency_operation` at all (clinical note/sign/diagnosis/disposition/allergy/follow-up, legacy patient/check-in/claim/create routes). These are MISMATCH rows because the registry requires idempotency for every active CMD; no route or code was added to repair them.
+- S-19 closed the clinical P1 class: ten active clinical views now carry their registry CMD id and `requires_idempotency=True`. EncounterDiagnosisDetailView/RemoveView remain unlabelled by design: registry CMD-097 is a retired tombstone and no active id was invented. P1 count is now zero; all remaining discrepancy rows are P2 owner-deferred findings (verbs, duplicate legacy routes, compatibility namespaces, audit-name/test-naming limits).

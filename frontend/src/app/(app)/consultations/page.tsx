@@ -2745,6 +2745,19 @@ function ConsultationsWorkspace() {
     version: number;
   } | null>(null);
 
+  const clinicalIntentKeysRef = useRef<Map<string, string>>(new Map());
+
+  function clinicalIntentKey(intent: string, identity: unknown) {
+    // One key per clinical intent and revision. Retries of the same intent
+    // reuse it; a changed body or If-Match revision is a new intent.
+    const cacheId = intent + ":" + JSON.stringify(identity);
+    const existing = clinicalIntentKeysRef.current.get(cacheId);
+    if (existing) return existing;
+    const key = newIdempotencyKey(intent);
+    clinicalIntentKeysRef.current.set(cacheId, key);
+    return key;
+  }
+
   function encounterIntentKey(queueEntryId: string, version: number) {
     // One idempotency key per intent: the same consultation row at the same
     // version. A refreshed row version is a new action and gets a new key.
@@ -2828,7 +2841,10 @@ function ConsultationsWorkspace() {
     mutationFn: ({ patientId, status, etag }) =>
       apiRequest<AllergyStateResponse>("/api/v1/clinic/patients/" + patientId + "/allergy-status/", {
         method: "POST",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("allergy-status-set", { patientId, status, etag }),
+        },
         body: JSON.stringify({ status }),
       }),
     onMutate: (variables) => {
@@ -2858,6 +2874,9 @@ function ConsultationsWorkspace() {
     mutationFn: ({ patientId, values }) =>
       apiRequest<AllergyStateResponse>("/api/v1/clinic/patients/" + patientId + "/allergies/", {
         method: "POST",
+        headers: {
+          "Idempotency-Key": clinicalIntentKey("allergy-record", { patientId, values }),
+        },
         body: JSON.stringify({
           substance: values.substance,
           reaction: values.reaction,
@@ -2891,7 +2910,10 @@ function ConsultationsWorkspace() {
     mutationFn: ({ patientId, allergyId, reason, etag }) =>
       apiRequest<AllergyStateResponse>("/api/v1/clinic/patients/" + patientId + "/allergies/" + allergyId + "/entered-in-error/", {
         method: "POST",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("allergy-entered-in-error", { patientId, allergyId, reason, etag }),
+        },
         body: JSON.stringify({ reason }),
       }),
     onMutate: (variables) => {
@@ -2921,7 +2943,10 @@ function ConsultationsWorkspace() {
     mutationFn: ({ encounterId, etag }) =>
       apiRequest<AllergyStateResponse>("/api/v1/clinic/encounters/" + encounterId + "/allergies/review/", {
         method: "POST",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("allergy-review", { encounterId, etag }),
+        },
         body: JSON.stringify({}),
       }),
     onMutate: (variables) => {
@@ -2982,7 +3007,10 @@ function ConsultationsWorkspace() {
     mutationFn: ({ encounterId, etag, values }) =>
       apiRequest<FollowUpSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/follow-up/", {
         method: "PATCH",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("follow-up-save", { encounterId, etag, values }),
+        },
         body: JSON.stringify({
           recommended_date: values.recommendedDate || null,
           instructions: values.instructions,
@@ -3210,7 +3238,10 @@ function ConsultationsWorkspace() {
     mutationFn: ({ encounterId, etag, disposition, disposition_note }) =>
       apiRequest<DispositionSaveResponse>("/api/v1/clinic/encounters/" + encounterId + "/disposition/", {
         method: "PATCH",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("disposition-save", { encounterId, etag, disposition, disposition_note }),
+        },
         body: JSON.stringify({ disposition, disposition_note }),
       }),
     onMutate: (variables) => {
@@ -3537,7 +3568,10 @@ function ConsultationsWorkspace() {
           : "/api/v1/clinic/encounters/" + encounterId + "/diagnoses/" + diagnosisId + "/remove/";
       return apiRequest<DiagnosisStateResponse>(path, {
         method: action === "create" ? "POST" : action === "update" ? "PATCH" : "POST",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("diagnosis-" + action, { encounterId, diagnosisId, etag, payload }),
+        },
         body: JSON.stringify(action === "remove" ? {} : payload ?? {}),
       });
     },
@@ -3667,6 +3701,7 @@ function ConsultationsWorkspace() {
           method: "PATCH",
           headers: {
             "If-Match": etag,
+            "Idempotency-Key": clinicalIntentKey("encounter-note-save", { encounterId, etag, content, complaints: complaintSnapshot }),
             ...(origin === "autosave" ? { "X-KlinKlik-Autosave": "1" } : {}),
           },
           body: JSON.stringify({
@@ -3955,7 +3990,10 @@ function ConsultationsWorkspace() {
     mutationFn: ({ content, complaintSnapshot, encounterId, etag }) =>
       apiRequest<NoteSignResponse>("/api/v1/clinic/encounters/" + encounterId + "/sign/", {
         method: "POST",
-        headers: { "If-Match": etag },
+        headers: {
+          "If-Match": etag,
+          "Idempotency-Key": clinicalIntentKey("encounter-sign", { encounterId, etag, content, complaints: complaintSnapshot }),
+        },
         body: JSON.stringify({
           content,
           ...(complaintSnapshot !== undefined ? { complaints: complaintSnapshot } : {}),
