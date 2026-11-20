@@ -266,6 +266,7 @@ def add_allergy(*, organisation, facility, patient, actor, substance, reaction, 
         action="CREATE",
         entity_type="Allergy",
         entity_id=allergy.id,
+        event_code="ALLERGY_RECORDED",
         after={
             "status": "ACTIVE",
             "changed_fields": ["status", "recorded_at"],
@@ -338,6 +339,7 @@ def set_allergy_status(*, organisation, facility, patient, actor, status, expect
         action="CREATE" if previous_status == ALLERGY_STATUS_NOT_RECORDED and state.revision == 1 else "UPDATE",
         entity_type="PatientAllergyState",
         entity_id=state.id,
+        event_code="ALLERGY_STATUS_SET",
         before={"status": previous_status},
         after={
             "status": state.status,
@@ -433,6 +435,7 @@ def enter_allergy_in_error(
         action="UPDATE",
         entity_type="Allergy",
         entity_id=locked_allergy.id,
+        event_code="ALLERGY_ENTERED_ERROR",
         after={
             "status": "ENTERED_IN_ERROR",
             "changed_fields": [
@@ -503,6 +506,7 @@ def review_encounter_allergies(*, organisation, facility, actor, encounter, expe
         action="UPDATE",
         entity_type="Encounter",
         entity_id=locked_encounter.id,
+        event_code="ALLERGY_REVIEWED",
         after={
             "changed_fields": [
                 "allergies_reviewed_at",

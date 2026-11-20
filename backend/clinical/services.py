@@ -428,6 +428,7 @@ def amend_note(*, organisation, facility, actor, encounter, content, reason, exp
         action="AMEND",
         entity_type="ClinicalNote",
         entity_id=note.id,
+        event_code="CLINICAL_NOTE_AMENDED",
         after={"version": version.version_number, "reason": reason, "content_hash": version.content_hash},
         reason=reason,
     )

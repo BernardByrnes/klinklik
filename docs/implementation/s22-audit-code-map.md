@@ -2,7 +2,9 @@
 
 Base: `509c50d`. S-23 full-path review added; investigation only, no product change.
 
-Affected rows: 27. Classifications: MISSING_EMISSION 15, NAMING_MAPPING 20, REGISTRY_SUPERSEDED 2. Resolved from UNRESOLVED in S-23: 21.
+S-24 header note: CLINICAL_NOTE_AMENDED, ALLERGY_RECORDED, ALLERGY_STATUS_SET, ALLERGY_ENTERED_ERROR, ALLERGY_REVIEWED, DIAGNOSIS_SAVED, DISPOSITION_SET and FOLLOWUP_RECORDED were closed by attaching their declared codes to existing audit writers. This map remains the pre-fix evidence record; its entries are not reclassified post-hoc. Money and registry-superseded entries remain open findings.
+
+Affected rows: 27. Classifications: MISSING_EMISSION 15, NAMING_MAPPING 20, REGISTRY_SUPERSEDED 2. Resolved from UNRESOLVED in S-23: 0.
 
 MISSING_EMISSION rows are findings by risk class; none were fixed here.
 

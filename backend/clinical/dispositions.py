@@ -167,6 +167,7 @@ def set_disposition(*, organisation, facility, actor, encounter, data, expected_
             action="UPDATE",
             entity_type="Encounter",
             entity_id=encounter.id,
+            event_code="DISPOSITION_SET",
             before=before,
             after={
                 **after,

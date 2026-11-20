@@ -2317,7 +2317,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['CLINICAL_NOTE_AMENDED'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
@@ -2330,9 +2330,7 @@
       "internal": false,
       "lock_plan": "Encounter; ClinicalNote",
       "method_match": true,
-      "missing_audit_codes": [
-        "CLINICAL_NOTE_AMENDED"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "encounter_addendum",
@@ -5765,7 +5763,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_RECORDED'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "ALREADY_EXISTS",
         "REQUIRED_FIELD_MISSING"
@@ -5778,9 +5776,7 @@
       "internal": false,
       "lock_plan": "Patient; existing PatientAllergy; PatientAllergyState",
       "method_match": true,
-      "missing_audit_codes": [
-        "ALLERGY_RECORDED"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [
         "REQUIRED_FIELD_MISSING"
       ],
@@ -5831,7 +5827,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_STATUS_SET'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
@@ -5844,9 +5840,7 @@
       "internal": false,
       "lock_plan": "Patient; PatientAllergyState",
       "method_match": true,
-      "missing_audit_codes": [
-        "ALLERGY_STATUS_SET"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "patient_allergy_status_set",
@@ -5893,7 +5887,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_ENTERED_ERROR'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
@@ -5906,9 +5900,7 @@
       "internal": false,
       "lock_plan": "Patient; PatientAllergy",
       "method_match": true,
-      "missing_audit_codes": [
-        "ALLERGY_ENTERED_ERROR"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "allergy_entered_error",
@@ -5955,7 +5947,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['ALLERGY_REVIEWED'].",
+      "discrepancy": "",
       "error_codes": [
         "ALLERGY_STATUS_REQUIRED",
         "VERSION_CONFLICT"
@@ -5968,9 +5960,7 @@
       "internal": false,
       "lock_plan": "Patient; Encounter; ClinicalNote/allergy review child",
       "method_match": true,
-      "missing_audit_codes": [
-        "ALLERGY_REVIEWED"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "encounter_allergy_review",
@@ -5991,7 +5981,7 @@
       "slices": [
         "S-04"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -6017,7 +6007,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['DIAGNOSIS_SAVED'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
@@ -6030,9 +6020,7 @@
       "internal": false,
       "lock_plan": "Encounter; existing Diagnosis",
       "method_match": true,
-      "missing_audit_codes": [
-        "DIAGNOSIS_SAVED"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "diagnosis_save",
@@ -6129,7 +6117,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['DISPOSITION_SET'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
@@ -6142,9 +6130,7 @@
       "internal": false,
       "lock_plan": "Visit; Encounter; ClinicalNote",
       "method_match": true,
-      "missing_audit_codes": [
-        "DISPOSITION_SET"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "disposition_set",
@@ -6251,7 +6237,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Declared audit codes not found in code: ['FOLLOWUP_RECORDED'].",
+      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
       "error_codes": [
         "INVALID_INPUT",
         "UNSUPPORTED_OPERATION"
@@ -6264,9 +6250,7 @@
       "internal": false,
       "lock_plan": "Encounter; existing FollowUpRecommendation",
       "method_match": true,
-      "missing_audit_codes": [
-        "FOLLOWUP_RECORDED"
-      ],
+      "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.clinical",
       "operation": "followup_record",
@@ -8225,14 +8209,14 @@
       "CMD-107"
     ],
     "severity_counts": {
-      "P2": 55
+      "P2": 54
     },
     "url_patterns": 152,
     "verdict_counts": {
       "FENCED": 52,
       "MISMATCH": 2,
-      "PARTIAL": 53,
-      "VERIFIED": 27
+      "PARTIAL": 52,
+      "VERIFIED": 28
     }
   }
 }

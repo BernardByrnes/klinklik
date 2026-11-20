@@ -258,6 +258,7 @@ def save_follow_up(
             action=action,
             entity_type="FollowUpRecommendation",
             entity_id=follow_up.id,
+            event_code="FOLLOWUP_RECORDED",
             before=before,
             after=after,
         )

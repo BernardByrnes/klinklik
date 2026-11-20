@@ -210,6 +210,7 @@ def create_diagnosis(*, organisation, facility, actor, encounter, data, expected
         action="CREATE",
         entity_type="Diagnosis",
         entity_id=diagnosis.id,
+        event_code="DIAGNOSIS_SAVED",
         after=_audit_state(diagnosis),
     )
     return _result(encounter=encounter, note=note, diagnosis=diagnosis)
@@ -244,6 +245,7 @@ def update_diagnosis(*, organisation, facility, actor, encounter, diagnosis_id, 
         action="UPDATE",
         entity_type="Diagnosis",
         entity_id=diagnosis.id,
+        event_code="DIAGNOSIS_SAVED",
         before=before,
         after=_audit_state(diagnosis),
     )
@@ -279,6 +281,7 @@ def remove_diagnosis(*, organisation, facility, actor, encounter, diagnosis_id, 
         action="UPDATE",
         entity_type="Diagnosis",
         entity_id=diagnosis.id,
+        event_code="DIAGNOSIS_SAVED",
         before=before,
         after={
             "encounter_id": str(diagnosis.encounter_id),
