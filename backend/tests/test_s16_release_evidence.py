@@ -82,11 +82,13 @@ def test_s16_dossier_states_scope_and_non_authorization():
     dossier = (ROOT / "docs/release/v1-evidence.md").read_text(encoding="utf-8")
     assert "Deployment is not authorized" in dossier
     assert "J-05 ANC" in dossier
-    assert "440 passed, 92 skipped" in dossier
+    # Exact refreshed counts are pinned by test_s26_evidence_dossier.py.
+    assert "passed, 92 skipped" in dossier
     assert "102,184 bytes" in dossier
-    assert "S-12 CMD idempotency labels were mismatched with the registry — FIXED" in dossier
-    assert "evidence index, not a branch-by-branch contract audit" in dossier
-    assert "Plan-16 scope gaps" in dossier
+    # S-16 historical findings are now carried as evidence-at-SHA; the refreshed
+    # dossier names the slices that superseded them instead of repeating them.
+    assert "S-18" in dossier and "S-24" in dossier
+    assert "evidence-at-SHA" in dossier
 
 
 def test_s16_pharmacy_views_use_the_registry_command_identifiers():
