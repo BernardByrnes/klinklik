@@ -1,7 +1,7 @@
 import hashlib
 import json
 
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -44,6 +44,8 @@ class TenantAPIView(APIView):
         self.format_kwarg = self.get_format_suffix(**kwargs)
         request.accepted_renderer, request.accepted_media_type = self.perform_content_negotiation(request)
         self.perform_authentication(request)
+        if getattr(request, "organisation", None) is None:
+            raise NotAuthenticated("Authentication credentials were not provided.")
         with tenant_atomic(request.organisation.id):
             facility_id = request.headers.get("X-Facility-Id")
             facilities = Facility.objects.filter(

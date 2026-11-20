@@ -6,9 +6,15 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest, ApiRequestError, newIdempotencyKey } from "../../../lib/api";
-import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import {
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  protectedQueryKey,
+  useProtectedQueryKey,
+} from "../../../lib/authority";
 import { useConnectivity } from "../../../lib/connectivity";
-import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { isIntentActive, registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { shouldRegisterIntent } from "../../../lib/recovery";
 import { useSession } from "../../../lib/session";
 import {
   ArrivalEnquiryResponse,
@@ -269,6 +275,7 @@ function PatientsWorkspace() {
         },
         registerIdempotencyKey.current ?? (registerIdempotencyKey.current = newIdempotencyKey("patient-register")),
       ),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: async (result) => {
       if (result.next_action === "RESOLVE_DUPLICATE") {
         registerIdempotencyKey.current = null;
@@ -314,21 +321,21 @@ function PatientsWorkspace() {
       setNextOfKinPhone("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patients") });
     },
-    onError: (reason) => {
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) {
+    onError: (reason, _variables, authority) => {
+      if (!shouldRegisterIntent(reason)) {
         registerIdempotencyKey.current = null;
         resolveIntent(registerIntentRef.current);
         registerIntentRef.current = null;
-      } else if (!registerIntentRef.current) {
-        registerIntentRef.current = registerIntentRef.current ?? registerIntent({
+      } else {
+        if (!isIntentActive(registerIntentRef.current)) registerIntentRef.current = null;
+        registerIntentRef.current = registerIntent({
           operation: "patient-registration",
           target: "new-patient",
-          retry: async () => createPatient.mutate(undefined),
+          authority,
+          retry: async () => {
+            if (!authority || !isCurrentAuthority(authority)) return;
+            await createPatient.mutateAsync(undefined).catch(() => undefined);
+          },
         });
       }
       setNotice("");
@@ -351,6 +358,7 @@ function PatientsWorkspace() {
             }
           : {}),
       }, checkInIdempotencyKey.current ?? (checkInIdempotencyKey.current = newIdempotencyKey("visit-check-in"))),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (result) => {
       checkInIdempotencyKey.current = null;
       resolveIntent(checkInIntentRef.current);
@@ -370,21 +378,21 @@ function PatientsWorkspace() {
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patient-check-in-summary", selected?.id) });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("visit-context", result.visit_id) });
     },
-    onError: (reason) => {
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) {
+    onError: (reason, _variables, authority) => {
+      if (!shouldRegisterIntent(reason)) {
         checkInIdempotencyKey.current = null;
         resolveIntent(checkInIntentRef.current);
         checkInIntentRef.current = null;
-      } else if (!checkInIntentRef.current) {
+      } else {
+        if (!isIntentActive(checkInIntentRef.current)) checkInIntentRef.current = null;
         checkInIntentRef.current = registerIntent({
           operation: "visit-check-in",
           target: "selected-visit",
-          retry: async () => checkIn.mutate(),
+          authority,
+          retry: async () => {
+            if (!authority || !isCurrentAuthority(authority)) return;
+            await checkIn.mutateAsync().catch(() => undefined);
+          },
         });
       }
       setNotice("");

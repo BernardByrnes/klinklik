@@ -28,20 +28,37 @@ function publish() {
 export function registerIntent(input: {
   operation: string;
   target: string;
+  authority?: AuthoritySnapshot | undefined;
   retry: () => Promise<void>;
 }): string {
+  const existing = [...intents.values()].find(
+    (intent) => intent.operation === input.operation && intent.target === input.target,
+  );
+  if (existing) {
+    intents.set(existing.id, {
+      ...existing,
+      authority: input.authority ?? existing.authority,
+      retry: input.retry,
+    });
+    publish();
+    return existing.id;
+  }
   counter += 1;
   const id = `intent-${counter}`;
   intents.set(id, {
     id,
     operation: input.operation,
     target: input.target,
-    authority: getAuthoritySnapshot(),
+    authority: input.authority ?? getAuthoritySnapshot(),
     createdAt: Date.now(),
     retry: input.retry,
   });
   publish();
   return id;
+}
+
+export function isIntentActive(id: string | null | undefined): boolean {
+  return Boolean(id && intents.has(id));
 }
 
 export function resolveIntent(id: string | null | undefined) {

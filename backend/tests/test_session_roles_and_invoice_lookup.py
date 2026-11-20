@@ -297,3 +297,13 @@ def test_invoice_list_is_tenant_scoped(tenant, authed_client):
     assert {item["invoice_no"] for item in response.data} == {invoice["invoice_no"]}
     response = authed_client.get("/api/v1/billing/invoices/?status=ISSUED")
     assert all(item["invoice_no"] != invoice["invoice_no"] + "-X" for item in response.data)
+
+
+def test_protected_requests_without_bearer_return_401():
+    """S-35 Fix 3: missing credentials fail at authentication, not in tenant setup."""
+
+    client = APIClient()
+    patient_list = client.get("/api/v1/patients/")
+    assert patient_list.status_code == 401, patient_list.data
+    logout = client.post("/api/v1/auth/logout/", {}, format="json")
+    assert logout.status_code == 401, logout.data

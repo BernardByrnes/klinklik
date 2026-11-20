@@ -195,3 +195,18 @@ def test_postgres_cross_tenant_patient_access_is_404(tenant, authed_client):
     assert other_facility.organisation_id == other_org.id
     response = authed_client.get(f"/api/v1/patients/{other_patient.id}/")
     assert response.status_code == 404
+
+
+def test_missing_bearer_returns_401_without_tenant_bootstrap(tenant):
+    """S-35 Fix 3 (PG): missing Bearer input fails before tenant context opens."""
+
+    require_postgres()
+    client = APIClient()
+    with CaptureQueriesContext(connection) as captured:
+        patient_list = client.get("/api/v1/patients/")
+        logout = client.post("/api/v1/auth/logout/", {}, format="json")
+    assert patient_list.status_code == 401, patient_list.data
+    assert logout.status_code == 401, logout.data
+    sql = query_text(captured)
+    assert not any(table in sql for table in FORBIDDEN_BOOTSTRAP_TABLES)
+    assert_tenant_context_cleared()

@@ -4,9 +4,15 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
-import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import {
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  protectedQueryKey,
+  useProtectedQueryKey,
+} from "../../../lib/authority";
 import { useConnectivity } from "../../../lib/connectivity";
-import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { isIntentActive, registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { shouldRegisterIntent } from "../../../lib/recovery";
 import { useSession } from "../../../lib/session";
 import { IconBilling, IconCheckCircle } from "../../../components/icons";
 import {
@@ -219,11 +225,18 @@ export default function InventoryPage() {
   const defaultLocation =
     locations.data?.find((item) => item.is_default)?.id ?? locations.data?.[0]?.id ?? "";
 
-  const registerInventoryIntent = (operation: string, retry: () => Promise<void>) => {
-    if (inventoryIntentRefs.current[operation]) return;
+  const registerInventoryIntent = (
+    operation: string,
+    authority: ReturnType<typeof getAuthoritySnapshot> | undefined,
+    retry: () => Promise<void>,
+  ) => {
+    if (!isIntentActive(inventoryIntentRefs.current[operation])) {
+      delete inventoryIntentRefs.current[operation];
+    }
     inventoryIntentRefs.current[operation] = registerIntent({
       operation,
       target: "inventory-workbench",
+      authority,
       retry,
     });
   };
@@ -242,6 +255,7 @@ export default function InventoryPage() {
           body: JSON.stringify(intent.body),
         },
       ),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (result) => {
       resolveInventoryIntent("inventory-receipt");
       setNotice(
@@ -254,21 +268,19 @@ export default function InventoryPage() {
       setReceiptRows([emptyReceiptRow()]);
       refreshInventory();
     },
-    onError: (reason, intent) => {
+    onError: (reason, intent, authority) => {
       setNotice("");
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) {
+      if (!shouldRegisterIntent(reason)) {
         resolveInventoryIntent("inventory-receipt");
         setPendingReceipt(null);
         setError(errorMessage(reason));
         refreshInventory();
         return;
       }
-      registerInventoryIntent("inventory-receipt", async () => receive.mutate(intent));
+      registerInventoryIntent("inventory-receipt", authority, async () => {
+        if (!authority || !isCurrentAuthority(authority)) return;
+        await receive.mutateAsync(intent).catch(() => undefined);
+      });
       setError("The receipt outcome is uncertain. Retry the same receipt; do not post a new one.");
     },
   });
@@ -308,6 +320,7 @@ export default function InventoryPage() {
       });
       return apiRequest<CountSheet>(`/api/v1/inventory/counts/${opened.id}/`);
     },
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (sheet) => {
       resolveInventoryIntent("inventory-count-open");
       setCountSheet(sheet);
@@ -317,15 +330,15 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason, key) => {
+    onError: (reason, key, authority) => {
       setNotice("");
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) resolveInventoryIntent("inventory-count-open");
-      else registerInventoryIntent("inventory-count-open", async () => openCount.mutate(key));
+      if (!shouldRegisterIntent(reason)) resolveInventoryIntent("inventory-count-open");
+      else {
+        registerInventoryIntent("inventory-count-open", authority, async () => {
+          if (!authority || !isCurrentAuthority(authority)) return;
+          await openCount.mutateAsync(key).catch(() => undefined);
+        });
+      }
       setError(errorMessage(reason));
     },
   });
@@ -354,6 +367,7 @@ export default function InventoryPage() {
         },
       );
     },
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (result) => {
       resolveInventoryIntent("inventory-count-submit");
       setCountSheet((current) =>
@@ -364,15 +378,15 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason, key) => {
+    onError: (reason, key, authority) => {
       setNotice("");
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) resolveInventoryIntent("inventory-count-submit");
-      else registerInventoryIntent("inventory-count-submit", async () => submitCount.mutate(key));
+      if (!shouldRegisterIntent(reason)) resolveInventoryIntent("inventory-count-submit");
+      else {
+        registerInventoryIntent("inventory-count-submit", authority, async () => {
+          if (!authority || !isCurrentAuthority(authority)) return;
+          await submitCount.mutateAsync(key).catch(() => undefined);
+        });
+      }
       setError(errorMessage(reason));
     },
   });
@@ -390,6 +404,7 @@ export default function InventoryPage() {
       );
       return apiRequest<CountSheet>(`/api/v1/inventory/counts/${approved.id}/?reveal=1`);
     },
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (sheet) => {
       resolveInventoryIntent("inventory-count-approve");
       setCountSheet(sheet);
@@ -397,15 +412,15 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason, key) => {
+    onError: (reason, key, authority) => {
       setNotice("");
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) resolveInventoryIntent("inventory-count-approve");
-      else registerInventoryIntent("inventory-count-approve", async () => approveCount.mutate(key));
+      if (!shouldRegisterIntent(reason)) resolveInventoryIntent("inventory-count-approve");
+      else {
+        registerInventoryIntent("inventory-count-approve", authority, async () => {
+          if (!authority || !isCurrentAuthority(authority)) return;
+          await approveCount.mutateAsync(key).catch(() => undefined);
+        });
+      }
       setError(errorMessage(reason));
     },
   });

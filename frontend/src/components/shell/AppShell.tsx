@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiRequest } from "../../lib/api";
-import { useProtectedQueryKey } from "../../lib/authority";
+import { isCurrentAuthority, useProtectedQueryKey } from "../../lib/authority";
 import { formatSyncTime, useConnectivity, viewFromRoute } from "../../lib/connectivity";
 import { resolveIntent, usePendingIntents } from "../../lib/intent-registry";
 import { useSession } from "../../lib/session";
@@ -74,14 +74,33 @@ function ConnectivityStatus() {
   const connectivity = useConnectivity();
   const pending = usePendingIntents();
   const [open, setOpen] = useState(false);
+  const [retrying, setRetrying] = useState<Set<string>>(new Set());
   const view = viewFromRoute(pathname ?? "");
   const viewSync = connectivity.byView[view] ?? null;
   const status = connectivity.online
     ? `Online · ${view} last synced ${formatSyncTime(viewSync)}`
     : `Offline · ${view} last synced ${formatSyncTime(viewSync)}. Completion is unavailable.`;
 
+  const runRetry = async (intent: (typeof pending)[number]) => {
+    if (!isCurrentAuthority(intent.authority)) {
+      resolveIntent(intent.id);
+      return;
+    }
+    if (!connectivity.online || retrying.has(intent.id)) return;
+    setRetrying((current) => new Set(current).add(intent.id));
+    try {
+      await intent.retry();
+    } finally {
+      setRetrying((current) => {
+        const next = new Set(current);
+        next.delete(intent.id);
+        return next;
+      });
+    }
+  };
+
   return (
-    <div className="hidden md:flex flex-col items-end gap-1" aria-live="polite" role="status">
+    <div className="flex flex-col items-end gap-1" aria-live="polite" role="status">
       <p data-testid="connectivity-status" className="text-[11px] font-medium text-secondary">
         <span
           aria-hidden="true"
@@ -109,11 +128,10 @@ function ConnectivityStatus() {
                   </span>
                   <Button
                     variant="small-secondary"
-                    onClick={() => {
-                      void intent.retry().finally(() => resolveIntent(intent.id));
-                    }}
+                    disabled={!connectivity.online || retrying.has(intent.id)}
+                    onClick={() => void runRetry(intent)}
                   >
-                    Retry
+                    {retrying.has(intent.id) ? "Retrying…" : "Retry"}
                   </Button>
                 </li>
               ))}

@@ -3,10 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
-import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import { apiRequest, newIdempotencyKey } from "../../../lib/api";
+import {
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  protectedQueryKey,
+  useProtectedQueryKey,
+} from "../../../lib/authority";
 import { useConnectivity } from "../../../lib/connectivity";
-import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { isIntentActive, registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { shouldRegisterIntent } from "../../../lib/recovery";
 import { useSession } from "../../../lib/session";
 import { IconBilling } from "../../../components/icons";
 import {
@@ -228,11 +234,18 @@ export default function LabPage() {
     }
   };
 
-  const registerLabIntent = (operation: string, retry: () => Promise<void>) => {
-    if (labIntentRefs.current[operation]) return;
+  const registerLabIntent = (
+    operation: string,
+    authority: ReturnType<typeof getAuthoritySnapshot> | undefined,
+    retry: () => Promise<void>,
+  ) => {
+    if (!isIntentActive(labIntentRefs.current[operation])) {
+      delete labIntentRefs.current[operation];
+    }
     labIntentRefs.current[operation] = registerIntent({
       operation,
       target: "laboratory-item",
+      authority,
       retry,
     });
   };
@@ -248,19 +261,20 @@ export default function LabPage() {
         headers: { "Idempotency-Key": input.key },
         body: JSON.stringify({}),
       }),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: () => {
       resolveLabIntent("lab-collect");
       setNotice("Sample recorded.");
       invalidateLab();
     },
-    onError: (reason, input) => {
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) resolveLabIntent("lab-collect");
-      else registerLabIntent("lab-collect", async () => collect.mutate(input));
+    onError: (reason, input, authority) => {
+      if (!shouldRegisterIntent(reason)) resolveLabIntent("lab-collect");
+      else {
+        registerLabIntent("lab-collect", authority, async () => {
+          if (!authority || !isCurrentAuthority(authority)) return;
+          await collect.mutateAsync(input).catch(() => undefined);
+        });
+      }
     },
   });
 
@@ -279,20 +293,21 @@ export default function LabPage() {
         headers: { "Idempotency-Key": key },
         body: JSON.stringify({ values, comments, complete: true }),
       }),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: () => {
       resolveLabIntent("lab-result-save");
       setSelected(null);
       setNotice("Results saved for verification.");
       invalidateLab();
     },
-    onError: (reason, input) => {
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) resolveLabIntent("lab-result-save");
-      else registerLabIntent("lab-result-save", async () => save.mutate(input));
+    onError: (reason, input, authority) => {
+      if (!shouldRegisterIntent(reason)) resolveLabIntent("lab-result-save");
+      else {
+        registerLabIntent("lab-result-save", authority, async () => {
+          if (!authority || !isCurrentAuthority(authority)) return;
+          await save.mutateAsync(input).catch(() => undefined);
+        });
+      }
     },
   });
 
@@ -311,20 +326,21 @@ export default function LabPage() {
         headers: { "Idempotency-Key": key },
         body: JSON.stringify({ expected_version: expectedVersion }),
       }),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: () => {
       resolveLabIntent("lab-release");
       setSelected(null);
       setNotice("Result released to the ordering clinician.");
       invalidateLab();
     },
-    onError: (reason, input) => {
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) resolveLabIntent("lab-release");
-      else registerLabIntent("lab-release", async () => release.mutate(input));
+    onError: (reason, input, authority) => {
+      if (!shouldRegisterIntent(reason)) resolveLabIntent("lab-release");
+      else {
+        registerLabIntent("lab-release", authority, async () => {
+          if (!authority || !isCurrentAuthority(authority)) return;
+          await release.mutateAsync(input).catch(() => undefined);
+        });
+      }
     },
   });
 

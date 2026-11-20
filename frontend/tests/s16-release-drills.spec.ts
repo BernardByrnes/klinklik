@@ -239,19 +239,22 @@ test("S-33 lost registration response recovers with the same key and no duplicat
   await steadyFill(page, "Last name", `Recovery${suffix}`);
   await steadyFill(page, "Phone", `075${suffix.slice(-6).padStart(6, "0")}`);
 
-  const keys: string[] = [];
+  const attempts: Array<{ key: string; body: string | null }> = [];
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
       request.url().endsWith("/api/v1/reception/patients/register/")
     ) {
-      keys.push(request.headers()["idempotency-key"] ?? "");
+      attempts.push({
+        key: request.headers()["idempotency-key"] ?? "",
+        body: request.postData(),
+      });
     }
   });
-  let lost = false;
+  let failures = 0;
   await page.route("**/api/v1/reception/patients/register/", async (route) => {
-    if (!lost) {
-      lost = true;
+    if (failures < 2) {
+      failures += 1;
       await route.fetch();
       await route.abort("failed");
       return;
@@ -263,16 +266,26 @@ test("S-33 lost registration response recovers with the same key and no duplicat
     .locator("form")
     .filter({ has: page.getByLabel("First name", { exact: true }) });
   await form.getByRole("button", { name: "Register patient", exact: true }).click();
-  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
+  const review = page.getByTestId("pending-intent-review");
+  await expect(review).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(fullName)).toHaveCount(0);
 
-  await page.getByTestId("pending-intent-review").click();
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  const retryButton = page.getByRole("button", { name: "Retry", exact: true });
+  if ((await review.getAttribute("aria-expanded")) === "false") await review.click();
+  await retryButton.click();
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  if ((await review.getAttribute("aria-expanded")) === "false") await review.click();
+  await expect(retryButton).toHaveCount(1);
+
+  await retryButton.click();
   await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
-  expect(keys).toHaveLength(2);
-  expect(keys[1]).toBe(keys[0]);
-  expect(keys[0]).toBeTruthy();
-  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+  expect(attempts).toHaveLength(3);
+  expect(attempts[1].key).toBe(attempts[0].key);
+  expect(attempts[2].key).toBe(attempts[0].key);
+  expect(attempts[1].body).toBe(attempts[0].body);
+  expect(attempts[2].body).toBe(attempts[0].body);
+  expect(attempts[0].key).toBeTruthy();
+  await expect(review).toHaveCount(0);
 });
 
 test("S-33 authority change clears a pending intent and protected data", async ({
@@ -304,6 +317,112 @@ test("S-33 authority change clears a pending intent and protected data", async (
 
   await login(page);
   await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+});
+
+test("S-35 Fix 3 mobile recovery keeps an in-progress command intent", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  await page.goto("/patients");
+  await expect(page.getByTestId("connectivity-status")).toBeVisible();
+  await steadyFill(page, "First name", "S35");
+  await steadyFill(page, "Last name", `InProgress${suffix}`);
+  await steadyFill(page, "Phone", `075${suffix.slice(-6).padStart(6, "0")}`);
+
+  const keys: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/reception/patients/register/")
+    ) {
+      keys.push(request.headers()["idempotency-key"] ?? "");
+    }
+  });
+  let inProgress = false;
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    if (!inProgress) {
+      inProgress = true;
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "IDEMPOTENCY_IN_PROGRESS",
+          detail: "The same command is still being completed.",
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  const form = page
+    .locator("form")
+    .filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("pending-intent-review").click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+});
+
+test("S-35 Fix 3 retry waits for reconnect and stays mobile-accessible", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  await page.goto("/patients");
+  await steadyFill(page, "First name", "S35");
+  await steadyFill(page, "Last name", `Offline${suffix}`);
+  await steadyFill(page, "Phone", `075${suffix.slice(-6).padStart(6, "0")}`);
+
+  let lost = false;
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    if (!lost) {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+  const form = page
+    .locator("form")
+    .filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("pending-intent-review").click();
+
+  const client = await page.context().newCDPSession(page);
+  await client.send("Network.enable");
+  await client.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+    connectionType: "none",
+  });
+  try {
+    await expect(page.getByTestId("connectivity-status")).toContainText("Offline");
+    await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeDisabled();
+  } finally {
+    await client.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+      connectionType: "none",
+    });
+    await client.detach();
+  }
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
 });
 
 test("S-33 throttled worklist records cold and warm samples", async ({ page }) => {

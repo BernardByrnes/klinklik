@@ -5,7 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
-import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { isIntentActive, registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { shouldRegisterIntent } from "../../../lib/recovery";
 import {
   getAuthoritySnapshot,
   isCurrentAuthority,
@@ -536,26 +537,27 @@ function BillingWorkspace() {
         headers: { "Idempotency-Key": input.key },
         body: JSON.stringify({}),
       }),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: () => {
       resolveIntent(reprintIntentRef.current?.registryId);
       reprintIntentRef.current = null;
       setNotice((current) => current ? current : "Receipt reprint recorded.");
       window.print();
     },
-    onError: (reason, input) => {
-      const definite =
-        reason instanceof ApiRequestError &&
-        reason.status < 500 &&
-        reason.status !== 408 &&
-        reason.status !== 429;
-      if (definite) {
+    onError: (reason, input, authority) => {
+      if (!shouldRegisterIntent(reason)) {
         resolveIntent(reprintIntentRef.current?.registryId);
         reprintIntentRef.current = null;
-      } else if (!reprintIntentRef.current) {
+      } else {
+        if (!isIntentActive(reprintIntentRef.current?.registryId)) reprintIntentRef.current = null;
         const registryId = registerIntent({
           operation: "receipt-reprint",
           target: "receipt",
-          retry: async () => reprintReceipt.mutate(input),
+          authority,
+          retry: async () => {
+            if (!authority || !isCurrentAuthority(authority)) return;
+            await reprintReceipt.mutateAsync(input).catch(() => undefined);
+          },
         });
         reprintIntentRef.current = { ...input, registryId };
       }

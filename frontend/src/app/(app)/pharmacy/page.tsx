@@ -3,10 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
-import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import { apiRequest, newIdempotencyKey } from "../../../lib/api";
+import {
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  protectedQueryKey,
+  useProtectedQueryKey,
+  type AuthoritySnapshot,
+} from "../../../lib/authority";
 import { useConnectivity } from "../../../lib/connectivity";
-import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { isIntentActive, registerIntent, resolveIntent } from "../../../lib/intent-registry";
+import { shouldRegisterIntent } from "../../../lib/recovery";
 import { useSession } from "../../../lib/session";
 import { IconBilling, IconCheckCircle } from "../../../components/icons";
 import {
@@ -200,26 +207,28 @@ export default function PharmacyPage() {
     setIntent(null);
   };
 
-  const handleError = (reason: unknown, current: PharmacyIntent) => {
-    const definite =
-      reason instanceof ApiRequestError &&
-      reason.status < 500 &&
-      reason.status !== 408 &&
-      reason.status !== 429;
-    if (definite) {
+  const handleError = (
+    reason: unknown,
+    current: PharmacyIntent,
+    authority: AuthoritySnapshot | undefined,
+  ) => {
+    if (!shouldRegisterIntent(reason)) {
       clearIntent();
       refreshQueue();
       setError(errorMessage(reason));
       return;
     }
+    if (!isIntentActive(registryIdRef.current)) registryIdRef.current = null;
     if (!registryIdRef.current) {
       registryIdRef.current = registerIntent({
         operation: `pharmacy-${current.step}`,
         target: `prescription-${current.prescriptionId}`,
+        authority,
         retry: async () => {
-          if (current.step === "claim") claim.mutate(current);
-          else if (current.step === "prepare") prepare.mutate(current);
-          else confirm.mutate(current);
+          if (!authority || !isCurrentAuthority(authority)) return;
+          if (current.step === "claim") await claim.mutateAsync(current).catch(() => undefined);
+          else if (current.step === "prepare") await prepare.mutateAsync(current).catch(() => undefined);
+          else await confirm.mutateAsync(current).catch(() => undefined);
         },
       });
     }
@@ -233,12 +242,13 @@ export default function PharmacyPage() {
         headers: { "Idempotency-Key": current.keys.claim },
         body: JSON.stringify({}),
       }),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (_result, current) => {
       storeIntent({ ...current, step: "prepare" });
       setError("");
       refreshQueue();
     },
-    onError: (reason, current) => handleError(reason, current),
+    onError: (reason, current, authority) => handleError(reason, current, authority),
   });
 
   const prepare = useMutation({
@@ -251,12 +261,13 @@ export default function PharmacyPage() {
           body: JSON.stringify({ lines: current.lines }),
         }
       ),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (result, current) => {
       storeIntent({ ...current, provisionalId: result.id, step: "confirm" });
       setError("");
       refreshQueue();
     },
-    onError: (reason, current) => handleError(reason, current),
+    onError: (reason, current, authority) => handleError(reason, current, authority),
   });
 
   const confirm = useMutation({
@@ -266,13 +277,14 @@ export default function PharmacyPage() {
         headers: { "Idempotency-Key": current.keys.confirm },
         body: JSON.stringify({}),
       }),
+    onMutate: () => getAuthoritySnapshot(),
     onSuccess: (_result, current) => {
       clearIntent();
       setError("");
       setFinalConfirmation(`${queue.data?.active.find((row) => row.prescription_id === current.prescriptionId)?.patient_name ?? "Patient"} · dispense confirmed`);
       refreshQueue();
     },
-    onError: (reason, current) => handleError(reason, current),
+    onError: (reason, current, authority) => handleError(reason, current, authority),
   });
 
   const startClaim = (row: QueueRow) => {
