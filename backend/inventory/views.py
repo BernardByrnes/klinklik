@@ -31,6 +31,8 @@ from inventory.serializers import (
     StockAdjustmentApproveSerializer,
     StockAdjustmentCreateSerializer,
     StockCountApproveSerializer,
+    StockCountListQuerySerializer,
+    StockCountListSerializer,
     StockCountOpenSerializer,
     StockCountSubmitSerializer,
     StockLocationSerializer,
@@ -45,6 +47,7 @@ from inventory.serializers import (
 from inventory.counts import (
     approve_adjustment,
     approve_count,
+    count_list,
     count_sheet,
     create_adjustment,
     dispose_stock,
@@ -276,6 +279,7 @@ class StockSummaryView(TenantAPIView):
             query=request.query_params.get("q", ""),
             category=request.query_params.get("category"),
             status=request.query_params.get("status"),
+            location_id=request.query_params.get("location_id"),
         )
         return Response(rows)
 
@@ -289,6 +293,9 @@ class StockBatchListView(TenantAPIView):
                 organisation=request.organisation,
                 facility=request.facility,
                 product_id=request.query_params.get("product_id"),
+                location_id=request.query_params.get("location_id"),
+                expiry_from=request.query_params.get("expiry_from"),
+                expiry_to=request.query_params.get("expiry_to"),
             )
         )
 
@@ -319,6 +326,9 @@ class MovementListView(TenantAPIView):
             facility=request.facility,
             batch_id=request.query_params.get("batch_id"),
             movement_type=request.query_params.get("movement_type"),
+            location_id=request.query_params.get("location_id"),
+            date_from=request.query_params.get("date_from"),
+            date_to=request.query_params.get("date_to"),
         )[:500]
         return Response(MovementSerializer(movements, many=True).data)
 
@@ -431,6 +441,24 @@ class StockCountOpenView(TenantAPIView):
         return Response(
             {"id": str(count.id), "state": count.state, "version": count.version},
             status=status.HTTP_201_CREATED,
+        )
+
+
+class StockCountListView(TenantAPIView):
+    capability = "inventory.read"
+    request_serializer_class = StockCountListQuerySerializer
+    response_serializer_class = StockCountListSerializer
+    response_is_list = {"GET": False}
+
+    def get(self, request):
+        serializer = StockCountListQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        return Response(
+            count_list(
+                organisation=request.organisation,
+                facility=request.facility,
+                **serializer.validated_data,
+            )
         )
 
 

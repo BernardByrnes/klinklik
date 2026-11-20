@@ -104,6 +104,8 @@ export type ShiftOpen = { opening_float?: string; };
 export type StockAdjustmentApprove = { expected_version?: number; };
 export type StockAdjustmentCreate = { batch_id: string; location_id: string; quantity: string; reason_code: string; note?: string; reference?: string; };
 export type StockCountApprove = { expected_version: number; };
+export type StockCountList = { id: string; location_id: string; location_name: string; state: string; version: number; opened_by_name: string | null; submitted_by_name: string | null; submitted_at: string | null; line_count: number; };
+export type StockCountListQuery = { state?: string; limit?: number; offset?: number; };
 export type StockCountOpen = { location_id: string; };
 export type StockCountSubmit = { expected_version: number; lines: Array<{ line_id: string; counted_qty: string; }>; };
 export type StockLocation = { id: string; code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; version?: number; };
@@ -284,6 +286,7 @@ export type CreateStockAdjustmentApproveResponse = StockAdjustmentApprove;
 export type ListStockBatchesResponse = Array<unknown>;
 export type CreateCatalogueImportRequest = CatalogueImport;
 export type CreateCatalogueImportResponse = CatalogueImport;
+export type ListStockCountsResponse = StockCountList;
 export type CreateStockCountOpenRequest = StockCountOpen;
 export type CreateStockCountOpenResponse = StockCountOpen;
 export type CreateStockCountApproveRequest = StockCountApprove;
@@ -391,7 +394,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "ae37976b2dd1cd3d60a32c0ceb8b0ded066fb7a2d1942a04310814f9ecb8ca6b";
+export const GENERATED_API_CONTRACT_SHA256 = "56429744ef79fd46774e843f41331412fca5349844327d642648dc3954186a64";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -813,6 +816,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createCatalogueImport",
     "path": "/api/v1/inventory/catalogue/import/"
+  },
+  {
+    "method": "GET",
+    "operationId": "listStockCounts",
+    "path": "/api/v1/inventory/counts/"
   },
   {
     "method": "POST",

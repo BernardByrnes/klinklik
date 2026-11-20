@@ -443,3 +443,139 @@ def test_s09_expired_positive_movement_never_increases_usable_stock(tenant, auth
                 source_id="expired-positive",
             )
         assert refused.value.code == "EXPIRED_BATCH"
+
+
+def _s32_price(client, product_id):
+    response = client.post(
+        "/api/v1/inventory/prices/",
+        {"product_id": product_id, "amount": "500.00", "effective_from": TODAY.isoformat()},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s32-price-{uuid4().hex}",
+    )
+    assert response.status_code == 201, response.data
+    return response.data
+
+
+def test_s32_multi_line_receipt_shares_one_document_identity(tenant, authed_client):
+    """S-32: one receipt identity posts all reviewed lines once."""
+
+    location = _locations(authed_client)[0]
+    first = _product(authed_client, generic_name="S32 Receipt Product A")
+    second = _product(authed_client, generic_name="S32 Receipt Product B")
+    _s32_price(authed_client, first["id"])
+    _s32_price(authed_client, second["id"])
+    with tenant_atomic(tenant.organisation.id):
+        before_receipts = StockReceipt.objects.count()
+        before_movements = StockMovement.objects.count()
+    expiry = (TODAY + timedelta(days=120)).isoformat()
+    posted = authed_client.post(
+        "/api/v1/inventory/receipts/",
+        {
+            "receipt_no": "GRN-S32-MULTI",
+            "supplier_name": "Synthetic supplier",
+            "lines": [
+                {
+                    "product_id": first["id"],
+                    "location_id": location["id"],
+                    "batch_no": "S32-A",
+                    "expiry_date": expiry,
+                    "quantity": "20.00",
+                    "unit_cost": "100.00",
+                },
+                {
+                    "product_id": second["id"],
+                    "location_id": location["id"],
+                    "batch_no": "S32-B",
+                    "expiry_date": expiry,
+                    "quantity": "30.00",
+                    "unit_cost": "50.00",
+                },
+            ],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s32-multi-receipt",
+    )
+    assert posted.status_code == 201, posted.data
+    assert posted.data["receipt_no"] == "GRN-S32-MULTI"
+    assert posted.data["movement_count"] == 2
+    with tenant_atomic(tenant.organisation.id):
+        assert StockReceipt.objects.count() == before_receipts + 1
+        assert StockMovement.objects.count() == before_movements + 2
+        receipt = StockReceipt.objects.get(receipt_no="GRN-S32-MULTI")
+        assert receipt.lines.count() == 2
+        assert sum((line.quantity for line in receipt.lines.all()), Decimal("0.00")) == Decimal("50.00")
+
+
+def test_s32_stock_summary_separates_quarantined_stock_and_filters_location(
+    tenant, authed_client
+):
+    """S-32: usable stock excludes quarantined balances and location filters work."""
+
+    location = _locations(authed_client)[0]
+    quarantine = authed_client.post(
+        "/api/v1/inventory/locations/",
+        {"code": "S32Q", "name": "S32 quarantine", "location_type": "QUARANTINE"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s32-quarantine-location",
+    )
+    assert quarantine.status_code == 201, quarantine.data
+    product = _product(authed_client, generic_name="S32 Quarantine Product")
+    _s32_price(authed_client, product["id"])
+    received = _receive(authed_client, product["id"], location["id"], quantity="100.00")
+    assert received.status_code == 201
+    with tenant_atomic(tenant.organisation.id):
+        batch_id = str(StockBatch.objects.get(product_id=product["id"]).id)
+    quarantined = authed_client.post(
+        "/api/v1/inventory/quarantine/",
+        {
+            "batch_id": batch_id,
+            "location_id": location["id"],
+            "quantity": "30.00",
+            "reason": "S32 damage",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s32-quarantine",
+    )
+    assert quarantined.status_code == 201, quarantined.data
+
+    summary = authed_client.get("/api/v1/inventory/stock/")
+    assert summary.status_code == 200, summary.data
+    row = next(item for item in summary.data if item["product_id"] == product["id"])
+    assert row["usable_quantity"] == "70.00"
+    assert row["quarantined_quantity"] == "30.00"
+    assert row["total_quantity"] == "100.00"
+
+    filtered = authed_client.get(
+        f"/api/v1/inventory/stock/?location_id={quarantine.data['id']}"
+    )
+    assert filtered.status_code == 200, filtered.data
+    quarantined_row = next(
+        item for item in filtered.data if item["product_id"] == product["id"]
+    )
+    assert quarantined_row["usable_quantity"] == "0.00"
+    assert quarantined_row["quarantined_quantity"] == "30.00"
+
+
+def test_s32_drilldown_filters_by_location_and_date(tenant, authed_client):
+    """S-32: batch and movement drill-downs accept location/date filters."""
+
+    location = _locations(authed_client)[0]
+    product = _product(authed_client, generic_name="S32 Filter Product")
+    _s32_price(authed_client, product["id"])
+    assert _receive(authed_client, product["id"], location["id"], quantity="10.00").status_code == 201
+
+    batches = authed_client.get(
+        f"/api/v1/inventory/batches/?product_id={product['id']}&location_id={location['id']}"
+    )
+    assert batches.status_code == 200, batches.data
+    assert len(batches.data) == 1
+    assert all(row["location_id"] == location["id"] for row in batches.data[0]["locations"])
+
+    today = TODAY.isoformat()
+    in_window = authed_client.get(f"/api/v1/inventory/movements/?date_from={today}")
+    out_of_window = authed_client.get(
+        f"/api/v1/inventory/movements/?date_to={(TODAY - timedelta(days=1)).isoformat()}"
+    )
+    assert in_window.status_code == 200 and out_of_window.status_code == 200
+    assert len(in_window.data) >= 1
+    assert out_of_window.data == []

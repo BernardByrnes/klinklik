@@ -198,6 +198,24 @@ class StockCountSubmitSerializer(serializers.Serializer):
     lines = StockCountLineCountSerializer(many=True)
 
 
+class StockCountListQuerySerializer(serializers.Serializer):
+    state = serializers.CharField(required=False, allow_blank=True)
+    limit = serializers.IntegerField(min_value=1, max_value=200, required=False, default=50)
+    offset = serializers.IntegerField(min_value=0, required=False, default=0)
+
+
+class StockCountListSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    location_id = serializers.UUIDField()
+    location_name = serializers.CharField()
+    state = serializers.CharField()
+    version = serializers.IntegerField()
+    opened_by_name = serializers.CharField(allow_null=True)
+    submitted_by_name = serializers.CharField(allow_null=True)
+    submitted_at = serializers.DateTimeField(allow_null=True)
+    line_count = serializers.IntegerField()
+
+
 class StockCountApproveSerializer(serializers.Serializer):
     expected_version = serializers.IntegerField(min_value=1)
 

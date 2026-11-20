@@ -9,6 +9,7 @@ from inventory.views import (
     StockAdjustmentApproveView,
     StockCountApproveView,
     StockCountDetailView,
+    StockCountListView,
     StockCountOpenView,
     StockCountSubmitView,
     FefoView,
@@ -49,6 +50,7 @@ urlpatterns = [
         StockAdjustmentApproveView.as_view(),
         name="inventory-adjustment-approve",
     ),
+    path("counts/", StockCountListView.as_view(), name="inventory-count-list"),
     path("counts/open/", StockCountOpenView.as_view(), name="inventory-count-open"),
     path("counts/<uuid:pk>/", StockCountDetailView.as_view(), name="inventory-count-detail"),
     path(

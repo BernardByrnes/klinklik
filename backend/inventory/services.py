@@ -596,7 +596,9 @@ def adjust_stock(
     return movement
 
 
-def stock_summary(*, organisation, facility, query="", category=None, status=None):
+def stock_summary(
+    *, organisation, facility, query="", category=None, status=None, location_id=None
+):
     assert_transaction_active()
     products = MedicationProduct.objects.filter(
         organisation=organisation, facility=facility
@@ -615,9 +617,13 @@ def stock_summary(*, organisation, facility, query="", category=None, status=Non
         balances = BatchLocationBalance.objects.filter(
             organisation=organisation, facility=facility, product=product
         ).select_related("batch", "location")
+        if location_id:
+            balances = balances.filter(location_id=location_id)
         usable = Decimal("0.00")
         expired = Decimal("0.00")
+        quarantined = Decimal("0.00")
         by_location = {}
+        by_location_name = {}
         batch_ids = set()
         earliest = None
         states = set()
@@ -625,14 +631,25 @@ def stock_summary(*, organisation, facility, query="", category=None, status=Non
             if balance.quantity == 0:
                 continue
             batch_ids.add(balance.batch_id)
-            state = batch_expiry_state(balance.batch, today=today)
-            states.add(state)
-            if state == "EXPIRED":
-                expired += balance.quantity
+            if balance.location.is_quarantine:
+                quarantined += balance.quantity
+                by_location_name[f"{balance.location.name} (quarantine)"] = str(
+                    Decimal(by_location_name.get(f"{balance.location.name} (quarantine)", "0.00"))
+                    + balance.quantity
+                )
             else:
-                usable += balance.quantity
-                if earliest is None or balance.batch.expiry_date < earliest:
-                    earliest = balance.batch.expiry_date
+                state = batch_expiry_state(balance.batch, today=today)
+                states.add(state)
+                if state == "EXPIRED":
+                    expired += balance.quantity
+                else:
+                    usable += balance.quantity
+                    if earliest is None or balance.batch.expiry_date < earliest:
+                        earliest = balance.batch.expiry_date
+                by_location_name[balance.location.name] = str(
+                    Decimal(by_location_name.get(balance.location.name, "0.00"))
+                    + balance.quantity
+                )
             by_location[str(balance.location_id)] = str(
                 Decimal(by_location.get(str(balance.location_id), "0.00")) + balance.quantity
             )
@@ -660,10 +677,13 @@ def stock_summary(*, organisation, facility, query="", category=None, status=Non
                 "controlled": product.controlled,
                 "usable_quantity": str(usable),
                 "expired_quantity": str(expired),
+                "quarantined_quantity": str(quarantined),
+                "total_quantity": str(usable + expired + quarantined),
                 "batch_count": len(batch_ids),
                 "earliest_expiry": earliest.isoformat() if earliest else None,
                 "status": chip,
                 "by_location": by_location,
+                "by_location_name": by_location_name,
                 "reorder_level": str(threshold.reorder_level) if threshold else None,
             }
         )
@@ -719,7 +739,10 @@ def fefo_selection(*, organisation, facility, product_id, quantity, location_id=
     return proposals
 
 
-def ledger_movements(*, organisation, facility, batch_id=None, movement_type=None):
+def ledger_movements(
+    *, organisation, facility, batch_id=None, movement_type=None,
+    location_id=None, date_from=None, date_to=None,
+):
     assert_transaction_active()
     movements = StockMovement.objects.filter(
         organisation=organisation, facility=facility
@@ -728,6 +751,12 @@ def ledger_movements(*, organisation, facility, batch_id=None, movement_type=Non
         movements = movements.filter(batch_id=batch_id)
     if movement_type:
         movements = movements.filter(movement_type=str(movement_type).upper())
+    if location_id:
+        movements = movements.filter(location_id=location_id)
+    if date_from:
+        movements = movements.filter(occurred_at__date__gte=date_from)
+    if date_to:
+        movements = movements.filter(occurred_at__date__lte=date_to)
     return movements.order_by("occurred_at", "id")
 
 
@@ -785,18 +814,27 @@ def upsert_threshold(
     return threshold
 
 
-def stock_batches(*, organisation, facility, product_id=None):
+def stock_batches(
+    *, organisation, facility, product_id=None, location_id=None,
+    expiry_from=None, expiry_to=None,
+):
     assert_transaction_active()
     batches = StockBatch.objects.filter(
         organisation=organisation, facility=facility
     ).select_related("product")
     if product_id:
         batches = batches.filter(product_id=product_id)
+    if expiry_from:
+        batches = batches.filter(expiry_date__gte=expiry_from)
+    if expiry_to:
+        batches = batches.filter(expiry_date__lte=expiry_to)
     rows = []
     for batch in batches.order_by("expiry_date", "batch_no", "id"):
         balances = BatchLocationBalance.objects.filter(
             organisation=organisation, facility=facility, batch=batch
         ).select_related("location")
+        if location_id:
+            balances = balances.filter(location_id=location_id)
         rows.append(
             {
                 "id": str(batch.id),

@@ -443,3 +443,54 @@ def test_s29_r2_incomplete_count_rejected_without_state_audit_or_movement(tenant
             StockAdjustment.objects.count(),
         )
     assert after == before
+
+
+def test_s32_approver_lists_submitted_counts_and_opens_blind_sheet(tenant, authed_client):
+    """S-32: an approver discovers submitted counts without a shared URL."""
+
+    location = _locations(authed_client)[0]
+    product = _product(authed_client)
+    _price(authed_client, product["id"])
+    assert _receive(authed_client, product["id"], location["id"], quantity="100.00").status_code == 201
+    opened = authed_client.post(
+        "/api/v1/inventory/counts/open/",
+        {"location_id": location["id"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s32-count-open",
+    )
+    assert opened.status_code == 201, opened.data
+    count_id = opened.data["id"]
+    sheet = authed_client.get(f"/api/v1/inventory/counts/{count_id}/")
+    submitted = authed_client.post(
+        f"/api/v1/inventory/counts/{count_id}/submit/",
+        {
+            "expected_version": sheet.data["version"],
+            "lines": [
+                {"line_id": row["id"], "counted_qty": "95.00"}
+                for row in sheet.data["lines"]
+            ],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s32-count-submit",
+    )
+    assert submitted.status_code == 200, submitted.data
+
+    approver, _ = _second_admin(tenant)
+    listing = approver.get("/api/v1/inventory/counts/")
+    assert listing.status_code == 200, listing.data
+    row = next(item for item in listing.data["counts"] if item["id"] == count_id)
+    assert row["state"] == "SUBMITTED"
+    assert row["location_id"] == location["id"]
+    assert row["submitted_by_name"]
+    assert "expected_qty" not in row
+    assert "variance_qty" not in row
+
+    detail = approver.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["lines"][0]["expected_qty"]
+    assert "movements_during_count" in detail.data
+    assert detail.data["blind"] is False
+
+    blind = approver.get(f"/api/v1/inventory/counts/{count_id}/")
+    assert blind.status_code == 200
+    assert "expected_qty" not in blind.data["lines"][0]

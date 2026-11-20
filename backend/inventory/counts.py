@@ -138,6 +138,42 @@ def open_count(*, organisation, facility, actor, location_id, request=None):
     return count
 
 
+def count_list(*, organisation, facility, state=None, limit=50, offset=0):
+    """Paginated facility-scoped count discovery; never projects expected values."""
+
+    assert_transaction_active()
+    counts = StockCount.objects.filter(
+        organisation=organisation, facility=facility
+    ).select_related("location", "opened_by", "submitted_by")
+    if state:
+        counts = counts.filter(state=str(state).upper())
+    total = counts.count()
+    rows = []
+    for count in counts.order_by("-created_at", "-id")[offset:offset + limit]:
+        rows.append(
+            {
+                "id": str(count.id),
+                "location_id": str(count.location_id),
+                "location_name": count.location.name,
+                "state": count.state,
+                "version": count.version,
+                "opened_by_name": str(count.opened_by) if count.opened_by_id else None,
+                "submitted_by_name": str(count.submitted_by) if count.submitted_by_id else None,
+                "submitted_at": count.submitted_at,
+                "line_count": count.lines.count(),
+            }
+        )
+    return {
+        "counts": rows,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "count": total,
+            "has_more": offset + limit < total,
+        },
+    }
+
+
 def count_sheet(*, organisation, facility, count, reveal_expected=None):
     if reveal_expected is None:
         policy = FacilityWorkflowPolicy.objects.filter(
@@ -169,6 +205,9 @@ def count_sheet(*, organisation, facility, count, reveal_expected=None):
         "state": count.state,
         "version": count.version,
         "location_id": str(count.location_id),
+        "location_name": count.location.name,
+        "opened_by_name": str(count.opened_by) if count.opened_by_id else None,
+        "submitted_by_name": str(count.submitted_by) if count.submitted_by_id else None,
         "opened_at": count.created_at,
         "submitted_at": count.submitted_at,
         "approved_at": count.approved_at,
