@@ -489,8 +489,10 @@ def test_s29_r1_worklist_requires_lab_capability_and_scopes_facility(tenant, aut
         assert response.status_code == 200, response.data
         assert any(
             row["item_id"] == item_id and row["patient_name"]
-            for section in response.data.values()
-            for row in section
+            for section_name in (
+                "awaiting_payment", "to_collect", "in_bench", "to_verify", "rejected", "released"
+            )
+            for row in response.data[section_name]
         )
 
     stock_only = _capability_client(tenant, "s29-r1-stock-only", ("inventory.read",))
@@ -782,3 +784,61 @@ def test_s30_repeated_result_submit_replays_one_version(tenant, authed_client):
     with tenant_atomic(tenant.organisation.id):
         assert LabResultVersion.objects.filter(result__item_id=item_id).count() == 1
         assert AuditEvent.objects.filter(event_code="LAB_RESULT_SAVED").count() == 1
+
+
+def test_s30_worklist_rows_carry_review_fields_and_stable_urgent_order(
+    tenant, authed_client
+):
+    """S-30: worklist rows carry safe review metadata and urgent-first order."""
+
+    patient_id = register(authed_client, "s30-register-queue")
+    checked_in = check_in(authed_client, patient_id, tenant, "s30-checkin-queue")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(authed_client, tenant, code="S30QUEUE")
+    routine = _order(
+        authed_client, encounter_id, test["id"], key="s30-order-routine", priority="ROUTINE"
+    )
+    assert routine.status_code == 201, routine.data
+    urgent = _order(
+        authed_client, encounter_id, test["id"], key="s30-order-urgent", priority="URGENT"
+    )
+    assert urgent.status_code == 201, urgent.data
+
+    worklist = authed_client.get("/api/v1/lab/worklist/")
+    assert worklist.status_code == 200, worklist.data
+    ids = [row["item_id"] for row in worklist.data["to_collect"]]
+    assert ids[0] == urgent.data["items"][0]["id"]
+    assert routine.data["items"][0]["id"] in ids
+    row = next(item for item in worklist.data["to_collect"] if item["item_id"] == ids[0])
+    for key in (
+        "test_id",
+        "ordered_by_name",
+        "elapsed_minutes",
+        "rejection_reason",
+        "recollection_count",
+        "version_no",
+    ):
+        assert key in row
+
+
+def test_s30_worklist_supports_bounded_pages(tenant, authed_client):
+    """S-30: the worklist can be read in bounded pages without changing its shape."""
+
+    patient_id = register(authed_client, "s30-register-page")
+    checked_in = check_in(authed_client, patient_id, tenant, "s30-checkin-page")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(authed_client, tenant, code="S30PAGE")
+    for index in range(3):
+        ordered = _order(
+            authed_client, encounter_id, test["id"], key=f"s30-order-page-{index}"
+        )
+        assert ordered.status_code == 201, ordered.data
+
+    first = authed_client.get("/api/v1/lab/worklist/?limit=2&offset=0")
+    second = authed_client.get("/api/v1/lab/worklist/?limit=2&offset=2")
+    assert first.status_code == 200, first.data
+    assert second.status_code == 200, second.data
+    assert first.data["pagination"]["has_more"] is True
+    assert second.data["pagination"]["has_more"] is False
+    assert len(first.data["to_collect"]) == 2
+    assert len(second.data["to_collect"]) == 1

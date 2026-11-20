@@ -17,6 +17,7 @@ from laboratory.serializers import (
     LabResultSaveSerializer,
     LabTestConfigureSerializer,
     LabTestSerializer,
+    LabWorklistQuerySerializer,
 )
 from laboratory.services import (
     amend_result,
@@ -102,10 +103,17 @@ class LabOrderCreateView(TenantAPIView):
 class LabWorklistView(TenantAPIView):
     permission_classes = [IsAuthenticated, IsTenantMember, HasAnyCapability]
     capabilities = ("lab.result.entry", "lab.result.verify")
+    request_serializer_class = LabWorklistQuerySerializer
 
     def get(self, request):
+        serializer = LabWorklistQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
         return Response(
-            worklists(organisation=request.organisation, facility=request.facility)
+            worklists(
+                organisation=request.organisation,
+                facility=request.facility,
+                **serializer.validated_data,
+            )
         )
 
 

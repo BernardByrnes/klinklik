@@ -42,6 +42,11 @@ class LabOrderCreateSerializer(serializers.Serializer):
     source_event_id = serializers.CharField(required=False, allow_blank=True)
 
 
+class LabWorklistQuerySerializer(serializers.Serializer):
+    limit = serializers.IntegerField(min_value=1, max_value=200, required=False, default=50)
+    offset = serializers.IntegerField(min_value=0, required=False, default=0)
+
+
 class LabItemSerializer(serializers.ModelSerializer):
     test_name = serializers.CharField(source="test.name", read_only=True)
 

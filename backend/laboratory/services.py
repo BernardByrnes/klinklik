@@ -276,11 +276,18 @@ def order_status(order):
     return "PENDING"
 
 
-def worklists(*, organisation, facility):
+def worklists(*, organisation, facility, limit=50, offset=0):
     assert_transaction_active()
-    items = LabOrderItem.objects.filter(
-        organisation=organisation, facility=facility
-    ).exclude(state="CANCELLED").select_related("order", "order__visit", "order__visit__patient", "order__ordered_by", "test")
+    base = (
+        LabOrderItem.objects.filter(organisation=organisation, facility=facility)
+        .exclude(state="CANCELLED")
+        .select_related(
+            "order", "order__visit", "order__visit__patient", "order__ordered_by",
+            "test", "result",
+        )
+        .order_by("-order__priority", "order__created_at", "id")
+    )
+    count = base.count()
     sections = {
         "awaiting_payment": [],
         "to_collect": [],
@@ -289,20 +296,32 @@ def worklists(*, organisation, facility):
         "rejected": [],
         "released": [],
     }
-    for item in items.order_by("-order__priority", "order__created_at", "id"):
+    for item in base[offset:offset + limit]:
+        try:
+            result = item.result
+        except LabResult.DoesNotExist:
+            result = None
         row = {
             "item_id": str(item.id),
             "order_id": str(item.order_id),
+            "test_id": str(item.test_id),
             "patient_name": item.order.visit.patient.display_name,
             "patient_no": item.order.visit.patient.patient_no,
             "test_name": item.test.name,
             "priority": item.priority,
             "state": item.state,
             "ordered_by": str(item.order.ordered_by_id),
+            "ordered_by_name": str(item.order.ordered_by) if item.order.ordered_by_id else "",
             "ordered_at": item.order.created_at,
+            "elapsed_minutes": max(
+                0, int((now() - item.order.created_at).total_seconds() // 60)
+            ),
             "clinical_notes": item.order.clinical_notes,
             "specimen_id": item.specimen_id,
             "urgency": item.priority == "URGENT",
+            "rejection_reason": item.rejection_reason,
+            "recollection_count": item.rejections.count(),
+            "version_no": result.current_version if result is not None else None,
         }
         if item.state == "AWAITING_PAYMENT":
             sections["awaiting_payment"].append(row)
@@ -314,6 +333,12 @@ def worklists(*, organisation, facility):
             sections["rejected"].append(row)
         elif item.state == "RELEASED":
             sections["released"].append(row)
+    sections["pagination"] = {
+        "limit": limit,
+        "offset": offset,
+        "count": count,
+        "has_more": offset + limit < count,
+    }
     return sections
 
 
@@ -750,7 +775,10 @@ def result_detail(*, organisation, facility, actor, item_id, request=None):
     ).select_related("test", "result").first()
     if item is None:
         raise CanonicalError("NOT_FOUND", "Laboratory item was not found.", status_code=404)
-    result = item.result
+    try:
+        result = item.result
+    except LabResult.DoesNotExist:
+        result = None
     version = (
         result.versions.order_by("-version_no").first() if result is not None else None
     )

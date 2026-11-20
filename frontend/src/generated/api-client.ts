@@ -47,6 +47,7 @@ export type LabResultRelease = { expected_version: number; };
 export type LabResultSave = { values: Array<{  }>; comments?: string; complete?: boolean; };
 export type LabTest = { id: string; code: string; name: string; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; service?: string | null; turnaround_minutes?: number; coded_options?: {  }; text_template?: string; active?: boolean; definition_version?: number; version?: number; analytes: Array<{ id: string; code: string; name: string; unit?: string; result_type?: string; sequence?: number; coded_options?: {  }; }>; };
 export type LabTestConfigure = { code: string; name: string; service_id?: string | null; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; turnaround_minutes?: number; coded_options?: Array<string>; analytes?: Array<{  }>; };
+export type LabWorklistQuery = { limit?: number; offset?: number; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Movement = { id: string; product: string; batch: string; batch_no: string; expiry_date: string; location: string; location_name: string; movement_type: "IN_GRN" | "OUT_DISPENSE" | "OUT_SALE" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT" | "WRITE_OFF" | "QUARANTINE" | "REVERSAL" | "OPENING"; quantity: string; source_type: string; source_id: string; reason_code?: string; occurred_at?: string; };
@@ -388,7 +389,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "a096fcfbfa2d33d9d9bbaed103791a6cf1d4d8e443387522347935dbe95c4a5f";
+export const GENERATED_API_CONTRACT_SHA256 = "883e866206932d2510fa5ee41a29677ed48c7e509f810ae6d030b9cfef2b074e";
 
 export const GENERATED_API_OPERATIONS = [
   {
