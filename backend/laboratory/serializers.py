@@ -78,6 +78,7 @@ class LabResultDetailSerializer(serializers.Serializer):
     test_name = serializers.CharField()
     specimen_id = serializers.CharField(allow_null=True)
     state = serializers.CharField()
+    result_state = serializers.CharField(allow_null=True)
     priority = serializers.CharField()
     version_no = serializers.IntegerField(allow_null=True)
     analytes = serializers.ListField(child=serializers.DictField())

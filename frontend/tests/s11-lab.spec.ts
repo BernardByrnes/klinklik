@@ -830,3 +830,53 @@ test("S-30 200-item lab worklist paginates and records p95", async ({ page }) =>
   console.log(`S30_NFR_RENDER_P95_MS=${s30P95(renderSamples)} samples=${renderSamples.join(",")}`);
   expect(s30P95(renderSamples)).toBeLessThanOrEqual(2000);
 });
+
+test("S-35 Fix 1 review panel reconciles a result changed to draft", async ({ page }) => {
+  await login(page);
+  const demo = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const setup = await s30SetupLabItem(page, demo, suffix, { action: "enter" });
+
+  await page.context().clearCookies();
+  await page.goto("/");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await steadyFill(page, "Username", "admin@clinicopus.local");
+  await steadyFill(page, "Password", ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+  await page.goto("/lab");
+  const row = page
+    .getByRole("listitem")
+    .filter({ hasText: `Synthetic S30 lab ${suffix}` })
+    .first();
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Review and release", exact: true }).click();
+  const releaseButton = page.getByRole("button", { name: "Verify & release", exact: true });
+  await expect(releaseButton).toBeEnabled();
+
+  const technician = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const values = setup.testBody.analytes.map((analyte, index) => ({
+    analyte_id: analyte.id,
+    value: index === 0 ? "12.5" : "6.0",
+  }));
+  const draft = await page.request.patch(
+    `${API}/api/v1/lab/items/${setup.itemId}/results/`,
+    {
+      headers: { ...headers(technician), "Idempotency-Key": `s35-r1-browser-draft-${suffix}` },
+      data: { values, complete: false },
+    }
+  );
+  expect(draft.ok(), await draft.text()).toBeTruthy();
+  const refreshed = await page.request.get(
+    `${API}/api/v1/lab/items/${setup.itemId}/detail/`,
+    { headers: headers(technician) }
+  );
+  expect(refreshed.ok(), await refreshed.text()).toBeTruthy();
+  expect((await refreshed.json()).result_state).toBe("DRAFT");
+
+  await page.getByRole("button", { name: "Refresh result", exact: true }).click();
+  await expect(releaseButton).toHaveCount(0);
+  await expect(page.getByText(/editable draft head/)).toBeVisible();
+});

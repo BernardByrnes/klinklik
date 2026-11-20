@@ -219,3 +219,90 @@ def test_pg_s30_detail_read_and_stale_release_conflict(
         assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 1
         for event in AuditEvent.objects.filter(event_code="LAB_RESULTS_READ"):
             assert "10.0" not in str(event.after)
+
+
+def test_pg_s35_r1_draft_head_cannot_be_released(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-35 Fix 1 (PG): a draft head cannot be released under the app role."""
+
+    from laboratory.models import LabAnalyteDefinition
+    from tests.test_s11_lab import _admin_client
+
+    patient_id, test, _encounter_id, _item_id = None, None, None, None
+    from tests.test_s11_lab import _encounter, _order
+    from tests.test_s05_billing import check_in as _check_in, register as _register
+
+    patient_id = _register(authed_client, f"s35-pg-r1-{uuid4().hex[:8]}")
+    checked_in = _check_in(authed_client, patient_id, tenant, f"s35-pg-r1-ci-{uuid4().hex}")
+    with tenant_atomic(tenant.organisation.id):
+        from clinical.models import Encounter
+        from scheduling.models import Visit
+
+        visit = Visit.objects.get(id=checked_in["visit_id"])
+        encounter = Encounter.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            patient=visit.patient,
+            visit=visit,
+            clinician=tenant.user,
+            encounter_no=f"ENC-PG-S35R1-{uuid4().hex[:6]}",
+            status="OPEN",
+        )
+    test = authed_client.post(
+        "/api/v1/lab/tests/",
+        {
+            "code": f"S35PG-{uuid4().hex[:6]}",
+            "name": "Synthetic S35 PG lab",
+            "service_id": str(tenant.service.id),
+            "result_type": "PANEL",
+            "analytes": [
+                {
+                    "code": "HB",
+                    "name": "Haemoglobin",
+                    "unit": "g/dL",
+                    "result_type": "NUMERIC",
+                    "sanity_min": "0",
+                    "sanity_max": "250",
+                    "range": {"low": "4", "high": "11"},
+                }
+            ],
+        },
+        format="json",
+    ).data
+    ordered = _order(authed_client, encounter.id, test["id"], key=f"s35-pg-r1-order-{uuid4().hex}")
+    item_id = ordered.data["items"][0]["id"]
+    collected = authed_client.post(
+        f"/api/v1/lab/items/{item_id}/collect/", {}, format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-pg-r1-collect-{uuid4().hex}",
+    )
+    assert collected.status_code == 200, collected.data
+    with tenant_atomic(tenant.organisation.id):
+        analyte = LabAnalyteDefinition.objects.get(test_id=test["id"])
+    values = [{"analyte_id": str(analyte.id), "value": "13.2"}]
+    first = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": values, "complete": True},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-pg-r1-complete-{uuid4().hex}",
+    )
+    assert first.status_code == 201, first.data
+    draft = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": values, "complete": False},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-pg-r1-draft-{uuid4().hex}",
+    )
+    assert draft.status_code == 201, draft.data
+    verifier, _ = _admin_client(tenant)
+    denied = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": draft.data["version_no"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-pg-r1-release-{uuid4().hex}",
+    )
+    assert denied.status_code == 409, denied.data
+    assert denied.data["code"] == "RESULT_NOT_SUBMITTED"
+    with tenant_atomic(tenant.organisation.id):
+        assert LabOrderItem.objects.get(id=item_id).state == "RESULT_ENTERED"
+        assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 0

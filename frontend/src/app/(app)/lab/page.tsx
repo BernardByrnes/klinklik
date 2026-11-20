@@ -82,6 +82,7 @@ type ResultDetail = {
   test_name: string;
   specimen_id: string | null;
   state: string;
+  result_state: string | null;
   priority: string;
   version_no: number | null;
   analytes: LabAnalyte[];
@@ -410,7 +411,12 @@ export default function LabPage() {
               </p>
             ) : detail.data ? (
               <div className="space-y-4 px-5 py-4">
-                <div className="flex flex-wrap gap-3 text-[12px] text-secondary">
+                <div className="flex flex-wrap items-center gap-3 text-[12px] text-secondary">
+                  {selected.mode === "review" ? (
+                    <Button variant="small-secondary" onClick={() => void detail.refetch()}>
+                      Refresh result
+                    </Button>
+                  ) : null}
                   <span>Version {detail.data.version_no ?? "—"}</span>
                   <span>Entered by {detail.data.entered_by ?? "—"}</span>
                   <span>{detail.data.entered_at ? formatDate(detail.data.entered_at) : ""}</span>
@@ -496,7 +502,7 @@ export default function LabPage() {
                     {detail.data.comments ? (
                       <p className="text-[12.5px] text-secondary">Comment: {detail.data.comments}</p>
                     ) : null}
-                    {canVerify && detail.data.version_no !== null ? (
+                    {canVerify && detail.data.version_no !== null && detail.data.result_state === "RESULT_ENTERED" ? (
                       <Button
                         disabled={busy}
                         onClick={() =>
@@ -509,6 +515,10 @@ export default function LabPage() {
                       >
                         {release.isPending ? "Releasing…" : "Verify & release"}
                       </Button>
+                    ) : canVerify && detail.data.result_state === "DRAFT" ? (
+                      <p className="text-[12.5px] text-secondary" role="status">
+                        This result has an editable draft head. Refresh after the technician resubmits it.
+                      </p>
                     ) : (
                       <p className="text-[12.5px] text-secondary">
                         A separate authorized verifier must release this result.

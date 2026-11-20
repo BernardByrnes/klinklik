@@ -322,13 +322,18 @@ def worklists(*, organisation, facility, limit=50, offset=0):
             "rejection_reason": item.rejection_reason,
             "recollection_count": item.rejections.count(),
             "version_no": result.current_version if result is not None else None,
+            "result_state": result.state if result is not None else None,
         }
         if item.state == "AWAITING_PAYMENT":
             sections["awaiting_payment"].append(row)
         elif item.state == "READY_FOR_COLLECTION":
             sections["to_collect"].append(row)
         elif item.state in {"SAMPLE_COLLECTED", "RESULT_ENTERED"}:
-            sections["in_bench" if item.state == "SAMPLE_COLLECTED" else "to_verify"].append(row)
+            draft_head = result is not None and result.state == "DRAFT"
+            if item.state == "SAMPLE_COLLECTED" or draft_head:
+                sections["in_bench"].append(row)
+            else:
+                sections["to_verify"].append(row)
         elif item.state == "SAMPLE_REJECTED":
             sections["rejected"].append(row)
         elif item.state == "RELEASED":
@@ -628,7 +633,11 @@ def release_result(
             "The entering technician cannot verify and release their own result.",
             status_code=403,
         )
-    version = result.versions.select_for_update().order_by("-version_no").first()
+    version = (
+        result.versions.select_for_update()
+        .filter(version_no=result.current_version)
+        .first()
+    )
     if version is None:
         raise CanonicalError("PREREQUISITE_MISSING", "The result version is missing.", status_code=422)
     if expected_version is not None and version.version_no != expected_version:
@@ -636,6 +645,12 @@ def release_result(
             "VERSION_CONFLICT",
             "The result changed while it was being reviewed; refresh before release.",
             status_code=412,
+        )
+    if result.state != "RESULT_ENTERED" or version.released:
+        raise CanonicalError(
+            "RESULT_NOT_SUBMITTED",
+            "Only a submitted, unreleased result version can be verified.",
+            status_code=409,
         )
     version.released = True
     version.released_at = now()
@@ -804,6 +819,7 @@ def result_detail(*, organisation, facility, actor, item_id, request=None):
         "test_name": item.test.name,
         "specimen_id": item.specimen_id,
         "state": item.state,
+        "result_state": result.state if result is not None else None,
         "priority": item.priority,
         "version_no": version.version_no if version is not None else None,
         "analytes": analytes,

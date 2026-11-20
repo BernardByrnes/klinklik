@@ -856,3 +856,89 @@ def test_s30_encounter_payload_shows_status_without_draft_values(tenant, authed_
         for row in before.data["items"]
     )
     assert "13.2" not in str(before.data)
+
+
+def test_s35_r1_draft_head_cannot_be_released(tenant, authed_client):
+    """S-35 Fix 1: an edited draft head is not a submitted release candidate."""
+
+    patient_id = register(authed_client, "s35-r1-register")
+    checked_in = check_in(authed_client, patient_id, tenant, "s35-r1-checkin")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(authed_client, tenant, code="S35R1")
+    ordered = _order(authed_client, encounter_id, test["id"], key="s35-r1-order")
+    assert ordered.status_code == 201, ordered.data
+    item_id = ordered.data["items"][0]["id"]
+    collected = authed_client.post(
+        f"/api/v1/lab/items/{item_id}/collect/", {}, format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r1-collect",
+    )
+    assert collected.status_code == 200, collected.data
+    with tenant_atomic(tenant.organisation.id):
+        analytes = list(
+            LabAnalyteDefinition.objects.filter(test_id=test["id"]).order_by("sequence", "id")
+        )
+    values = [
+        {"analyte_id": str(analyte.id), "value": "13.2" if index == 0 else "6.0"}
+        for index, analyte in enumerate(analytes)
+    ]
+    complete = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": values, "comments": "S35 submitted", "complete": True},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r1-complete",
+    )
+    assert complete.status_code == 201, complete.data
+    draft = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": values, "comments": "S35 draft edit", "complete": False},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r1-draft",
+    )
+    assert draft.status_code == 201, draft.data
+    draft_version = draft.data["version_no"]
+
+    worklist = authed_client.get("/api/v1/lab/worklist/")
+    assert worklist.status_code == 200, worklist.data
+    assert any(row["item_id"] == item_id for row in worklist.data["in_bench"])
+    assert not any(row["item_id"] == item_id for row in worklist.data["to_verify"])
+
+    verifier, _ = _admin_client(tenant)
+    detail = verifier.get(f"/api/v1/lab/items/{item_id}/detail/")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["result_state"] == "DRAFT"
+
+    denied = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": draft_version},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r1-release-draft",
+    )
+    assert denied.status_code == 409, denied.data
+    assert denied.data["code"] == "RESULT_NOT_SUBMITTED"
+    with tenant_atomic(tenant.organisation.id):
+        item = LabOrderItem.objects.get(id=item_id)
+        assert item.state == "RESULT_ENTERED"
+        assert not LabResultVersion.objects.get(
+            result__item_id=item_id, version_no=draft_version
+        ).released
+        assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 0
+    clinician = authed_client.get(f"/api/v1/lab/encounters/{encounter_id}/results/")
+    assert clinician.data["results"] == []
+
+    final = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": values, "comments": "S35 resubmitted", "complete": True},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r1-resubmit",
+    )
+    assert final.status_code == 201, final.data
+    released = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": final.data["version_no"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r1-release-final",
+    )
+    assert released.status_code == 200, released.data
+    with tenant_atomic(tenant.organisation.id):
+        assert LabOrderItem.objects.get(id=item_id).state == "RELEASED"
+        assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 1

@@ -43,7 +43,7 @@ export type LabAmend = { values: Array<{  }>; comments?: string; reason: string;
 export type LabCancel = { reason: string; };
 export type LabOrderCreate = { encounter_id: string; test_ids: Array<string>; priority?: "ROUTINE" | "URGENT"; clinical_notes?: string; source_event_id?: string; };
 export type LabReject = { reason: string; };
-export type LabResultDetail = { item_id: string; test_name: string; specimen_id: string | null; state: string; priority: string; version_no: number | null; analytes: Array<{  }>; values: Array<{  }>; comments: string; entered_by: string | null; entered_at: string | null; released_at: string | null; verified_by: string | null; };
+export type LabResultDetail = { item_id: string; test_name: string; specimen_id: string | null; state: string; result_state: string | null; priority: string; version_no: number | null; analytes: Array<{  }>; values: Array<{  }>; comments: string; entered_by: string | null; entered_at: string | null; released_at: string | null; verified_by: string | null; };
 export type LabResultRelease = { expected_version: number; };
 export type LabResultSave = { values: Array<{  }>; comments?: string; complete?: boolean; };
 export type LabTest = { id: string; code: string; name: string; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; service?: string | null; turnaround_minutes?: number; coded_options?: {  }; text_template?: string; active?: boolean; definition_version?: number; version?: number; analytes: Array<{ id: string; code: string; name: string; unit?: string; result_type?: string; sequence?: number; coded_options?: {  }; }>; };
@@ -394,7 +394,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "56429744ef79fd46774e843f41331412fca5349844327d642648dc3954186a64";
+export const GENERATED_API_CONTRACT_SHA256 = "811b7c5cbed555c51562a6f39620285af122fe3fdee00085714e96e430a1350e";
 
 export const GENERATED_API_OPERATIONS = [
   {
