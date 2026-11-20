@@ -770,6 +770,22 @@ def _create_destination_locked(
     queue_type = str(queue_type or department.code).upper()
     work_identity = work_identity or f"VISIT:{visit.id}:{queue_type}"
     source_event_id = source_event_id or work_identity
+
+    def _reusable(entry):
+        return (
+            entry is not None
+            and str(entry.department_id) == str(department.id)
+            and str(entry.queue_type).upper() == queue_type
+        )
+
+    def _conflict():
+        raise _error(
+            "DESTINATION_CONFLICT",
+            "The destination queue is already occupied and could not be reconciled safely.",
+            status_code=409,
+            metadata={"department_id": str(department.id)},
+        )
+
     existing = QueueEntry.objects.select_for_update().filter(
         organisation_id=visit.organisation_id,
         facility_id=facility.id,
@@ -777,6 +793,8 @@ def _create_destination_locked(
         work_identity=work_identity,
     ).order_by("id").first()
     if existing is not None:
+        if not _reusable(existing):
+            _conflict()
         return existing, False
     active_same_department = QueueEntry.objects.select_for_update().filter(
         organisation_id=visit.organisation_id,
@@ -786,6 +804,8 @@ def _create_destination_locked(
         state__in=ACTIVE_STATES,
     ).order_by("id").first()
     if active_same_department is not None:
+        if not _reusable(active_same_department):
+            _conflict()
         return active_same_department, False
     last = QueueEntry.objects.filter(
         facility_id=facility.id,
@@ -841,12 +861,8 @@ def _create_destination_locked(
                 department_id=department.id,
                 state__in=ACTIVE_STATES,
             ).order_by("id").first()
-        if entry is None:
-            raise _error(
-                "DESTINATION_CONFLICT",
-                "The destination queue is already occupied and could not be reconciled safely.",
-                metadata={"department_id": str(department.id)},
-            )
+        if not _reusable(entry):
+            _conflict()
         return entry, False
     record_fact(
         organisation=organisation,
@@ -1018,6 +1034,7 @@ def transfer(
                 facility_id=facility.id,
                 visit_id=visit.id,
                 department_id=department.id,
+                queue_type=normalized_target_type,
                 source_stage=source_stage,
                 state="WAITING",
             ).values_list("id", flat=True)
@@ -1068,6 +1085,7 @@ def transfer(
                 entry
                 for entry in locked_entries
                 if entry.department_id == department.id
+                and str(entry.queue_type).upper() == normalized_target_type
                 and entry.source_stage == source_stage
                 and entry.state == "WAITING"
             ),

@@ -2786,3 +2786,82 @@ def test_malformed_non_object_bodies_reach_normal_validation(
                 key_hash("s02-malformed-body-call-1"),
             ],
         ).exists()
+
+
+def test_s29_r5_transfer_rejects_mismatched_department_work_reuse(
+    tenant, authed_client, enabled_mig002_target
+):
+    """S-29-R5: department reuse must match the authorized work type."""
+
+    with tenant_atomic(tenant.organisation.id):
+        destination_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="S-29 R5 destination",
+            code="S29R5_DEST",
+        )
+    _patient, visit, source = make_entry(tenant, label="S29R5 Source")
+    with tenant_atomic(tenant.organisation.id):
+        competing, created = create_or_reuse_destination(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            visit=visit,
+            department=destination_department,
+            queue_type="CONSULTATION",
+            source_stage="RECEPTION",
+        )
+        assert created
+        start_service(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            queue_entry_id=source.id,
+        )
+        source_before = QueueEntry.objects.get(id=source.id)
+        competing_before = QueueEntry.objects.get(id=competing.id)
+        audit_before = AuditEvent.objects.filter(
+            event_code__in=["QUEUE_TRANSFERRED", "QUEUE_SERVICE_COMPLETED", "QUEUE_HANDOFF"]
+        ).count()
+
+    scoped_client, _ = queue_scope_client(
+        tenant,
+        username="s29-r5-transfer",
+        grants=[
+            (tenant.department, ("queue.transfer:TRIAGE",)),
+            (destination_department, ("queue.transfer:TRIAGE",)),
+        ],
+    )
+    refused = scoped_client.post(
+        "/api/v1/clinic/queue/transfer/",
+        {
+            "source_queue_entry_id": str(source.id),
+            "target_department_id": str(destination_department.id),
+            "target_queue_type": "TRIAGE",
+            "expected_version": source_before.version,
+        },
+        format="json",
+        HTTP_IF_MATCH=f'"{source_before.version}"',
+        HTTP_IDEMPOTENCY_KEY="s29-r5-transfer-mismatch",
+    )
+    assert refused.status_code == 409, refused.data
+    assert str(competing.id) not in str(refused.data)
+    assert "CONSULTATION" not in str(refused.data)
+    with tenant_atomic(tenant.organisation.id):
+        unchanged_source = QueueEntry.objects.get(id=source.id)
+        assert unchanged_source.state == source_before.state
+        assert unchanged_source.version == source_before.version
+        unchanged_competing = QueueEntry.objects.get(id=competing.id)
+        assert unchanged_competing.state == competing_before.state
+        assert unchanged_competing.version == competing_before.version
+        assert unchanged_competing.queue_type == "CONSULTATION"
+        assert (
+            AuditEvent.objects.filter(
+                event_code__in=["QUEUE_TRANSFERRED", "QUEUE_SERVICE_COMPLETED", "QUEUE_HANDOFF"]
+            ).count()
+            == audit_before
+        )
+        assert not IdempotencyRecord.objects.filter(
+            organisation=tenant.organisation,
+            key_hash=key_hash("s29-r5-transfer-mismatch"),
+        ).exists()
