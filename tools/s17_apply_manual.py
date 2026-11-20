@@ -33,14 +33,14 @@ OVERRIDES = {
         "evidence_pointer": "backend/application/queue/views.py:QueueExpireSweepView",
     },
     "CMD-071": {
-        "verdict": "MISMATCH", "severity": "P2",
-        "discrepancy": "invoice_issue is also exposed by InvoiceListCreateView (POST invoices/) without declaring CMD-071; the canonical issue path runs through visit check-in.",
-        "evidence_pointer": "backend/billing/views.py:InvoiceListCreateView",
+        "verdict": "PARTIAL", "severity": "P2",
+        "discrepancy": "D-13: canonical invoice_issue runs through visit check-in (issue_exact_source_lines); manual InvoiceListCreateView now uses the documented compat namespace and is allowlisted.",
+        "evidence_pointer": "backend/billing/views.py:71,112",
     },
     "CMD-106": {
-        "verdict": "MISMATCH", "severity": "P2",
-        "discrepancy": "payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106.",
-        "evidence_pointer": "backend/billing/views.py:PaymentMethodListView",
+        "verdict": "VERIFIED", "severity": "P3",
+        "discrepancy": "",
+        "evidence_pointer": "backend/billing/views.py:443,466",
     },
     "CMD-034": {
         "verdict": "PARTIAL", "severity": "P2",
@@ -71,11 +71,6 @@ OVERRIDES = {
         "verdict": "FENCED", "severity": "P3",
         "discrepancy": "lab_external_order is fenced by the S-11 slice; no external-order route is expected. The former wrong reference from LabItemCancelView was removed with the label fix.",
         "evidence_pointer": "IMPLEMENTATION_BLUEPRINT.md",
-    },
-    "CMD-065": {
-        "verdict": "MISMATCH", "severity": "P2",
-        "discrepancy": "StockCountOpenView and StockCountSubmitView both declare CMD-065; open and submit are distinct operations sharing one idempotency namespace.",
-        "evidence_pointer": "backend/inventory/views.py:416,462",
     },
     "CMD-027": {
         "verdict": "PARTIAL", "severity": "P2",
@@ -180,6 +175,7 @@ def main():
         "- FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.",
         "- At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.",
         "- Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.",
+        "- S-21 resolved three D-13 residuals: CMD-065 is now claimed only by StockCountSubmitView (open uses a documented compat namespace); InvoiceListCreateView uses a documented compat namespace because canonical invoice issue runs through visit check-in; PaymentMethodListView is the actual canonical CMD-106 path and now carries that registry label. CMD-014 and CMD-136 remain MISMATCH rows by owner decision (no code change).",
         "- S-20 aligned the four registry verbs (CMD-044 PATCH, CMD-099/101/110 POST) with the same paths, payloads and idempotency namespaces. The three clinical/lab rows remain PARTIAL only because declared audit event names differ from code names; CMD-110 is VERIFIED.",
         "- S-19 closed the clinical P1 class: ten active clinical views now carry their registry CMD id and `requires_idempotency=True`. EncounterDiagnosisDetailView/RemoveView remain unlabelled by design: registry CMD-097 is a retired tombstone and no active id was invented. P1 count is now zero; all remaining discrepancy rows are P2 owner-deferred findings (verbs, duplicate legacy routes, compatibility namespaces, audit-name/test-naming limits).",
     ]

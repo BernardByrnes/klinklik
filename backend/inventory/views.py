@@ -413,7 +413,9 @@ class StockAdjustmentApproveView(TenantAPIView):
 class StockCountOpenView(TenantAPIView):
     capability = "inventory.adjust"
     serializer_class = StockCountOpenSerializer
-    idempotency_operation = "CMD-065"
+    # D-13: the registry has stock_count_submit (CMD-065) only. Opening a count
+    # is a compatibility exposure, so it must not claim the submit namespace.
+    idempotency_operation = "legacy.stock_count.open.compat"
     requires_idempotency = True
 
     def post(self, request):

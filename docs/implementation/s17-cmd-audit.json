@@ -4064,19 +4064,18 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "StockCountOpenView and StockCountSubmitView both declare CMD-065; open and submit are distinct operations sharing one idempotency namespace.",
+      "discrepancy": "",
       "error_codes": [
         "PREREQUISITE_MISSING",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/inventory/views.py:416,462",
+      "evidence_pointer": "backend/tests/test_s10_counts.py",
       "http_method": "POST",
       "id": "CMD-065",
       "idempotency_required": true,
       "idempotency_text": "YES stock_count.submit; count, ordered observed batch/location quantities, expected version, ledger watermark",
       "internal": false,
       "lock_plan": "StockCount; StockCountLines sorted; BatchLocationBalances sorted for watermark verification",
-      "manual_finding": true,
       "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
@@ -4099,20 +4098,8 @@
       "slices": [
         "S-10"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "VERIFIED",
       "views": [
-        {
-          "capabilities": [],
-          "capability": "inventory.adjust",
-          "capability_source": "capability",
-          "methods": [
-            "post"
-          ],
-          "serializer": "StockCountOpenSerializer",
-          "url": "counts/open/",
-          "url_name": "inventory-count-open",
-          "view": "inventory.views.StockCountOpenView"
-        },
         {
           "capabilities": [],
           "capability": "inventory.adjust",
@@ -4450,13 +4437,13 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "invoice_issue is also exposed by InvoiceListCreateView (POST invoices/) without declaring CMD-071; the canonical issue path runs through visit check-in.",
+      "discrepancy": "D-13: canonical invoice_issue runs through visit check-in (issue_exact_source_lines); manual InvoiceListCreateView now uses the documented compat namespace and is allowlisted.",
       "error_codes": [
         "ALREADY_EXISTS",
         "PAYER_REQUIRED",
         "SERVICE_NOT_PRICED"
       ],
-      "evidence_pointer": "backend/billing/views.py:InvoiceListCreateView",
+      "evidence_pointer": "backend/billing/views.py:71,112",
       "http_method": "POST",
       "id": "CMD-071",
       "idempotency_required": true,
@@ -4489,7 +4476,7 @@
         "S-05",
         "S-14"
       ],
-      "verdict": "MISMATCH",
+      "verdict": "PARTIAL",
       "views": []
     },
     {
@@ -6564,20 +6551,19 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106.",
+      "discrepancy": "",
       "error_codes": [
         "UNSUPPORTED_OPERATION",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/billing/views.py:PaymentMethodListView",
+      "evidence_pointer": "backend/billing/views.py:443,466",
       "http_method": "POST",
       "id": "CMD-106",
       "idempotency_required": true,
       "idempotency_text": "YES payment_method.configure; organisation/facility scope, method code, active/manual properties, expected version",
       "internal": false,
       "lock_plan": "existing PaymentMethodConfiguration",
-      "manual_finding": true,
-      "method_match": false,
+      "method_match": true,
       "missing_audit_codes": [],
       "missing_error_codes": [],
       "module": "application.billing",
@@ -6594,13 +6580,27 @@
           "token": "billing.services.payment_methods.upsert"
         }
       ],
-      "severity": "P2",
+      "severity": "P3",
       "slice_test_references_command": false,
       "slices": [
         "S-05"
       ],
-      "verdict": "MISMATCH",
-      "views": []
+      "verdict": "VERIFIED",
+      "views": [
+        {
+          "capabilities": [],
+          "capability": "billing.payment.record",
+          "capability_source": "capability",
+          "methods": [
+            "get",
+            "post"
+          ],
+          "serializer": "PaymentMethodConfigureSerializer",
+          "url": "payment-methods/",
+          "url_name": "payment-methods",
+          "view": "billing.views.PaymentMethodListView"
+        }
+      ]
     },
     {
       "actor": "authorized laboratory configuration actor; supplied test/analyte identity, specimen/result-entry facts, ordered analytes and authority-approved reference range/note versions; BP-BL-04/06",
@@ -8219,20 +8219,20 @@
     "active_commands": 134,
     "base": "54291e4",
     "generated_at": "2026-11-19",
-    "manual_overrides": 17,
+    "manual_overrides": 16,
     "retired_excluded": [
       "CMD-097",
       "CMD-107"
     ],
     "severity_counts": {
-      "P2": 57
+      "P2": 55
     },
     "url_patterns": 152,
     "verdict_counts": {
       "FENCED": 52,
-      "MISMATCH": 5,
-      "PARTIAL": 52,
-      "VERIFIED": 25
+      "MISMATCH": 2,
+      "PARTIAL": 53,
+      "VERIFIED": 27
     }
   }
 }

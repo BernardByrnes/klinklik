@@ -73,6 +73,9 @@ class InvoiceListCreateView(TenantAPIView):
     serializer_class = InvoiceCreateSerializer
     response_serializer_classes = {"GET": InvoiceSerializer, "POST": InvoiceSerializer}
     response_is_list = {"GET": True, "POST": False}
+    # D-13: the canonical invoice_issue path is visit check-in's
+    # issue_exact_source_lines. This manual POST is a compatibility exposure.
+    idempotency_operation = "legacy.invoice.issue.compat"
 
     def get(self, request):
         invoices = Invoice.objects.filter(
@@ -445,6 +448,8 @@ class PaymentMethodListView(TenantAPIView):
     serializer_class = PaymentMethodConfigureSerializer
     response_serializer_class = PaymentMethodSerializer
     response_is_list = True
+    # D-13: this is the only first-party route calling configure_payment_method.
+    idempotency_operation = "CMD-106"
 
     def _require_configure(self, request):
         if not request.user.has_capability(

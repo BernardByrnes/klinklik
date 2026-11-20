@@ -60,7 +60,11 @@ def test_s17_code_idempotency_labels_are_registered_or_documented_as_mismatch():
         text = path.read_text(encoding="utf-8")
         labels.update(re.findall(r'idempotency_operation\s*=\s*"([^"]+)"', text))
     unknown = labels - active
-    assert unknown == {"legacy.invoice.payment.compat"}, unknown
+    assert unknown == {
+        "legacy.invoice.payment.compat",
+        "legacy.stock_count.open.compat",
+        "legacy.invoice.issue.compat",
+    }, unknown
 
 
 def test_s18_lab_and_inventory_labels_match_registry_ids():
@@ -119,10 +123,10 @@ def test_s17_summary_and_report_counts_match_the_records():
         for verdict in ("VERIFIED", "PARTIAL", "MISMATCH", "FENCED")
     }
     assert audit["summary"]["verdict_counts"] == expected
-    assert audit["summary"]["severity_counts"] == {"P2": 57}
+    assert audit["summary"]["severity_counts"] == {"P2": 55}
     report = (ROOT / "docs/implementation/s17-cmd-audit.md").read_text(encoding="utf-8")
     assert "P1" not in report.split("## Discrepancy list")[0].split("## Summary")[1]
-    assert "P2 57" in report
+    assert "P2 55" in report
     for verdict, count in expected.items():
         assert f"{verdict} {count}" in report
     assert "P2 | CMD-044" in report
@@ -179,3 +183,19 @@ def test_s20_view_verb_and_command_triples_are_pinned():
         assert hasattr(view, verb), (view.__name__, verb)
         other = "post" if verb == "patch" else "patch"
         assert not hasattr(view, other), (view.__name__, other)
+
+
+def test_s21_compat_namespaces_and_documented_divergences():
+    from billing.views import InvoiceCanonicalPaymentView, InvoiceListCreateView
+    from inventory.views import StockCountOpenView, StockCountSubmitView
+
+    assert StockCountSubmitView.idempotency_operation == "CMD-065"
+    assert StockCountOpenView.idempotency_operation == "legacy.stock_count.open.compat"
+    assert InvoiceListCreateView.idempotency_operation == "legacy.invoice.issue.compat"
+    assert InvoiceCanonicalPaymentView.idempotency_operation == "CMD-075"
+
+    audit = _audit()
+    for command_id in ("CMD-014", "CMD-136"):
+        row = next(command for command in audit["commands"] if command["id"] == command_id)
+        assert row["verdict"] == "MISMATCH"
+        assert row["discrepancy"]

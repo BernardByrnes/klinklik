@@ -8,10 +8,10 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 ## Summary
 
 - Active commands audited: 134 of 134; retired CMD-097 and CMD-107 excluded.
-- Verdicts: FENCED 52, MISMATCH 5, PARTIAL 52, VERIFIED 25.
+- Verdicts: FENCED 52, MISMATCH 2, PARTIAL 53, VERIFIED 27.
 - Machine inventory: `docs/implementation/s17-cmd-audit.json`; machine assertions: `backend/tests/test_s17_cmd_audit.py`.
-- Discrepancy severity: P2 57.
-- Manual findings applied: 17.
+- Discrepancy severity: P2 55.
+- Manual findings applied: 16.
 
 ## Discrepancy list (severity ordered)
 
@@ -45,11 +45,10 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-062 | otc_sale | PARTIAL | Declared audit codes not found in code: ['OTC_SALE_CONFIRMED', 'RECEIPT_ISSUED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-063 | stock_receive | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-064 | stock_transfer | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-065 | stock_count_submit | MISMATCH | StockCountOpenView and StockCountSubmitView both declare CMD-065; open and submit are distinct operations sharing one idempotency namespace. | `backend/inventory/views.py:416,462` |
 | P2 | CMD-066 | stock_count_approve | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-068 | stock_quarantine | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-069 | stock_dispose | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-071 | invoice_issue | MISMATCH | invoice_issue is also exposed by InvoiceListCreateView (POST invoices/) without declaring CMD-071; the canonical issue path runs through visit check-in. | `backend/billing/views.py:InvoiceListCreateView` |
+| P2 | CMD-071 | invoice_issue | PARTIAL | D-13: canonical invoice_issue runs through visit check-in (issue_exact_source_lines); manual InvoiceListCreateView now uses the documented compat namespace and is allowlisted. | `backend/billing/views.py:71,112` |
 | P2 | CMD-073 | invoice_manual_line_add | PARTIAL | Declared audit codes not found in code: ['INVOICE_MANUAL_LINE_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-075 | payment_confirm_allocate | PARTIAL | Owner-authorised compatibility namespace: legacy InvoicePaymentView uses 'legacy.invoice.payment.compat' and is allowlisted in the machine test; canonical InvoiceCanonicalPaymentView retains CMD-075. No route retired. | `backend/billing/views.py:175,205` |
 | P2 | CMD-076 | payment_reverse | PARTIAL | Declared audit codes not found in code: ['ALLOCATIONS_REVERSED', 'INVOICE_STATE']. | `backend/tests/test_s05_billing.py` |
@@ -69,7 +68,6 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-101 | followup_record | PARTIAL | Declared audit codes not found in code: ['FOLLOWUP_RECORDED']. | `backend/tests/test_s04_encounter.py` |
 | P2 | CMD-104 | stock_location_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-105 | supplier_upsert | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-106 | payment_method_configure | MISMATCH | payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106. | `backend/billing/views.py:PaymentMethodListView` |
 | P2 | CMD-108 | lab_test_catalogue_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s11_lab.py` |
 | P2 | CMD-111 | inventory_threshold_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-115 | dispense_item_not_dispensed | PARTIAL | Declared audit codes not found in code: ['DISPENSE_ITEM_NOT_DISPENSED', 'INVOICE_LINE_VOIDED_OR_REDUCED']. | `backend/tests/test_s12_dispensing.py` |
@@ -197,13 +195,13 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-062 | otc_sale | S-05,S-09,S-12,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['OTC_SALE_CONFIRMED', 'RECEIPT_ISSUED']. |
 | CMD-063 | stock_receive | S-09,S-12 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-064 | stock_transfer | S-09,S-12 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-065 | stock_count_submit | S-10 | YES | MISMATCH | P2 | StockCountOpenView and StockCountSubmitView both declare CMD-065; open and submit are distinct operations sharing one idempotency namespace. |
+| CMD-065 | stock_count_submit | S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s10_counts.py`. |
 | CMD-066 | stock_count_approve | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-067 | stock_adjust | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-068 | stock_quarantine | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-069 | stock_dispose | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-070 | stock_correction | S-09,S-10 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
-| CMD-071 | invoice_issue | S-05,S-14 | YES | MISMATCH | P2 | invoice_issue is also exposed by InvoiceListCreateView (POST invoices/) without declaring CMD-071; the canonical issue path runs through visit check-in. |
+| CMD-071 | invoice_issue | S-05,S-14 | YES | PARTIAL | P2 | D-13: canonical invoice_issue runs through visit check-in (issue_exact_source_lines); manual InvoiceListCreateView now uses the documented compat namespace and is allowlisted. |
 | CMD-072 | invoice_source_line_add | S-04,S-05,S-09,S-11,S-12 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-073 | invoice_manual_line_add | S-05 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['INVOICE_MANUAL_LINE_ADDED']. |
 | CMD-074 | invoice_line_void | S-05,S-11 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s05_billing.py`. |
@@ -237,7 +235,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-103 | medical_certificate_issue | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-104 | stock_location_configure | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-105 | supplier_upsert | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-106 | payment_method_configure | S-05 | YES | MISMATCH | P2 | payment_method_configure is implemented by PaymentMethodListView (POST payment-methods) without declaring CMD-106. |
+| CMD-106 | payment_method_configure | S-05 | YES | VERIFIED | P3 | Route/service/audit/test evidence indexed at `backend/billing/views.py:443,466`. |
 | CMD-108 | lab_test_catalogue_configure | S-11,S-13 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-109 | lab_self_verification_policy_set | S-11 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-110 | product_instruction_template_set | S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s12_dispensing.py`. |
@@ -277,5 +275,6 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 - FENCED commands are authority/scope fences, not failures. A few FENCED rows additionally carry a real duplicate-label note where both fenced views refuse state change.
 - At the S-17 base d6a92b6 the laboratory/inventory label misroutes were findings only. This S-18 branch corrected CMD-042/043/044/046/047/064 and re-marked CMD-051 FENCED; no other product behavior, verb, route or unlabeled clinical view was changed.
 - Plan-17 asks for a route with 'the same path', but the registry declares operation names (for example `POST lab_collect`), not URL paths. The audit uses the authoritative idempotency label -> view -> URL callback link; URL names differ by app (underscored reception names vs hyphenated clinical/pharmacy names), so operation-name-to-URL-name equality was not used.
+- S-21 resolved three D-13 residuals: CMD-065 is now claimed only by StockCountSubmitView (open uses a documented compat namespace); InvoiceListCreateView uses a documented compat namespace because canonical invoice issue runs through visit check-in; PaymentMethodListView is the actual canonical CMD-106 path and now carries that registry label. CMD-014 and CMD-136 remain MISMATCH rows by owner decision (no code change).
 - S-20 aligned the four registry verbs (CMD-044 PATCH, CMD-099/101/110 POST) with the same paths, payloads and idempotency namespaces. The three clinical/lab rows remain PARTIAL only because declared audit event names differ from code names; CMD-110 is VERIFIED.
 - S-19 closed the clinical P1 class: ten active clinical views now carry their registry CMD id and `requires_idempotency=True`. EncounterDiagnosisDetailView/RemoveView remain unlabelled by design: registry CMD-097 is a retired tombstone and no active id was invented. P1 count is now zero; all remaining discrepancy rows are P2 owner-deferred findings (verbs, duplicate legacy routes, compatibility namespaces, audit-name/test-naming limits).
