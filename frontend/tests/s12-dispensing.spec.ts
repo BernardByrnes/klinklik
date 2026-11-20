@@ -326,6 +326,14 @@ test("S-12 prescribes, signs, dispenses and charges one exact handover", async (
   expect(confirmAttempts).toHaveLength(2);
   expect(confirmAttempts[1]).toBe(confirmAttempts[0]);
 
+  const terminalRows = page.getByRole("listitem").filter({ hasText: patientName });
+  expect(await terminalRows.count(), "completed row should remain visible for audit").toBeGreaterThan(0);
+  await expect(
+    terminalRows.getByRole("button", {
+      name: /Claim prescription|Prepare dispense|Resume preparation/,
+    })
+  ).toHaveCount(0);
+
   session = await apiLogin(page);
   const invoice = await page.request.get(
     `${API}/api/v1/billing/invoices/${checkedIn.invoice_id}/`,
