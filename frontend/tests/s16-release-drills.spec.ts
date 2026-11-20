@@ -189,3 +189,156 @@ test("S-16 receipt print renders through the real browser print path", async ({
   const digest = createHash("sha256").update(pdf).digest("hex");
   console.log(`S16_PRINT_PDF_BYTES=${pdf.byteLength} SHA256=${digest}`);
 });
+
+test("S-33 connectivity status is accessible and offline blocks completion", async ({
+  page,
+}) => {
+  await login(page);
+  await page.goto("/patients");
+  const status = page.getByTestId("connectivity-status");
+  await expect(status).toContainText("Online");
+  await expect(status).toContainText("Patients");
+
+  const client = await page.context().newCDPSession(page);
+  await client.send("Network.enable");
+  await client.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+    connectionType: "none",
+  });
+  try {
+    await expect(status).toContainText("Offline", { timeout: 10_000 });
+    const register = page
+      .getByLabel("Register patient")
+      .getByRole("button", { name: "Register patient", exact: true });
+    await expect(register).toBeDisabled();
+    await expect(status).toContainText("Completion is unavailable");
+  } finally {
+    await client.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+      connectionType: "none",
+    });
+    await client.detach();
+  }
+});
+
+test("S-33 lost registration response recovers with the same key and no duplicate", async ({
+  page,
+}) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const fullName = `S33 Recovery${suffix}`;
+  await page.goto("/patients");
+  await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
+  await steadyFill(page, "First name", "S33");
+  await steadyFill(page, "Last name", `Recovery${suffix}`);
+  await steadyFill(page, "Phone", `075${suffix.slice(-6).padStart(6, "0")}`);
+
+  const keys: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/reception/patients/register/")
+    ) {
+      keys.push(request.headers()["idempotency-key"] ?? "");
+    }
+  });
+  let lost = false;
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    if (!lost) {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  const form = page
+    .locator("form")
+    .filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(fullName)).toHaveCount(0);
+
+  await page.getByTestId("pending-intent-review").click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  expect(keys[0]).toBeTruthy();
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+});
+
+test("S-33 authority change clears a pending intent and protected data", async ({
+  page,
+}) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const fullName = `S33 Authority${suffix}`;
+  await page.goto("/patients");
+  await steadyFill(page, "First name", "S33");
+  await steadyFill(page, "Last name", `Authority${suffix}`);
+  await steadyFill(page, "Phone", `075${suffix.slice(-6).padStart(6, "0")}`);
+
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    await route.abort("failed");
+  });
+  const form = page
+    .locator("form")
+    .filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: /demo|KlinKlik Demo/i }).first().click().catch(async () => {
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  });
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByText(fullName)).toHaveCount(0);
+
+  await login(page);
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+});
+
+test("S-33 throttled worklist records cold and warm samples", async ({ page }) => {
+  test.setTimeout(180_000);
+  await login(page);
+  const client = await page.context().newCDPSession(page);
+  await client.send("Network.enable");
+  await client.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 450,
+    downloadThroughput: 50 * 1024,
+    uploadThroughput: 20 * 1024,
+    connectionType: "cellular3g",
+  });
+  const samples: number[] = [];
+  try {
+    let started = Date.now();
+    await page.goto("/patients");
+    await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible({ timeout: 60_000 });
+    samples.push(Date.now() - started);
+    await page.getByRole("link", { name: "Overview", exact: true }).click();
+    started = Date.now();
+    await page.getByRole("link", { name: "Patients", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible({ timeout: 60_000 });
+    samples.push(Date.now() - started);
+  } finally {
+    await client.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+      connectionType: "none",
+    });
+    await client.detach();
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  console.log(`S33_NFR_PROFILE=450ms,50KB/s,20KB/s samples=${samples.join(",")} p95=${sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]}`);
+});
