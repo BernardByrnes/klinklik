@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
+import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
 import {
   getAuthoritySnapshot,
   isCurrentAuthority,
@@ -164,6 +165,7 @@ function BillingWorkspace() {
   const [closureBlockers, setClosureBlockers] = useState<ClosureBlocker[]>([]);
   const [closureResult, setClosureResult] = useState<VisitClosureResponse | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
+  const reprintIntentRef = useRef<{ receiptId: string; key: string; registryId: string } | null>(null);
 
   const [patientSearch, setPatientSearch] = useState("");
   const [debouncedPatientSearch, setDebouncedPatientSearch] = useState("");
@@ -528,20 +530,44 @@ function BillingWorkspace() {
   });
 
   const reprintReceipt = useMutation({
-    mutationFn: (receiptId: string) =>
-      apiRequest(`/api/v1/billing/receipts/${receiptId}/reprint/`, {
+    mutationFn: (input: { receiptId: string; key: string }) =>
+      apiRequest(`/api/v1/billing/receipts/${input.receiptId}/reprint/`, {
         method: "POST",
-        headers: { "Idempotency-Key": newIdempotencyKey("s05-reprint") },
+        headers: { "Idempotency-Key": input.key },
         body: JSON.stringify({}),
       }),
     onSuccess: () => {
-      setNotice((current) => (current ? current : "Receipt reprint recorded."));
+      resolveIntent(reprintIntentRef.current?.registryId);
+      reprintIntentRef.current = null;
+      setNotice((current) => current ? current : "Receipt reprint recorded.");
       window.print();
     },
-    onError: (reason) => {
+    onError: (reason, input) => {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) {
+        resolveIntent(reprintIntentRef.current?.registryId);
+        reprintIntentRef.current = null;
+      } else if (!reprintIntentRef.current) {
+        const registryId = registerIntent({
+          operation: "receipt-reprint",
+          target: "receipt",
+          retry: async () => reprintReceipt.mutate(input),
+        });
+        reprintIntentRef.current = { ...input, registryId };
+      }
       setError(errorMessage(reason));
     },
   });
+
+  const startReprint = (receiptId: string) => {
+    const input = { receiptId, key: newIdempotencyKey("s05-reprint") };
+    setError("");
+    reprintReceipt.mutate(input);
+  };
 
   const repriceInvoice = useMutation({
     mutationFn: (invoiceId: string) =>
@@ -1351,7 +1377,7 @@ function BillingWorkspace() {
                   <Button
                     variant="secondary"
                     disabled={reprintReceipt.isPending}
-                    onClick={() => reprintReceipt.mutate(activeReceipt.data!.id)}
+                    onClick={() => startReprint(activeReceipt.data!.id)}
                   >
                     <IconPrinter className="h-4 w-4" />
                     {reprintReceipt.isPending ? "Preparing…" : "Print receipt"}

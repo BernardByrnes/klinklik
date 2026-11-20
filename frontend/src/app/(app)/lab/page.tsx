@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiRequest, newIdempotencyKey } from "../../../lib/api";
+import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import { useConnectivity } from "../../../lib/connectivity";
+import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
 import { useSession } from "../../../lib/session";
 import { IconBilling } from "../../../components/icons";
 import {
@@ -125,11 +127,13 @@ function Row({ row, action }: { row: LabRow; action?: React.ReactNode }) {
 }
 
 export default function LabPage() {
+  const online = useConnectivity().online;
   const { can } = useSession();
   const canEnter = can("lab.result.entry");
   const canVerify = can("lab.result.verify");
   const canReadWorklist = canEnter || canVerify;
   const queryClient = useQueryClient();
+  const labIntentRefs = useRef<Record<string, string>>({});
   const [selected, setSelected] = useState<SelectedItem | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [notDone, setNotDone] = useState<Record<string, boolean>>({});
@@ -223,16 +227,39 @@ export default function LabPage() {
     }
   };
 
+  const registerLabIntent = (operation: string, retry: () => Promise<void>) => {
+    if (labIntentRefs.current[operation]) return;
+    labIntentRefs.current[operation] = registerIntent({
+      operation,
+      target: "laboratory-item",
+      retry,
+    });
+  };
+  const resolveLabIntent = (operation: string) => {
+    resolveIntent(labIntentRefs.current[operation]);
+    delete labIntentRefs.current[operation];
+  };
+
   const collect = useMutation({
-    mutationFn: (itemId: string) =>
-      apiRequest(`/api/v1/lab/items/${itemId}/collect/`, {
+    mutationFn: (input: { itemId: string; key: string }) =>
+      apiRequest(`/api/v1/lab/items/${input.itemId}/collect/`, {
         method: "POST",
-        headers: { "Idempotency-Key": newIdempotencyKey(`lab-collect-${itemId}`) },
+        headers: { "Idempotency-Key": input.key },
         body: JSON.stringify({}),
       }),
     onSuccess: () => {
+      resolveLabIntent("lab-collect");
       setNotice("Sample recorded.");
       invalidateLab();
+    },
+    onError: (reason, input) => {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) resolveLabIntent("lab-collect");
+      else registerLabIntent("lab-collect", async () => collect.mutate(input));
     },
   });
 
@@ -252,9 +279,19 @@ export default function LabPage() {
         body: JSON.stringify({ values, comments, complete: true }),
       }),
     onSuccess: () => {
+      resolveLabIntent("lab-result-save");
       setSelected(null);
       setNotice("Results saved for verification.");
       invalidateLab();
+    },
+    onError: (reason, input) => {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) resolveLabIntent("lab-result-save");
+      else registerLabIntent("lab-result-save", async () => save.mutate(input));
     },
   });
 
@@ -274,9 +311,19 @@ export default function LabPage() {
         body: JSON.stringify({ expected_version: expectedVersion }),
       }),
     onSuccess: () => {
+      resolveLabIntent("lab-release");
       setSelected(null);
       setNotice("Result released to the ordering clinician.");
       invalidateLab();
+    },
+    onError: (reason, input) => {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) resolveLabIntent("lab-release");
+      else registerLabIntent("lab-release", async () => release.mutate(input));
     },
   });
 
@@ -286,6 +333,10 @@ export default function LabPage() {
   if (!canReadWorklist) {
     return <UnauthorisedState capability="lab.result.entry or lab.result.verify" />;
   }
+
+  const startCollect = (itemId: string) => {
+    collect.mutate({ itemId, key: newIdempotencyKey(`lab-collect-${itemId}`) });
+  };
 
   const openEntry = (row: LabRow) => {
     setSelected({ itemId: row.item_id, mode: "entry" });
@@ -420,7 +471,7 @@ export default function LabPage() {
                       />
                     </label>
                     <div>
-                      <Button disabled={busy} onClick={submitResults}>
+                      <Button disabled={busy || !online} onClick={submitResults}>
                         {save.isPending ? "Saving…" : "Save results"}
                       </Button>
                     </div>
@@ -490,7 +541,7 @@ export default function LabPage() {
                 <ul className="divide-y divide-line-soft">
                   {sections.to_collect.map((row) => (
                     <Row key={row.item_id} row={row} action={canEnter ? (
-                      <Button variant="secondary" disabled={busy} onClick={() => collect.mutate(row.item_id)}>
+                      <Button variant="secondary" disabled={busy || !online} onClick={() => startCollect(row.item_id)}>
                         Collect sample
                       </Button>
                     ) : (
@@ -557,7 +608,7 @@ export default function LabPage() {
                 <ul className="divide-y divide-line-soft">
                   {sections.rejected.map((row) => (
                     <Row key={row.item_id} row={row} action={canEnter ? (
-                      <Button variant="secondary" disabled={busy} onClick={() => collect.mutate(row.item_id)}>
+                      <Button variant="secondary" disabled={busy || !online} onClick={() => startCollect(row.item_id)}>
                         Recollect sample
                       </Button>
                     ) : null} />

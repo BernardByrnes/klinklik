@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import { useConnectivity } from "../../../lib/connectivity";
+import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
 import { useSession } from "../../../lib/session";
 import { IconBilling, IconCheckCircle } from "../../../components/icons";
 import {
@@ -104,21 +106,6 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "The request could not be completed.";
 }
 
-function intentKey(organisationId: string | null, facilityId: string | null, userId: string | null, prescriptionId: string) {
-  return `pharmacy-intent:${organisationId ?? ""}:${facilityId ?? ""}:${userId ?? ""}:${prescriptionId}`;
-}
-
-function loadIntent(key: string): PharmacyIntent | null {
-  const raw = sessionStorage.getItem(key);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as PharmacyIntent;
-  } catch {
-    sessionStorage.removeItem(key);
-    return null;
-  }
-}
-
 function Row({
   row,
   action,
@@ -157,11 +144,10 @@ function Row({
 }
 
 export default function PharmacyPage() {
-  const { can, session, currentFacility } = useSession();
-  const queryClient = useQueryClient();
-  const organisationId = session?.organisation.id ?? null;
-  const facilityId = currentFacility?.id ?? null;
+  const online = useConnectivity().online;
+  const { can, session } = useSession();
   const userId = session?.user.id ?? null;
+  const queryClient = useQueryClient();
   const queueKey = useProtectedQueryKey("pharmacy-queue");
   const queue = useQuery({
     queryKey: queueKey,
@@ -172,6 +158,7 @@ export default function PharmacyPage() {
   const [error, setError] = useState("");
   const [finalConfirmation, setFinalConfirmation] = useState("");
   const reviewRef = useRef<HTMLDivElement | null>(null);
+  const registryIdRef = useRef<string | null>(null);
 
   const reviewKey = useProtectedQueryKey(
     "pharmacy-dispense-review",
@@ -194,15 +181,11 @@ export default function PharmacyPage() {
 
   const storeIntent = (next: PharmacyIntent | null) => {
     setIntent(next);
-    if (!next) return;
-    sessionStorage.setItem(
-      intentKey(organisationId, facilityId, userId, next.prescriptionId),
-      JSON.stringify(next),
-    );
   };
 
-  const clearIntent = (prescriptionId?: string) => {
-    if (prescriptionId) sessionStorage.removeItem(intentKey(organisationId, facilityId, userId, prescriptionId));
+  const clearIntent = () => {
+    resolveIntent(registryIdRef.current);
+    registryIdRef.current = null;
     setIntent(null);
   };
 
@@ -213,10 +196,21 @@ export default function PharmacyPage() {
       reason.status !== 408 &&
       reason.status !== 429;
     if (definite) {
-      clearIntent(current.prescriptionId);
+      clearIntent();
       refreshQueue();
       setError(errorMessage(reason));
       return;
+    }
+    if (!registryIdRef.current) {
+      registryIdRef.current = registerIntent({
+        operation: `pharmacy-${current.step}`,
+        target: `prescription-${current.prescriptionId}`,
+        retry: async () => {
+          if (current.step === "claim") claim.mutate(current);
+          else if (current.step === "prepare") prepare.mutate(current);
+          else confirm.mutate(current);
+        },
+      });
     }
     setError("The pharmacy outcome is uncertain. Retry the same step after checking the queue.");
   };
@@ -262,7 +256,7 @@ export default function PharmacyPage() {
         body: JSON.stringify({}),
       }),
     onSuccess: (_result, current) => {
-      clearIntent(current.prescriptionId);
+      clearIntent();
       setError("");
       setFinalConfirmation(`${queue.data?.active.find((row) => row.prescription_id === current.prescriptionId)?.patient_name ?? "Patient"} · dispense confirmed`);
       refreshQueue();
@@ -295,8 +289,8 @@ export default function PharmacyPage() {
   };
 
   const resume = (row: QueueRow) => {
-    const existing = loadIntent(intentKey(organisationId, facilityId, userId, row.prescription_id));
-    const next: PharmacyIntent = existing ?? {
+    // Resume identity comes from the server projection, never from persisted keys.
+    const next: PharmacyIntent = {
       prescriptionId: row.prescription_id,
       lines: row.items
         .filter((item) => item.state === "PENDING")
@@ -309,7 +303,7 @@ export default function PharmacyPage() {
       provisionalId: row.resumable_dispense_id,
       step: "confirm",
     };
-    storeIntent({ ...next, provisionalId: row.resumable_dispense_id, step: "confirm" });
+    storeIntent(next);
     setFinalConfirmation("");
     setError("");
   };
@@ -388,7 +382,7 @@ export default function PharmacyPage() {
           <p className="mt-3 text-[13px] font-bold text-ink">Total {review.data.total} {review.data.currency}</p>
           <div className="mt-3">
             <Button
-              disabled={!review.data.eligible || busy}
+              disabled={!review.data.eligible || busy || !online}
               onClick={() => intent && confirm.mutate(intent)}
             >
               {confirm.isPending ? "Confirming…" : "Confirm handover"}
@@ -409,7 +403,7 @@ export default function PharmacyPage() {
             Claim held for {intent.prescriptionId}. Prepare the committed allocation from the server.
           </p>
           <div className="px-5 pb-4">
-            <Button disabled={busy} onClick={() => prepare.mutate(intent)}>
+            <Button disabled={busy || !online} onClick={() => prepare.mutate(intent)}>
               {prepare.isPending ? "Preparing…" : "Prepare dispense"}
             </Button>
           </div>
@@ -451,7 +445,7 @@ export default function PharmacyPage() {
                             Resume preparation
                           </Button>
                         ) : (
-                          <Button variant="secondary" disabled={busy} onClick={() => startClaim(row)}>
+                          <Button variant="secondary" disabled={busy || !online} onClick={() => startClaim(row)}>
                             Claim prescription
                           </Button>
                         )

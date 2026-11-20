@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import { useConnectivity } from "../../../lib/connectivity";
+import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
 import { useSession } from "../../../lib/session";
 import { IconBilling, IconCheckCircle } from "../../../components/icons";
 import {
@@ -128,8 +130,10 @@ function statusTone(status: string) {
 const emptyReceiptRow = (): ReceiptRow => ({ batchNo: "", expiryDate: "", quantity: "" });
 
 export default function InventoryPage() {
+  const online = useConnectivity().online;
   const { can } = useSession();
   const queryClient = useQueryClient();
+  const inventoryIntentRefs = useRef<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [locationId, setLocationId] = useState("");
   const [productId, setProductId] = useState("");
@@ -215,6 +219,19 @@ export default function InventoryPage() {
   const defaultLocation =
     locations.data?.find((item) => item.is_default)?.id ?? locations.data?.[0]?.id ?? "";
 
+  const registerInventoryIntent = (operation: string, retry: () => Promise<void>) => {
+    if (inventoryIntentRefs.current[operation]) return;
+    inventoryIntentRefs.current[operation] = registerIntent({
+      operation,
+      target: "inventory-workbench",
+      retry,
+    });
+  };
+  const resolveInventoryIntent = (operation: string) => {
+    resolveIntent(inventoryIntentRefs.current[operation]);
+    delete inventoryIntentRefs.current[operation];
+  };
+
   const receive = useMutation({
     mutationFn: (intent: ReceiptIntent) =>
       apiRequest<{ receipt_no: string; warning_near_expiry: boolean }>(
@@ -226,6 +243,7 @@ export default function InventoryPage() {
         },
       ),
     onSuccess: (result) => {
+      resolveInventoryIntent("inventory-receipt");
       setNotice(
         result.warning_near_expiry
           ? `Stock received on ${result.receipt_no}. Expiry is inside the 90-day warning horizon.`
@@ -236,7 +254,7 @@ export default function InventoryPage() {
       setReceiptRows([emptyReceiptRow()]);
       refreshInventory();
     },
-    onError: (reason) => {
+    onError: (reason, intent) => {
       setNotice("");
       const definite =
         reason instanceof ApiRequestError &&
@@ -244,11 +262,13 @@ export default function InventoryPage() {
         reason.status !== 408 &&
         reason.status !== 429;
       if (definite) {
+        resolveInventoryIntent("inventory-receipt");
         setPendingReceipt(null);
         setError(errorMessage(reason));
         refreshInventory();
         return;
       }
+      registerInventoryIntent("inventory-receipt", async () => receive.mutate(intent));
       setError("The receipt outcome is uncertain. Retry the same receipt; do not post a new one.");
     },
   });
@@ -279,16 +299,17 @@ export default function InventoryPage() {
   };
 
   const openCount = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (key: string) => {
       const resolvedLocation = locationId || defaultLocation;
       const opened = await apiRequest<{ id: string }>("/api/v1/inventory/counts/open/", {
         method: "POST",
-        headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-open") },
+        headers: { "Idempotency-Key": key },
         body: JSON.stringify({ location_id: resolvedLocation }),
       });
       return apiRequest<CountSheet>(`/api/v1/inventory/counts/${opened.id}/`);
     },
     onSuccess: (sheet) => {
+      resolveInventoryIntent("inventory-count-open");
       setCountSheet(sheet);
       setCountValues(Object.fromEntries(sheet.lines.map((line) => [line.id, line.counted_qty ?? ""])));
       setCountValidationFailed(false);
@@ -296,14 +317,21 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason) => {
+    onError: (reason, key) => {
       setNotice("");
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) resolveInventoryIntent("inventory-count-open");
+      else registerInventoryIntent("inventory-count-open", async () => openCount.mutate(key));
       setError(errorMessage(reason));
     },
   });
 
   const submitCount = useMutation({
-    mutationFn: () => {
+    mutationFn: (key: string) => {
       if (!countSheet) throw new Error("Open a count first.");
       const observed = countSheet.lines.map((line) => ({
         line_id: line.id,
@@ -318,7 +346,7 @@ export default function InventoryPage() {
         `/api/v1/inventory/counts/${countSheet.id}/submit/`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-submit") },
+          headers: { "Idempotency-Key": key },
           body: JSON.stringify({
             expected_version: countSheet.version,
             lines: observed.map(({ line_id, value }) => ({ line_id, counted_qty: value })),
@@ -327,6 +355,7 @@ export default function InventoryPage() {
       );
     },
     onSuccess: (result) => {
+      resolveInventoryIntent("inventory-count-submit");
       setCountSheet((current) =>
         current ? { ...current, state: result.state, version: result.version } : current,
       );
@@ -335,33 +364,48 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason) => {
+    onError: (reason, key) => {
       setNotice("");
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) resolveInventoryIntent("inventory-count-submit");
+      else registerInventoryIntent("inventory-count-submit", async () => submitCount.mutate(key));
       setError(errorMessage(reason));
     },
   });
 
   const approveCount = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (key: string) => {
       if (!countSheet) throw new Error("Submit a count first.");
       const approved = await apiRequest<{ id: string; state: string; version: number }>(
         `/api/v1/inventory/counts/${countSheet.id}/approve/`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-approve") },
+          headers: { "Idempotency-Key": key },
           body: JSON.stringify({ expected_version: countSheet.version }),
         },
       );
       return apiRequest<CountSheet>(`/api/v1/inventory/counts/${approved.id}/?reveal=1`);
     },
     onSuccess: (sheet) => {
+      resolveInventoryIntent("inventory-count-approve");
       setCountSheet(sheet);
       setNotice("Stock count approved. Counter-movements were posted.");
       setError("");
       refreshInventory();
     },
-    onError: (reason) => {
+    onError: (reason, key) => {
       setNotice("");
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) resolveInventoryIntent("inventory-count-approve");
+      else registerInventoryIntent("inventory-count-approve", async () => approveCount.mutate(key));
       setError(errorMessage(reason));
     },
   });
@@ -465,7 +509,7 @@ export default function InventoryPage() {
               })}
               <div className="flex gap-2">
                 <Button variant="secondary" onClick={() => setReceiptRows((current) => [...current, emptyReceiptRow()])}>Add receipt line</Button>
-                <Button disabled={receive.isPending || Boolean(pendingReceipt)} onClick={confirmReceipt}>
+                <Button disabled={receive.isPending || Boolean(pendingReceipt) || !online} onClick={confirmReceipt}>
                   {receive.isPending ? "Posting…" : "Post receipt"}
                 </Button>
               </div>
@@ -482,7 +526,7 @@ export default function InventoryPage() {
               <Select aria-label="Location" value={locationId || defaultLocation} onChange={(event) => setLocationId(event.target.value)}>
                 {(locations.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </Select>
-              <Button variant="secondary" disabled={openCount.isPending} onClick={() => void openCount.mutate()}>
+              <Button variant="secondary" disabled={openCount.isPending} onClick={() => void openCount.mutate(newIdempotencyKey("inventory-count-open"))}>
                 {openCount.isPending ? "Opening…" : "Open count"}
               </Button>
               {countSheet ? (
@@ -510,9 +554,9 @@ export default function InventoryPage() {
                       );
                     })}
                   </ul>
-                  <Button disabled={submitCount.isPending} onClick={() => submitCount.mutate()}>Submit count</Button>
+                  <Button disabled={submitCount.isPending} onClick={() => submitCount.mutate(newIdempotencyKey("inventory-count-submit"))}>Submit count</Button>
                   {countSheet.state === "SUBMITTED" && can("inventory.approve") ? (
-                    <Button disabled={approveCount.isPending} onClick={() => approveCount.mutate()}>
+                    <Button disabled={approveCount.isPending || !online} onClick={() => approveCount.mutate(newIdempotencyKey("inventory-count-approve"))}>
                       Approve count
                     </Button>
                   ) : null}

@@ -7,6 +7,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest, ApiRequestError, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import { useConnectivity } from "../../../lib/connectivity";
+import { registerIntent, resolveIntent } from "../../../lib/intent-registry";
 import { useSession } from "../../../lib/session";
 import {
   ArrivalEnquiryResponse,
@@ -139,6 +141,7 @@ function RadioGroup({
 }
 
 function PatientsWorkspace() {
+  const online = useConnectivity().online;
   const { session, can } = useSession();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
@@ -178,6 +181,8 @@ function PatientsWorkspace() {
   const [clockMs, setClockMs] = useState<number | null>(null);
   const registerIdempotencyKey = useRef<string | null>(null);
   const checkInIdempotencyKey = useRef<string | null>(null);
+  const registerIntentRef = useRef<string | null>(null);
+  const checkInIntentRef = useRef<string | null>(null);
   const enquiryIdempotencyKey = useRef<string | null>(null);
   const enquirySourceEventId = useRef<string | null>(null);
   const cancelIdempotencyKey = useRef<string | null>(null);
@@ -267,6 +272,8 @@ function PatientsWorkspace() {
     onSuccess: async (result) => {
       if (result.next_action === "RESOLVE_DUPLICATE") {
         registerIdempotencyKey.current = null;
+        resolveIntent(registerIntentRef.current);
+        registerIntentRef.current = null;
         setFailedAction(null);
         setDuplicateCandidates(result.duplicate_candidates);
         setNotice("Possible duplicate patient found. Review the match before creating a new record.");
@@ -274,6 +281,8 @@ function PatientsWorkspace() {
         return;
       }
       registerIdempotencyKey.current = null;
+      resolveIntent(registerIntentRef.current);
+      registerIntentRef.current = null;
       setFailedAction(null);
       setCancelledVisit(null);
       setContextVisitId(null);
@@ -306,8 +315,21 @@ function PatientsWorkspace() {
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patients") });
     },
     onError: (reason) => {
-      if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) {
         registerIdempotencyKey.current = null;
+        resolveIntent(registerIntentRef.current);
+        registerIntentRef.current = null;
+      } else if (!registerIntentRef.current) {
+        registerIntentRef.current = registerIntentRef.current ?? registerIntent({
+          operation: "patient-registration",
+          target: "new-patient",
+          retry: async () => createPatient.mutate(undefined),
+        });
       }
       setNotice("");
       setFailedAction("register");
@@ -331,6 +353,8 @@ function PatientsWorkspace() {
       }, checkInIdempotencyKey.current ?? (checkInIdempotencyKey.current = newIdempotencyKey("visit-check-in"))),
     onSuccess: (result) => {
       checkInIdempotencyKey.current = null;
+      resolveIntent(checkInIntentRef.current);
+      checkInIntentRef.current = null;
       setFailedAction(null);
       setCancelledVisit(null);
       setContextVisitId(result.visit_id);
@@ -347,8 +371,21 @@ function PatientsWorkspace() {
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("visit-context", result.visit_id) });
     },
     onError: (reason) => {
-      if (reason instanceof ApiRequestError && reason.status >= 400 && reason.status < 500 && reason.status !== 409) {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) {
         checkInIdempotencyKey.current = null;
+        resolveIntent(checkInIntentRef.current);
+        checkInIntentRef.current = null;
+      } else if (!checkInIntentRef.current) {
+        checkInIntentRef.current = registerIntent({
+          operation: "visit-check-in",
+          target: "selected-visit",
+          retry: async () => checkIn.mutate(),
+        });
       }
       setNotice("");
       setFailedAction("check-in");
@@ -731,7 +768,7 @@ function PatientsWorkspace() {
                   </div>
                 ) : null}
                 <div className="sm:col-span-2">
-                  <Button type="submit" disabled={createPatient.isPending}>
+                  <Button type="submit" disabled={createPatient.isPending || !online}>
                     {createPatient.isPending ? "Registering…" : "Register patient"}
                   </Button>
                 </div>
@@ -942,6 +979,7 @@ function PatientsWorkspace() {
                   <Button
                     disabled={
                       checkIn.isPending ||
+                      !online ||
                       departments.isLoading ||
                       !departments.data?.length ||
                       Boolean(openVisit)
