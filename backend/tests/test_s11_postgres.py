@@ -160,3 +160,62 @@ def test_pg_s11_concurrent_release_has_one_winner(tenant, authed_client, enabled
         assert LabOrderItem.objects.get(id=item_id).state == "RELEASED"
         assert LabResultVersion.objects.filter(result__item_id=item_id).count() == 1
         assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 1
+
+
+def test_pg_s30_detail_read_and_stale_release_conflict(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-30 (PG): bounded draft read and version guard hold under the app role."""
+
+    from laboratory.models import LabAnalyteDefinition
+    from tests.test_s11_lab import _admin_client
+
+    item_id, test = _setup(tenant, authed_client)
+    collected = authed_client.post(
+        f"/api/v1/lab/items/{item_id}/collect/", {}, format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-pg-collect-{uuid4().hex}",
+    )
+    assert collected.status_code == 200, collected.data
+    with tenant_atomic(tenant.organisation.id):
+        analyte = LabAnalyteDefinition.objects.get(test_id=test["id"])
+    first = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": [{"analyte_id": str(analyte.id), "value": "10.0"}], "complete": True},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-pg-result-1-{uuid4().hex}",
+    )
+    assert first.status_code == 201, first.data
+    observed = first.data["version_no"]
+
+    verifier, _ = _admin_client(tenant)
+    detail = verifier.get(f"/api/v1/lab/items/{item_id}/detail/")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["version_no"] == observed
+    assert any(value["value"] == "10.0" for value in detail.data["values"])
+
+    second = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {"values": [{"analyte_id": str(analyte.id), "value": "11.0"}], "complete": True},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-pg-result-2-{uuid4().hex}",
+    )
+    assert second.status_code == 201, second.data
+    stale = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": observed},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-pg-stale-{uuid4().hex}",
+    )
+    assert stale.status_code == 412, stale.data
+    current = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": observed + 1},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-pg-current-{uuid4().hex}",
+    )
+    assert current.status_code == 200, current.data
+    with tenant_atomic(tenant.organisation.id):
+        assert LabOrderItem.objects.get(id=item_id).state == "RELEASED"
+        assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 1
+        for event in AuditEvent.objects.filter(event_code="LAB_RESULTS_READ"):
+            assert "10.0" not in str(event.after)

@@ -716,3 +716,117 @@ test("S-30 clinician sees status only until release, then read-only results", as
   await expect(page.getByText(/Enter results/)).toHaveCount(0);
 
 });
+
+function s30P95(samples: number[]) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
+}
+
+test("S-30 200-item lab worklist paginates and records p95", async ({ page }) => {
+  await login(page);
+  const session = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const setup = await s30SetupLabItem(page, session, suffix, { action: "collect" });
+  const nfrSession = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const services = (await (
+    await page.request.get(`${API}/api/v1/billing/services/`, { headers: headers(nfrSession) })
+  ).json()) as Array<{ id: string }>;
+  const extraTestIds: string[] = [];
+  for (let index = 0; index < 199; index += 1) {
+    const created = await page.request.post(`${API}/api/v1/lab/tests/`, {
+      headers: headers(nfrSession),
+      data: {
+        code: `NFR-${suffix}-${index}`,
+        name: `Synthetic NFR test ${suffix}-${index}`,
+        service_id: services[0].id,
+        result_type: "NUMERIC",
+        analytes: [
+          {
+            code: "HB",
+            name: "Haemoglobin",
+            unit: "g/dL",
+            result_type: "NUMERIC",
+            sanity_min: "0",
+            sanity_max: "250",
+            range: { low: "4", high: "11" },
+          },
+        ],
+      },
+    });
+    expect(created.ok(), await created.text()).toBeTruthy();
+    extraTestIds.push(((await created.json()) as { id: string }).id);
+  }
+  const bulk = await page.request.post(`${API}/api/v1/lab/orders/`, {
+    headers: { ...headers(nfrSession), "Idempotency-Key": `s30-nfr-bulk-${suffix}` },
+    data: {
+      encounter_id: setup.encounter.id,
+      test_ids: extraTestIds,
+      priority: "ROUTINE",
+    },
+  });
+  expect(bulk.ok(), await bulk.text()).toBeTruthy();
+
+  const apiSamples: number[] = [];
+  for (let index = 0; index < 10; index += 1) {
+    const started = Date.now();
+    const response = await page.request.get(
+      `${API}/api/v1/lab/worklist/?limit=50&offset=0`,
+      { headers: headers(nfrSession) }
+    );
+    expect(response.ok(), await response.text()).toBeTruthy();
+    apiSamples.push(Date.now() - started);
+  }
+  const worklistBody = (await (
+    await page.request.get(`${API}/api/v1/lab/worklist/?limit=50&offset=0`, {
+      headers: headers(nfrSession),
+    })
+  ).json()) as {
+    pagination: { count: number; has_more: boolean };
+    to_collect: unknown[];
+    in_bench: unknown[];
+    to_verify: unknown[];
+    rejected: unknown[];
+    released: unknown[];
+    awaiting_payment: unknown[];
+  };
+  const pageRows =
+    worklistBody.to_collect.length +
+    worklistBody.in_bench.length +
+    worklistBody.to_verify.length +
+    worklistBody.rejected.length +
+    worklistBody.released.length +
+    worklistBody.awaiting_payment.length;
+  expect(worklistBody.pagination.count).toBeGreaterThanOrEqual(200);
+  expect(pageRows).toBe(50);
+  expect(worklistBody.pagination.has_more).toBe(true);
+  console.log(`S30_NFR_API_P95_MS=${s30P95(apiSamples)} samples=${apiSamples.join(",")}`);
+  expect(s30P95(apiSamples)).toBeLessThanOrEqual(400);
+
+  await page.goto("/lab");
+  await expect(page.getByRole("listitem").first()).toBeVisible();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 150,
+    downloadThroughput: Math.round((1.6 * 1024 * 1024) / 8),
+    uploadThroughput: Math.round((750 * 1024) / 8),
+    connectionType: "cellular3g",
+  });
+  const renderSamples: number[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    await page.getByRole("link", { name: "Overview", exact: true }).click();
+    const started = Date.now();
+    await page.getByRole("link", { name: "Laboratory", exact: true }).click();
+    await expect(page.getByRole("listitem").first()).toBeVisible();
+    renderSamples.push(Date.now() - started);
+  }
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+    connectionType: "none",
+  });
+  console.log(`S30_NFR_RENDER_P95_MS=${s30P95(renderSamples)} samples=${renderSamples.join(",")}`);
+  expect(s30P95(renderSamples)).toBeLessThanOrEqual(2000);
+});
