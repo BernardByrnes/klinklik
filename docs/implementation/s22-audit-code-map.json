@@ -1,0 +1,745 @@
+{
+  "affected_rows": 27,
+  "base": "93c1af7",
+  "classification_counts": {
+    "NAMING_MAPPING": 16,
+    "UNRESOLVED": 21
+  },
+  "generated": "2026-11-20",
+  "rows": [
+    {
+      "command_id": "CMD-007",
+      "declared_codes": [
+        "INVOICE_STATE",
+        "QUEUE_LWBS"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "INVOICE_STATE",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/scheduling/services.py:311"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        },
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "QUEUE_LWBS",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/scheduling/services.py:311"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "visit_close_lwbs"
+    },
+    {
+      "command_id": "CMD-030",
+      "declared_codes": [
+        "ENCOUNTER_RESUMED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "ENCOUNTER_RESUMED",
+          "emitted_codes": [
+            {
+              "code": "UPDATE",
+              "evidence": "backend/clinical/services.py:75"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "encounter_open"
+    },
+    {
+      "command_id": "CMD-035",
+      "declared_codes": [
+        "CLINICAL_NOTE_SIGNED",
+        "QUEUE_COMPLETED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "CLINICAL_NOTE_SIGNED",
+          "emitted_codes": [
+            {
+              "code": "UPDATE",
+              "evidence": "backend/clinical/services.py:75"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        },
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "QUEUE_COMPLETED",
+          "emitted_codes": [
+            {
+              "code": "QUEUE_SERVICE_COMPLETED",
+              "evidence": "backend/scheduling/queue.py:741"
+            }
+          ],
+          "note": "Registry code maps to emitted QUEUE_SERVICE_COMPLETED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "encounter_sign"
+    },
+    {
+      "command_id": "CMD-038",
+      "declared_codes": [
+        "CLINICAL_NOTE_AMENDED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "CLINICAL_NOTE_AMENDED",
+          "emitted_codes": [
+            {
+              "code": "UPDATE",
+              "evidence": "backend/clinical/services.py:75"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "encounter_addendum"
+    },
+    {
+      "command_id": "CMD-040",
+      "declared_codes": [
+        "INVOICE_LINES_ADDED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "INVOICE_LINES_ADDED",
+          "emitted_codes": [
+            {
+              "code": "INVOICE_LINE_ADDED",
+              "evidence": "backend/billing/services.py:1299"
+            }
+          ],
+          "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "lab_order"
+    },
+    {
+      "command_id": "CMD-042",
+      "declared_codes": [
+        "QUEUE_COMPLETED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "QUEUE_COMPLETED",
+          "emitted_codes": [
+            {
+              "code": "QUEUE_SERVICE_COMPLETED",
+              "evidence": "backend/scheduling/queue.py:741"
+            }
+          ],
+          "note": "Registry code maps to emitted QUEUE_SERVICE_COMPLETED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "lab_collect"
+    },
+    {
+      "command_id": "CMD-044",
+      "declared_codes": [
+        "LAB_RESULT_DRAFT_SAVED",
+        "LAB_RESULT_ENTERED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "LAB_RESULT_DRAFT_SAVED",
+          "emitted_codes": [
+            {
+              "code": "LAB_RESULT_SAVED",
+              "evidence": "backend/laboratory/services.py:578"
+            }
+          ],
+          "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        },
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "LAB_RESULT_ENTERED",
+          "emitted_codes": [
+            {
+              "code": "LAB_RESULT_SAVED",
+              "evidence": "backend/laboratory/services.py:578"
+            }
+          ],
+          "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "lab_result_save"
+    },
+    {
+      "command_id": "CMD-046",
+      "declared_codes": [
+        "LAB_RESULT_VERIFIED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "LAB_RESULT_VERIFIED",
+          "emitted_codes": [
+            {
+              "code": "LAB_RESULT_SAVED",
+              "evidence": "backend/laboratory/services.py:578"
+            }
+          ],
+          "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "lab_release"
+    },
+    {
+      "command_id": "CMD-049",
+      "declared_codes": [
+        "LAB_RESULT_CORRECTED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "LAB_RESULT_CORRECTED",
+          "emitted_codes": [
+            {
+              "code": "LAB_RESULT_SAVED",
+              "evidence": "backend/laboratory/services.py:578"
+            }
+          ],
+          "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "lab_result_correct"
+    },
+    {
+      "command_id": "CMD-056",
+      "declared_codes": [
+        "DISPENSE_CREATED",
+        "INVOICE_LINES_ADDED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "DISPENSE_CREATED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/pharmacy/dispensing.py:229"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        },
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "INVOICE_LINES_ADDED",
+          "emitted_codes": [
+            {
+              "code": "INVOICE_LINE_ADDED",
+              "evidence": "backend/billing/services.py:1299"
+            }
+          ],
+          "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "provisional_dispense_create"
+    },
+    {
+      "command_id": "CMD-058",
+      "declared_codes": [
+        "PRESCRIPTION_CLAIM_RELEASED",
+        "PRESCRIPTION_OUTCOME"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "PRESCRIPTION_CLAIM_RELEASED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/pharmacy/dispensing.py:229"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        },
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "PRESCRIPTION_OUTCOME",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/pharmacy/dispensing.py:229"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "dispense_handover"
+    },
+    {
+      "command_id": "CMD-062",
+      "declared_codes": [
+        "OTC_SALE_CONFIRMED",
+        "RECEIPT_ISSUED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "OTC_SALE_CONFIRMED",
+          "emitted_codes": [
+            {
+              "code": "OTC_SALE_COMPLETED",
+              "evidence": "backend/pharmacy/dispensing.py:916"
+            }
+          ],
+          "note": "Registry code maps to emitted OTC_SALE_COMPLETED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        },
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "RECEIPT_ISSUED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/pharmacy/dispensing.py:229"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "otc_sale"
+    },
+    {
+      "command_id": "CMD-073",
+      "declared_codes": [
+        "INVOICE_MANUAL_LINE_ADDED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "INVOICE_MANUAL_LINE_ADDED",
+          "emitted_codes": [
+            {
+              "code": "INVOICE_LINE_ADDED",
+              "evidence": "backend/billing/services.py:1299"
+            }
+          ],
+          "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "invoice_manual_line_add"
+    },
+    {
+      "command_id": "CMD-076",
+      "declared_codes": [
+        "ALLOCATIONS_REVERSED",
+        "INVOICE_STATE"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "ALLOCATIONS_REVERSED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/billing/services.py:374"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        },
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "INVOICE_STATE",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/billing/services.py:374"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "payment_reverse"
+    },
+    {
+      "command_id": "CMD-077",
+      "declared_codes": [
+        "CREDIT_NOTE_CREATED",
+        "INVOICE_STATE"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "CREDIT_NOTE_CREATED",
+          "emitted_codes": [
+            {
+              "code": "CREDIT_NOTE_VOIDED",
+              "evidence": "backend/billing/services.py:1493"
+            }
+          ],
+          "note": "Registry code maps to emitted CREDIT_NOTE_VOIDED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        },
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "INVOICE_STATE",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/billing/services.py:374"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "credit_note_create"
+    },
+    {
+      "command_id": "CMD-079",
+      "declared_codes": [
+        "REFUND_PROCESSED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "REFUND_PROCESSED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/billing/services.py:374"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "refund_process"
+    },
+    {
+      "command_id": "CMD-082",
+      "declared_codes": [
+        "CASHIER_SHIFT_OPENED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "CASHIER_SHIFT_OPENED",
+          "emitted_codes": [
+            {
+              "code": "SHIFT_OPENED",
+              "evidence": "backend/billing/services.py:685"
+            }
+          ],
+          "note": "Registry code maps to emitted SHIFT_OPENED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "cashier_shift_open"
+    },
+    {
+      "command_id": "CMD-083",
+      "declared_codes": [
+        "CASHIER_SHIFT_CLOSED",
+        "CASHIER_SHIFT_FORCE_CLOSED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "CASHIER_SHIFT_CLOSED",
+          "emitted_codes": [
+            {
+              "code": "SHIFT_CLOSED",
+              "evidence": "backend/billing/services.py:769"
+            }
+          ],
+          "note": "Registry code maps to emitted SHIFT_CLOSED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        },
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "CASHIER_SHIFT_FORCE_CLOSED",
+          "emitted_codes": [
+            {
+              "code": "SHIFT_CLOSED",
+              "evidence": "backend/billing/services.py:769"
+            }
+          ],
+          "note": "Registry code maps to emitted SHIFT_CLOSED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "cashier_shift_close"
+    },
+    {
+      "command_id": "CMD-092",
+      "declared_codes": [
+        "ALLERGY_RECORDED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "ALLERGY_RECORDED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/clinical/allergies.py:266"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "patient_allergy_record"
+    },
+    {
+      "command_id": "CMD-093",
+      "declared_codes": [
+        "ALLERGY_STATUS_SET"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "ALLERGY_STATUS_SET",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/clinical/allergies.py:266"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "patient_allergy_status_set"
+    },
+    {
+      "command_id": "CMD-094",
+      "declared_codes": [
+        "ALLERGY_ENTERED_ERROR"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "ALLERGY_ENTERED_ERROR",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/clinical/allergies.py:266"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "allergy_entered_error"
+    },
+    {
+      "command_id": "CMD-095",
+      "declared_codes": [
+        "ALLERGY_REVIEWED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "ALLERGY_REVIEWED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/clinical/allergies.py:266"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "encounter_allergy_review"
+    },
+    {
+      "command_id": "CMD-096",
+      "declared_codes": [
+        "DIAGNOSIS_SAVED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "DIAGNOSIS_SAVED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/clinical/diagnoses.py:210"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "diagnosis_save"
+    },
+    {
+      "command_id": "CMD-099",
+      "declared_codes": [
+        "DISPOSITION_SET"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "DISPOSITION_SET",
+          "emitted_codes": [
+            {
+              "code": "UPDATE",
+              "evidence": "backend/clinical/dispositions.py:167"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "disposition_set"
+    },
+    {
+      "command_id": "CMD-101",
+      "declared_codes": [
+        "FOLLOWUP_RECORDED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "FOLLOWUP_RECORDED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/clinical/followups.py:226"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "followup_record"
+    },
+    {
+      "command_id": "CMD-115",
+      "declared_codes": [
+        "DISPENSE_ITEM_NOT_DISPENSED",
+        "INVOICE_LINE_VOIDED_OR_REDUCED"
+      ],
+      "entries": [
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "DISPENSE_ITEM_NOT_DISPENSED",
+          "emitted_codes": [
+            {
+              "code": "PRESCRIPTION_ITEM_NOT_DISPENSED",
+              "evidence": "backend/pharmacy/dispensing.py:784"
+            }
+          ],
+          "note": "Registry code maps to emitted PRESCRIPTION_ITEM_NOT_DISPENSED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        },
+        {
+          "classification": "NAMING_MAPPING",
+          "declared_code": "INVOICE_LINE_VOIDED_OR_REDUCED",
+          "emitted_codes": [
+            {
+              "code": "INVOICE_VOIDED",
+              "evidence": "backend/scheduling/queue.py:1709"
+            }
+          ],
+          "note": "Registry code maps to emitted INVOICE_VOIDED.",
+          "proposed_disposition": "accept documented mapping",
+          "risk_class": null
+        }
+      ],
+      "operation": "dispense_item_not_dispensed"
+    },
+    {
+      "command_id": "CMD-124",
+      "declared_codes": [
+        "PRESCRIPTION_ACCESSED"
+      ],
+      "entries": [
+        {
+          "classification": "UNRESOLVED",
+          "declared_code": "PRESCRIPTION_ACCESSED",
+          "emitted_codes": [
+            {
+              "code": "CREATE",
+              "evidence": "backend/pharmacy/dispensing.py:229"
+            }
+          ],
+          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
+          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "risk_class": null
+        }
+      ],
+      "operation": "pharmacy_claim"
+    }
+  ]
+}
