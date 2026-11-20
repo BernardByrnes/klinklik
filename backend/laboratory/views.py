@@ -1,7 +1,9 @@
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from core.errors import CanonicalError
+from core.permissions import HasAnyCapability, IsTenantMember
 from core.tenant_api import TenantAPIView
 from laboratory.models import LabOrderItem, LabTestDefinition
 from laboratory.serializers import (
@@ -95,7 +97,8 @@ class LabOrderCreateView(TenantAPIView):
 
 
 class LabWorklistView(TenantAPIView):
-    capability = "inventory.read"
+    permission_classes = [IsAuthenticated, IsTenantMember, HasAnyCapability]
+    capabilities = ("lab.result.entry", "lab.result.verify")
 
     def get(self, request):
         return Response(

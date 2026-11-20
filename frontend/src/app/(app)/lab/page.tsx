@@ -71,12 +71,15 @@ function Row({ row, action }: { row: LabRow; action?: React.ReactNode }) {
 
 export default function LabPage() {
   const { can } = useSession();
+  const canEnter = can("lab.result.entry");
+  const canVerify = can("lab.result.verify");
+  const canReadWorklist = canEnter || canVerify;
   const queryClient = useQueryClient();
   const worklistKey = useProtectedQueryKey("lab-worklist");
   const worklist = useQuery({
     queryKey: worklistKey,
     queryFn: () => apiRequest<Worklist>("/api/v1/lab/worklist/"),
-    enabled: can("lab.result.entry"),
+    enabled: canReadWorklist,
   });
 
   const action = useMutation({
@@ -91,8 +94,8 @@ export default function LabPage() {
     },
   });
 
-  if (!can("lab.result.entry")) {
-    return <UnauthorisedState capability="lab.result.entry" />;
+  if (!canReadWorklist) {
+    return <UnauthorisedState capability="lab.result.entry or lab.result.verify" />;
   }
 
   return (
@@ -132,13 +135,19 @@ export default function LabPage() {
                     key={row.item_id}
                     row={row}
                     action={
-                      <Button
-                        variant="secondary"
-                        disabled={action.isPending}
-                        onClick={() => action.mutate({ itemId: row.item_id, action: "collect" })}
-                      >
-                        Collect sample
-                      </Button>
+                      canEnter ? (
+                        <Button
+                          variant="secondary"
+                          disabled={action.isPending}
+                          onClick={() => action.mutate({ itemId: row.item_id, action: "collect" })}
+                        >
+                          Collect sample
+                        </Button>
+                      ) : (
+                        <p className="text-[12.5px] text-secondary">
+                          Result-entry access is required to collect this sample.
+                        </p>
+                      )
                     }
                   />
                 ))}
@@ -161,13 +170,24 @@ export default function LabPage() {
                     key={row.item_id}
                     row={row}
                     action={
-                      <Button
-                        variant="secondary"
-                        disabled={action.isPending}
-                        onClick={() => action.mutate({ itemId: row.item_id, action: "release" })}
-                      >
-                        Release result
-                      </Button>
+                      <div>
+                        <Button
+                          variant="secondary"
+                          disabled={!canVerify || action.isPending}
+                          aria-describedby={canVerify ? undefined : `release-help-${row.item_id}`}
+                          onClick={() => action.mutate({ itemId: row.item_id, action: "release" })}
+                        >
+                          Release result
+                        </Button>
+                        {!canVerify ? (
+                          <p
+                            id={`release-help-${row.item_id}`}
+                            className="mt-1 text-[12.5px] text-secondary"
+                          >
+                            A separate authorized verifier must release this result.
+                          </p>
+                        ) : null}
+                      </div>
                     }
                   />
                 ))}

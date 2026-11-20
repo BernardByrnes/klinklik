@@ -6,7 +6,13 @@ from uuid import uuid4
 
 import pytest
 
-from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
+from accounts.models import (
+    OrganisationMembership,
+    Role,
+    RolePermission,
+    User,
+    UserFacilityRole,
+)
 from audit.models import AuditEvent
 from billing.models import Invoice, InvoiceItem
 from clinical.models import Encounter
@@ -407,3 +413,140 @@ def test_s11_result_validation_coded_sanity_and_partial_save(tenant, authed_clie
     assert draft.data["state"] == "DRAFT"
     with tenant_atomic(tenant.organisation.id):
         assert LabOrderItem.objects.get(id=item_id).state == "SAMPLE_COLLECTED"
+
+
+def _capability_client(tenant, username, codes, *, facility=None):
+    """Return a login-bound client with exactly the named capability grants."""
+
+    from rest_framework.test import APIClient
+
+    from accounts.models import OrganisationMembership, Permission
+
+    with tenant_atomic(tenant.organisation.id):
+        user = User.objects.create_user(username, "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        role = Role.objects.create(
+            organisation=tenant.organisation,
+            name=f"S-29 lab role {uuid4().hex[:8]}",
+            template_code="S29_LAB_SCOPED",
+        )
+        for code in codes:
+            permission, _ = Permission.objects.get_or_create(
+                code=code,
+                defaults={"name": code, "sensitivity_tier": "T1"},
+            )
+            RolePermission.objects.create(
+                organisation=tenant.organisation, role=role, permission=permission
+            )
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=user,
+            role=role,
+            facility=facility or tenant.facility,
+            department=tenant.department,
+        )
+    client = APIClient()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert login.status_code == 200, login.data
+    client.defaults["HTTP_X_FACILITY_ID"] = str((facility or tenant.facility).id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    return client
+
+
+def test_s29_r1_worklist_requires_lab_capability_and_scopes_facility(tenant, authed_client):
+    """S-29-R1: worklist access follows lab capability, not stock read."""
+
+    patient_id = register(authed_client, "s29-r1-register")
+    checked_in = check_in(authed_client, patient_id, tenant, "s29-r1-checkin")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(authed_client, tenant, code="R1LAB")
+    ordered = _order(authed_client, encounter_id, test["id"], key="s29-r1-order")
+    assert ordered.status_code == 201, ordered.data
+    item_id = ordered.data["items"][0]["id"]
+
+    for capability in ("lab.result.entry", "lab.result.verify"):
+        client = _capability_client(
+            tenant, f"s29-r1-{capability.replace('.', '-')}", (capability,)
+        )
+        response = client.get("/api/v1/lab/worklist/")
+        assert response.status_code == 200, response.data
+        assert any(
+            row["item_id"] == item_id and row["patient_name"]
+            for section in response.data.values()
+            for row in section
+        )
+
+    stock_only = _capability_client(tenant, "s29-r1-stock-only", ("inventory.read",))
+    denied = stock_only.get("/api/v1/lab/worklist/")
+    assert denied.status_code == 403
+    assert not any(
+        key in denied.data
+        for key in ("awaiting_payment", "to_collect", "in_bench", "to_verify", "rejected", "released")
+    )
+
+    from tenancy.models import Facility
+
+    with tenant_atomic(tenant.organisation.id):
+        other_facility = Facility.objects.create(
+            organisation=tenant.organisation,
+            name="S-29 second facility",
+            code="S29SECOND",
+            mode="CLINIC",
+        )
+    wrong_facility = _capability_client(
+        tenant, "s29-r1-other-facility", ("lab.result.entry",)
+    )
+    wrong_facility.defaults["HTTP_X_FACILITY_ID"] = str(other_facility.id)
+    other = wrong_facility.get("/api/v1/lab/worklist/")
+    assert other.status_code == 403
+    assert not any(
+        key in other.data
+        for key in ("awaiting_payment", "to_collect", "in_bench", "to_verify", "rejected", "released")
+    )
+
+    from rest_framework.test import APIClient
+    from tenancy.models import Organisation
+
+    other_organisation = Organisation.objects.create(
+        name="S-29 other tenant", slug="s29-other-tenant"
+    )
+    with tenant_atomic(other_organisation.id):
+        other_tenant_facility = Facility.objects.create(
+            organisation=other_organisation,
+            name="S-29 other tenant facility",
+            code="S29OTHER",
+            mode="CLINIC",
+        )
+        other_tenant_user = User.objects.create_user(
+            "s29-r1-other-tenant", "test-password-123"
+        )
+        OrganisationMembership.objects.create(
+            organisation=other_organisation, user=other_tenant_user
+        )
+    foreign = APIClient()
+    foreign_login = foreign.post(
+        "/api/v1/auth/login/",
+        {
+            "username": other_tenant_user.username,
+            "password": "test-password-123",
+            "organisation_id": str(other_organisation.id),
+        },
+        format="json",
+    )
+    assert foreign_login.status_code == 200, foreign_login.data
+    foreign.defaults["HTTP_X_FACILITY_ID"] = str(other_tenant_facility.id)
+    foreign.credentials(HTTP_AUTHORIZATION="Bearer " + foreign_login.data["access_token"])
+    foreign_response = foreign.get("/api/v1/lab/worklist/")
+    assert foreign_response.status_code == 403
+    assert not any(
+        key in foreign_response.data
+        for key in ("awaiting_payment", "to_collect", "in_bench", "to_verify", "rejected", "released")
+    )

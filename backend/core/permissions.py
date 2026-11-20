@@ -78,6 +78,22 @@ class HasCapability(BasePermission):
         return request.user.has_capability(capability, getattr(request, "facility", None))
 
 
+class HasAnyCapability(BasePermission):
+    """Allow a view to name several equivalent capabilities."""
+
+    capabilities = ()
+
+    def has_permission(self, request, view):
+        capabilities = getattr(view, "capabilities", None) or self.capabilities
+        if not capabilities:
+            return True
+        facility = getattr(request, "facility", None)
+        return any(
+            request.user.has_capability(capability, facility)
+            for capability in capabilities
+        )
+
+
 def queue_scope_pairs(*, organisation, facility, user, capabilities):
     """Return the allowed ``(department_id, queue_type)`` pairs for the actor.
 

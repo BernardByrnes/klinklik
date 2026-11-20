@@ -88,7 +88,13 @@ class Command(BaseCommand):
             ensure_default_permissions(organisation)
             roles = {
                 code: Role.objects.get(organisation=organisation, template_code=code)
-                for code in ["OWNER_ADMIN", "RECEPTION_CASHIER", "NURSE_TRIAGE", "CLINICIAN"]
+                for code in [
+                    "OWNER_ADMIN",
+                    "RECEPTION_CASHIER",
+                    "NURSE_TRIAGE",
+                    "CLINICIAN",
+                    "LAB_TECHNICIAN",
+                ]
             }
 
             users = {}
@@ -98,6 +104,7 @@ class Command(BaseCommand):
                 ("nurse@clinicopus.local", "Nabirye", "Nurse", "NURSE_TRIAGE", "TRIAGE"),
                 ("doctor@clinicopus.local", "David", "Clinician", "CLINICIAN", "OPD"),
                 ("cashier@clinicopus.local", "Grace", "Cashier", "RECEPTION_CASHIER", "BILLING"),
+                ("labtech@clinicopus.local", "Lt", "Technician", "LAB_TECHNICIAN", "OPD"),
             ]:
                 user = ensure_user(username, username, first_name, last_name, PASSWORD)
                 users[username] = user

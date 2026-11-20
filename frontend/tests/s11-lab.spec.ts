@@ -238,3 +238,176 @@ test("S-11 orders from the Encounter, collects, releases and exposes the result"
   expect(resultBody.results[0].values[0].value).toBe("13.2");
   expect(resultBody.results[0].values[0].flag).toBe("HIGH");
 });
+
+test("S-29-R1 limited lab technician sees the verification queue without release authority", async ({
+  page,
+}) => {
+  await login(page);
+  let session = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+
+  const patient = await page.request.post(`${API}/api/v1/patients/`, {
+    headers: headers(session),
+    data: {
+      first_name: "S29R1",
+      last_name: `Lab${suffix}`,
+      sex: "FEMALE",
+      phone: `075${suffix.slice(-6).padStart(6, "0")}`,
+    },
+  });
+  expect(patient.ok(), await patient.text()).toBeTruthy();
+  const patientId = ((await patient.json()) as { id: string }).id;
+  const checkIn = await page.request.post(`${API}/api/v1/reception/visits/check-in/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s29-r1-checkin-${suffix}` },
+    data: { patient_id: patientId, visit_type: "OUTPATIENT_NEW", payer_type: "CASH" },
+  });
+  expect(checkIn.ok(), await checkIn.text()).toBeTruthy();
+  const checkedIn = (await checkIn.json()) as {
+    visit_id: string;
+    queue_id: string;
+    invoice_id: string | null;
+  };
+
+  const context = await page.request.get(
+    `${API}/api/v1/reception/visits/${checkedIn.visit_id}/`,
+    { headers: headers(session) }
+  );
+  const contextBody = (await context.json()) as { allergy: { etag: string } | null };
+  const nka = await page.request.post(
+    `${API}/api/v1/clinic/patients/${patientId}/allergy-status/`,
+    {
+      headers: {
+        ...headers(session),
+        "Idempotency-Key": `s29-r1-nka-${suffix}`,
+        "If-Match": contextBody.allergy!.etag,
+      },
+      data: { status: "NKA" },
+    }
+  );
+  expect(nka.ok(), await nka.text()).toBeTruthy();
+  const queueList = (await (
+    await page.request.get(`${API}/api/v1/clinic/queue/`, { headers: headers(session) })
+  ).json()) as Array<{ id: string; version: number }>;
+  const queueRow = queueList.find((entry) => entry.id === checkedIn.queue_id);
+  expect(queueRow).toBeTruthy();
+  const triage = await page.request.post(
+    `${API}/api/v1/clinic/triage/${checkedIn.queue_id}/`,
+    {
+      headers: {
+        ...headers(session),
+        "Idempotency-Key": `s29-r1-triage-${suffix}`,
+        "If-Match": `"${queueRow!.version}"`,
+      },
+      data: { acuity: "ROUTINE", chief_complaint: "Synthetic S29 R1 complaint" },
+    }
+  );
+  expect(triage.ok(), await triage.text()).toBeTruthy();
+
+  await page.goto("/consultations");
+  const row = page.getByRole("listitem").filter({ hasText: `S29R1 Lab${suffix}` });
+  await expect(row).toBeVisible();
+  await row.click();
+  const encounterPromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/clinic/encounters/") &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  const encounter = (await (await encounterPromise).json()) as { id: string };
+
+  session = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const servicesResponse = await page.request.get(`${API}/api/v1/billing/services/`, {
+    headers: headers(session),
+  });
+  const services = (await servicesResponse.json()) as Array<{ id: string }>;
+  const labTest = await page.request.post(`${API}/api/v1/lab/tests/`, {
+    headers: headers(session),
+    data: {
+      code: `S29R1-${suffix}`,
+      name: `Synthetic S29 R1 lab ${suffix}`,
+      service_id: services[0].id,
+      result_type: "PANEL",
+      analytes: [
+        {
+          code: "HB",
+          name: "Haemoglobin",
+          unit: "g/dL",
+          result_type: "NUMERIC",
+          sanity_min: "0",
+          sanity_max: "250",
+          range: { low: "4", high: "11" },
+        },
+      ],
+    },
+  });
+  expect(labTest.ok(), await labTest.text()).toBeTruthy();
+  const testBody = (await labTest.json()) as { id: string; analytes: Array<{ id: string }> };
+  const order = await page.request.post(`${API}/api/v1/lab/orders/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s29-r1-order-${suffix}` },
+    data: { encounter_id: encounter.id, test_ids: [testBody.id], priority: "ROUTINE" },
+  });
+  expect(order.ok(), await order.text()).toBeTruthy();
+  const itemId = ((await order.json()) as { items: Array<{ id: string }> }).items[0].id;
+  const collected = await page.request.post(
+    `${API}/api/v1/lab/items/${itemId}/collect/`,
+    {
+      headers: { ...headers(session), "Idempotency-Key": `s29-r1-collect-${suffix}` },
+      data: {},
+    }
+  );
+  expect(collected.ok(), await collected.text()).toBeTruthy();
+
+  const adminLogin = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "admin@clinicopus.local", password: ADMIN_PASSWORD },
+  });
+  expect(adminLogin.ok(), await adminLogin.text()).toBeTruthy();
+  const adminBody = (await adminLogin.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  const admin = { token: adminBody.access_token, facilityId: adminBody.facilities[0].id };
+  const entered = await page.request.patch(
+    `${API}/api/v1/lab/items/${itemId}/results/`,
+    {
+      headers: { ...headers(admin), "Idempotency-Key": `s29-r1-result-${suffix}` },
+      data: {
+        values: [{ analyte_id: testBody.analytes[0].id, value: "13.2" }],
+        complete: true,
+      },
+    }
+  );
+  expect(entered.ok(), await entered.text()).toBeTruthy();
+
+  await page.context().clearCookies();
+  await page.goto("/");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/login$/);
+  await steadyFill(page, "Username", "labtech@clinicopus.local");
+  await steadyFill(page, "Password", ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.getByRole("link", { name: "Laboratory" })).toBeVisible();
+
+  await page.goto("/lab");
+  const verifyRow = page
+    .getByRole("listitem")
+    .filter({ hasText: `Synthetic S29 R1 lab ${suffix}` });
+  await expect(verifyRow).toBeVisible();
+  const releaseButton = verifyRow.getByRole("button", { name: "Release result", exact: true });
+  await expect(releaseButton).toBeDisabled();
+  await expect(
+    verifyRow.getByText("A separate authorized verifier must release this result.")
+  ).toBeVisible();
+
+  const techSession = await apiLogin(page, "labtech@clinicopus.local", ADMIN_PASSWORD);
+  const forcedRelease = await page.request.post(
+    `${API}/api/v1/lab/items/${itemId}/release/`,
+    {
+      headers: { ...headers(techSession), "Idempotency-Key": `s29-r1-forced-${suffix}` },
+      data: {},
+    }
+  );
+  expect(forcedRelease.status()).toBe(403);
+});

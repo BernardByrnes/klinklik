@@ -215,6 +215,7 @@ def ensure_default_permissions(organisation):
             "pharmacy.prescribe",
             "pharmacy.queue.view",
         ],
+        "LAB_TECHNICIAN": ["lab.result.entry"],
     }
     for template_code, codes in templates.items():
         role, _ = Role.objects.get_or_create(

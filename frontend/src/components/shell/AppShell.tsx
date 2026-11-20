@@ -34,6 +34,7 @@ type NavItem = {
   label: string;
   icon: (props: { className?: string }) => ReactNode;
   capability: string | null;
+  capabilities?: readonly string[];
 };
 
 const NAV_ITEMS: NavItem[] = [
@@ -44,7 +45,13 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/consultations", label: "Consultations", icon: IconConsultation, capability: "clinical.note.create" },
   { href: "/billing", label: "Billing & Payments", icon: IconBilling, capability: "billing.invoice.create" },
   { href: "/inventory", label: "Inventory", icon: IconBilling, capability: "inventory.read" },
-  { href: "/lab", label: "Laboratory", icon: IconBilling, capability: "lab.result.entry" },
+  {
+    href: "/lab",
+    label: "Laboratory",
+    icon: IconBilling,
+    capability: null,
+    capabilities: ["lab.result.entry", "lab.result.verify"],
+  },
   { href: "/pharmacy", label: "Pharmacy", icon: IconBilling, capability: "pharmacy.queue.view" },
 ];
 
@@ -67,7 +74,12 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <nav className="flex-1 overflow-y-auto px-3 lg:px-3.5 pt-2 pb-4 space-y-1" aria-label="Main navigation">
-      {NAV_ITEMS.filter((item) => item.capability === null || can(item.capability)).map((item) => {
+      {NAV_ITEMS.filter((item) => {
+        if (item.capabilities) {
+          return item.capabilities.some((capability) => can(capability));
+        }
+        return item.capability === null || can(item.capability);
+      }).map((item) => {
         const active = pathname === item.href || pathname.startsWith(item.href + "/");
         const Icon = item.icon;
         return (
