@@ -42,6 +42,8 @@ export type LabAmend = { values: Array<{  }>; comments?: string; reason: string;
 export type LabCancel = { reason: string; };
 export type LabOrderCreate = { encounter_id: string; test_ids: Array<string>; priority?: "ROUTINE" | "URGENT"; clinical_notes?: string; source_event_id?: string; };
 export type LabReject = { reason: string; };
+export type LabResultDetail = { item_id: string; test_name: string; specimen_id: string | null; state: string; priority: string; version_no: number | null; values: Array<{  }>; comments: string; entered_by: string | null; entered_at: string | null; released_at: string | null; verified_by: string | null; };
+export type LabResultRelease = { expected_version: number; };
 export type LabResultSave = { values: Array<{  }>; comments?: string; complete?: boolean; };
 export type LabTest = { id: string; code: string; name: string; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; service?: string | null; turnaround_minutes?: number; coded_options?: {  }; text_template?: string; active?: boolean; definition_version?: number; version?: number; analytes: Array<{ id: string; code: string; name: string; unit?: string; result_type?: string; sequence?: number; coded_options?: {  }; }>; };
 export type LabTestConfigure = { code: string; name: string; service_id?: string | null; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; turnaround_minutes?: number; coded_options?: Array<string>; analytes?: Array<{  }>; };
@@ -321,8 +323,11 @@ export type CreateLabAmendRequest = LabAmend;
 export type CreateLabAmendResponse = LabAmend;
 export type CreateLabCancelRequest = LabCancel;
 export type CreateLabCancelResponse = LabCancel;
+export type LabResultDetailResponse = Array<LabResultDetail>;
 export type CreateLabRejectRequest = LabReject;
 export type CreateLabRejectResponse = LabReject;
+export type CreateLabResultReleaseRequest = LabResultRelease;
+export type CreateLabResultReleaseResponse = LabResultRelease;
 export type PartialUpdateLabResultSaveRequest = LabResultSave;
 export type PartialUpdateLabResultSaveResponse = LabResultSave;
 export type CreateLabOrderCreateRequest = LabOrderCreate;
@@ -383,7 +388,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "267c853e5d3e9673584589f0fcb24bf35f39628573af93177a2570b38c5e5413";
+export const GENERATED_API_CONTRACT_SHA256 = "a096fcfbfa2d33d9d9bbaed103791a6cf1d4d8e443387522347935dbe95c4a5f";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -945,6 +950,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createLabItemCollect",
     "path": "/api/v1/lab/items/{id}/collect/"
+  },
+  {
+    "method": "GET",
+    "operationId": "labResultDetail",
+    "path": "/api/v1/lab/items/{id}/detail/"
   },
   {
     "method": "POST",

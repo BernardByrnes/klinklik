@@ -68,6 +68,25 @@ class LabResultSaveSerializer(serializers.Serializer):
     complete = serializers.BooleanField(required=False, default=False)
 
 
+class LabResultDetailSerializer(serializers.Serializer):
+    item_id = serializers.UUIDField()
+    test_name = serializers.CharField()
+    specimen_id = serializers.CharField(allow_null=True)
+    state = serializers.CharField()
+    priority = serializers.CharField()
+    version_no = serializers.IntegerField(allow_null=True)
+    values = serializers.ListField(child=serializers.DictField())
+    comments = serializers.CharField()
+    entered_by = serializers.CharField(allow_null=True)
+    entered_at = serializers.DateTimeField(allow_null=True)
+    released_at = serializers.DateTimeField(allow_null=True)
+    verified_by = serializers.CharField(allow_null=True)
+
+
+class LabResultReleaseSerializer(serializers.Serializer):
+    expected_version = serializers.IntegerField(min_value=1)
+
+
 class LabAmendSerializer(serializers.Serializer):
     values = serializers.ListField(child=serializers.DictField(), allow_empty=False)
     comments = serializers.CharField(required=False, allow_blank=True, default="")

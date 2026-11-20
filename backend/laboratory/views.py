@@ -12,6 +12,8 @@ from laboratory.serializers import (
     LabItemSerializer,
     LabOrderCreateSerializer,
     LabRejectSerializer,
+    LabResultDetailSerializer,
+    LabResultReleaseSerializer,
     LabResultSaveSerializer,
     LabTestConfigureSerializer,
     LabTestSerializer,
@@ -27,6 +29,7 @@ from laboratory.services import (
     released_results_for_encounter,
     reject_sample,
     release_result,
+    result_detail,
     save_result,
     worklists,
 )
@@ -106,6 +109,24 @@ class LabWorklistView(TenantAPIView):
         )
 
 
+class LabResultDetailView(TenantAPIView):
+    permission_classes = [IsAuthenticated, IsTenantMember, HasAnyCapability]
+    capabilities = ("lab.result.entry", "lab.result.verify")
+    response_serializer_class = LabResultDetailSerializer
+    operation_id = "labResultDetail"
+
+    def get(self, request, pk):
+        return Response(
+            result_detail(
+                organisation=request.organisation,
+                facility=request.facility,
+                actor=request.user,
+                item_id=pk,
+                request=request,
+            )
+        )
+
+
 class LabItemCollectView(TenantAPIView):
     capability = "lab.result.entry"
     idempotency_operation = "CMD-042"
@@ -172,15 +193,19 @@ class LabResultSaveView(TenantAPIView):
 
 class LabResultReleaseView(TenantAPIView):
     capability = "lab.result.verify"
+    serializer_class = LabResultReleaseSerializer
     idempotency_operation = "CMD-046"
     requires_idempotency = True
 
     def post(self, request, pk):
+        serializer = LabResultReleaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         result, version = release_result(
             organisation=request.organisation,
             facility=request.facility,
             actor=request.user,
             item_id=pk,
+            expected_version=serializer.validated_data["expected_version"],
             request=request,
         )
         return Response(

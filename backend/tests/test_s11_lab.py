@@ -18,6 +18,7 @@ from billing.models import Invoice, InvoiceItem
 from clinical.models import Encounter
 from core.services import tenant_atomic
 from laboratory.models import (
+    LabAnalyteDefinition,
     LabOrderItem,
     LabResult,
     LabResultVersion,
@@ -205,14 +206,18 @@ def test_s11_order_collect_enter_release_and_amend(tenant, authed_client):
     before = authed_client.get(f"/api/v1/lab/encounters/{encounter_id}/results/")
     assert before.data["results"] == []
     self_release = authed_client.post(
-        f"/api/v1/lab/items/{item_id}/release/", {}, format="json",
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": saved.data["version_no"]},
+        format="json",
         HTTP_IDEMPOTENCY_KEY="s11-release-self",
     )
     assert self_release.status_code == 403
     assert self_release.data["code"] == "SELF_VERIFICATION_NOT_ALLOWED"
     admin_client, _admin = _admin_client(tenant)
     released = admin_client.post(
-        f"/api/v1/lab/items/{item_id}/release/", {}, format="json",
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": saved.data["version_no"]},
+        format="json",
         HTTP_IDEMPOTENCY_KEY="s11-release",
     )
     assert released.status_code == 200, released.data
@@ -286,7 +291,9 @@ def test_s11_self_verification_policy_allows_when_enabled(tenant, authed_client)
         HTTP_IDEMPOTENCY_KEY="s11-result-self",
     )
     released = authed_client.post(
-        f"/api/v1/lab/items/{item_id}/release/", {}, format="json",
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": 1},
+        format="json",
         HTTP_IDEMPOTENCY_KEY="s11-release-self-policy",
     )
     assert released.status_code == 200, released.data
@@ -379,7 +386,9 @@ def test_s11_result_validation_coded_sanity_and_partial_save(tenant, authed_clie
     from laboratory.models import LabAnalyteDefinition
 
     with tenant_atomic(tenant.organisation.id):
-        analyte = LabAnalyteDefinition.objects.get(test_id=test["id"])
+        analyte = LabAnalyteDefinition.objects.filter(
+            test_id=test["id"]
+        ).order_by("sequence", "id").first()
     invalid = authed_client.patch(
         f"/api/v1/lab/items/{item_id}/results/",
         {
@@ -550,3 +559,226 @@ def test_s29_r1_worklist_requires_lab_capability_and_scopes_facility(tenant, aut
         key in foreign_response.data
         for key in ("awaiting_payment", "to_collect", "in_bench", "to_verify", "rejected", "released")
     )
+
+
+def _s30_entered_item(tenant, client, code="S30READ"):
+    """Create one collected item with an entered result and its version."""
+
+    patient_id = register(client, f"s30-{code.lower()}-register")
+    checked_in = check_in(client, patient_id, tenant, f"s30-{code.lower()}-checkin")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(client, tenant, code=code)
+    ordered = _order(client, encounter_id, test["id"], key=f"s30-{code.lower()}-order")
+    assert ordered.status_code == 201, ordered.data
+    item_id = ordered.data["items"][0]["id"]
+    collected = client.post(
+        f"/api/v1/lab/items/{item_id}/collect/", {}, format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-{code.lower()}-collect",
+    )
+    assert collected.status_code == 200, collected.data
+    with tenant_atomic(tenant.organisation.id):
+        analytes = list(
+            LabAnalyteDefinition.objects.filter(test_id=test["id"]).order_by("sequence", "id")
+        )
+    saved = client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {
+            "values": [
+                {"analyte_id": str(analyte.id), "value": "13.2" if index == 0 else "6.0"}
+                for index, analyte in enumerate(analytes)
+            ],
+            "complete": True,
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s30-{code.lower()}-result",
+    )
+    assert saved.status_code == 201, saved.data
+    return encounter_id, item_id, analytes[0].id
+
+
+def test_s30_detail_read_is_lab_scoped_and_draft_values_stay_out_of_projections(
+    tenant, authed_client
+):
+    """S-30: only lab roles read a bounded draft; values stay in the domain record."""
+
+    encounter_id, item_id, _analyte_id = _s30_entered_item(tenant, authed_client)
+    for capability in ("lab.result.entry", "lab.result.verify"):
+        client = _capability_client(
+            tenant, f"s30-detail-{capability.replace('.', '-')}", (capability,)
+        )
+        detail = client.get(f"/api/v1/lab/items/{item_id}/detail/")
+        assert detail.status_code == 200, detail.data
+        assert detail.data["item_id"] == item_id
+        assert detail.data["version_no"] >= 1
+        assert detail.data["values"]
+        assert any(value["value"] == "13.2" for value in detail.data["values"])
+
+    stock_only = _capability_client(tenant, "s30-detail-stock", ("inventory.read",))
+    denied = stock_only.get(f"/api/v1/lab/items/{item_id}/detail/")
+    assert denied.status_code == 403
+    assert "values" not in denied.data
+
+    from rest_framework.test import APIClient
+    from tenancy.models import Facility, Organisation
+
+    with tenant_atomic(tenant.organisation.id):
+        second_facility = Facility.objects.create(
+            organisation=tenant.organisation,
+            name="S-30 second facility",
+            code="S30SECOND",
+            mode="CLINIC",
+        )
+    wrong_facility = _capability_client(tenant, "s30-detail-facility", ("lab.result.verify",))
+    wrong_facility.defaults["HTTP_X_FACILITY_ID"] = str(second_facility.id)
+    other_facility = wrong_facility.get(f"/api/v1/lab/items/{item_id}/detail/")
+    assert other_facility.status_code == 403
+    assert "values" not in other_facility.data
+
+    other_organisation = Organisation.objects.create(
+        name="S-30 other tenant", slug="s30-other-tenant"
+    )
+    with tenant_atomic(other_organisation.id):
+        foreign_facility = Facility.objects.create(
+            organisation=other_organisation,
+            name="S-30 foreign facility",
+            code="S30FOREIGN",
+            mode="CLINIC",
+        )
+        foreign_user = User.objects.create_user("s30-detail-foreign", "test-password-123")
+        OrganisationMembership.objects.create(
+            organisation=other_organisation, user=foreign_user
+        )
+    foreign = APIClient()
+    foreign_login = foreign.post(
+        "/api/v1/auth/login/",
+        {
+            "username": foreign_user.username,
+            "password": "test-password-123",
+            "organisation_id": str(other_organisation.id),
+        },
+        format="json",
+    )
+    assert foreign_login.status_code == 200, foreign_login.data
+    foreign.defaults["HTTP_X_FACILITY_ID"] = str(foreign_facility.id)
+    foreign.credentials(HTTP_AUTHORIZATION="Bearer " + foreign_login.data["access_token"])
+    foreign_response = foreign.get(f"/api/v1/lab/items/{item_id}/detail/")
+    assert foreign_response.status_code in {403, 404}
+    assert "values" not in foreign_response.data
+
+    worklist = authed_client.get("/api/v1/lab/worklist/")
+    assert worklist.status_code == 200
+    assert "13.2" not in str(worklist.data)
+    clinician = authed_client.get(f"/api/v1/lab/encounters/{encounter_id}/results/")
+    assert clinician.status_code == 200
+    assert clinician.data["results"] == []
+    with tenant_atomic(tenant.organisation.id):
+        read_events = AuditEvent.objects.filter(event_code="LAB_RESULTS_READ")
+        assert read_events.exists()
+        for event in read_events:
+            assert "13.2" not in str(event.after)
+            assert "13.2" not in str(event.before)
+
+
+def test_s30_release_is_bound_to_observed_version(tenant, authed_client):
+    """S-30: a stale review cannot release a newer draft version."""
+
+    _encounter_id, item_id, analyte_id = _s30_entered_item(tenant, authed_client, code="S30STALE")
+    verifier = _admin_client(tenant)[0]
+    detail = verifier.get(f"/api/v1/lab/items/{item_id}/detail/")
+    assert detail.status_code == 200, detail.data
+    observed_version = detail.data["version_no"]
+
+    with tenant_atomic(tenant.organisation.id):
+        analytes = list(
+            LabAnalyteDefinition.objects.filter(
+                test_id=LabOrderItem.objects.get(id=item_id).test_id
+            ).order_by("sequence", "id")
+        )
+    updated = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/",
+        {
+            "values": [
+                {
+                    "analyte_id": str(analyte.id),
+                    "value": "14.1" if analyte.id == analyte_id else "6.0",
+                }
+                for analyte in analytes
+            ],
+            "complete": True,
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s30-stale-second-save",
+    )
+    assert updated.status_code == 201, updated.data
+    assert updated.data["version_no"] == observed_version + 1
+
+    stale = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": observed_version},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s30-stale-release",
+    )
+    assert stale.status_code == 412, stale.data
+    assert stale.data["code"] == "VERSION_CONFLICT"
+    with tenant_atomic(tenant.organisation.id):
+        assert LabOrderItem.objects.get(id=item_id).state == "RESULT_ENTERED"
+        assert not LabResultVersion.objects.get(
+            result__item_id=item_id, version_no=observed_version
+        ).released
+        assert (
+            AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 0
+        )
+
+    current = verifier.post(
+        f"/api/v1/lab/items/{item_id}/release/",
+        {"expected_version": observed_version + 1},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s30-current-release",
+    )
+    assert current.status_code == 200, current.data
+    assert current.data["version_no"] == observed_version + 1
+    with tenant_atomic(tenant.organisation.id):
+        assert LabOrderItem.objects.get(id=item_id).state == "RELEASED"
+        assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 1
+
+
+def test_s30_repeated_result_submit_replays_one_version(tenant, authed_client):
+    """S-30: resending one save intent does not create another version."""
+
+    patient_id = register(authed_client, "s30-register-replay")
+    checked_in = check_in(authed_client, patient_id, tenant, "s30-checkin-replay")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(authed_client, tenant, code="S30REPLAY")
+    ordered = _order(authed_client, encounter_id, test["id"], key="s30-order-replay")
+    assert ordered.status_code == 201, ordered.data
+    item_id = ordered.data["items"][0]["id"]
+    collected = authed_client.post(
+        f"/api/v1/lab/items/{item_id}/collect/", {}, format="json",
+        HTTP_IDEMPOTENCY_KEY="s30-collect-replay",
+    )
+    assert collected.status_code == 200, collected.data
+    with tenant_atomic(tenant.organisation.id):
+        analytes = list(
+            LabAnalyteDefinition.objects.filter(test_id=test["id"]).order_by("sequence", "id")
+        )
+    body = {
+        "values": [
+            {"analyte_id": str(analyte.id), "value": "12.1" if index == 0 else "6.0"}
+            for index, analyte in enumerate(analytes)
+        ],
+        "complete": True,
+    }
+    first = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/", body, format="json",
+        HTTP_IDEMPOTENCY_KEY="s30-save-replay",
+    )
+    assert first.status_code == 201, first.data
+    second = authed_client.patch(
+        f"/api/v1/lab/items/{item_id}/results/", body, format="json",
+        HTTP_IDEMPOTENCY_KEY="s30-save-replay",
+    )
+    assert second.status_code == 201, second.data
+    assert second.headers["Idempotent-Replay"] == "true"
+    with tenant_atomic(tenant.organisation.id):
+        assert LabResultVersion.objects.filter(result__item_id=item_id).count() == 1
+        assert AuditEvent.objects.filter(event_code="LAB_RESULT_SAVED").count() == 1

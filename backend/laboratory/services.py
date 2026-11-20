@@ -581,7 +581,9 @@ def save_result(
 
 
 @transaction.atomic
-def release_result(*, organisation, facility, actor, item_id, request=None):
+def release_result(
+    *, organisation, facility, actor, item_id, expected_version=None, request=None
+):
     assert_transaction_active()
     item = LabOrderItem.objects.select_for_update(of=("self",)).filter(
         id=item_id, organisation=organisation, facility=facility
@@ -604,6 +606,12 @@ def release_result(*, organisation, facility, actor, item_id, request=None):
     version = result.versions.select_for_update().order_by("-version_no").first()
     if version is None:
         raise CanonicalError("PREREQUISITE_MISSING", "The result version is missing.", status_code=422)
+    if expected_version is not None and version.version_no != expected_version:
+        raise CanonicalError(
+            "VERSION_CONFLICT",
+            "The result changed while it was being reviewed; refresh before release.",
+            status_code=412,
+        )
     version.released = True
     version.released_at = now()
     version.verified_by = actor
@@ -731,6 +739,51 @@ def cancel_item(*, organisation, facility, actor, item_id, reason, request=None)
         event_code="LAB_ITEM_CANCELLED",
     )
     return item, True
+
+
+def result_detail(*, organisation, facility, actor, item_id, request=None):
+    """Bounded item read for lab role review; values remain in the domain record."""
+
+    assert_transaction_active()
+    item = LabOrderItem.objects.filter(
+        id=item_id, organisation=organisation, facility=facility
+    ).select_related("test", "result").first()
+    if item is None:
+        raise CanonicalError("NOT_FOUND", "Laboratory item was not found.", status_code=404)
+    result = item.result
+    version = (
+        result.versions.order_by("-version_no").first() if result is not None else None
+    )
+    body = {
+        "item_id": str(item.id),
+        "test_name": item.test.name,
+        "specimen_id": item.specimen_id,
+        "state": item.state,
+        "priority": item.priority,
+        "version_no": version.version_no if version is not None else None,
+        "values": version.values if version is not None else [],
+        "comments": version.comments if version is not None else "",
+        "entered_by": str(result.entered_by) if result and result.entered_by_id else None,
+        "entered_at": version.entered_at if version is not None else None,
+        "released_at": version.released_at if version is not None else None,
+        "verified_by": str(version.verified_by) if version and version.verified_by_id else None,
+    }
+    record_event(
+        request=request,
+        organisation=organisation,
+        actor=actor,
+        facility=facility,
+        action="READ",
+        entity_type="LabResult",
+        entity_id=item.id,
+        after={
+            "scope": "item_detail",
+            "state": item.state,
+            "version_no": body["version_no"],
+        },
+        event_code="LAB_RESULTS_READ",
+    )
+    return body
 
 
 def released_results_for_encounter(*, organisation, facility, encounter_id, actor=None, request=None):
