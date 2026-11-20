@@ -5,6 +5,7 @@ dispense confirmation moves stock, appends the exact billing charge and
 commits the dispense state in one tenant transaction.
 """
 
+from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -604,6 +605,28 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
         raise CanonicalError(
             "INVALID_STATE", "A dispense must have at least one line.", status_code=409
         )
+
+    item_ids = list(
+        dict.fromkeys(
+            line.prescription_item_id for line in lines if line.prescription_item_id
+        )
+    )
+    confirmed_by_item = defaultdict(lambda: Decimal("0.00"))
+    current_by_item = defaultdict(lambda: Decimal("0.00"))
+    if item_ids:
+        confirmed_lines = (
+            DispenseLine.objects.filter(
+                prescription_item_id__in=item_ids, dispense__status="CONFIRMED"
+            )
+            .exclude(dispense_id=dispense.id)
+            .values("prescription_item_id", "quantity")
+        )
+        for row in confirmed_lines:
+            confirmed_by_item[row["prescription_item_id"]] += row["quantity"]
+    for line in lines:
+        if line.prescription_item_id:
+            current_by_item[line.prescription_item_id] += line.quantity
+
     for line in lines:
         if batch_is_expired(line.batch):
             raise CanonicalError(
@@ -637,15 +660,19 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
                 source_line_identity=str(line.id),
                 request=request,
             )
-        if line.prescription_item is not None:
-            item = line.prescription_item
+    if item_ids:
+        for item in PrescriptionItem.objects.select_for_update().filter(
+            id__in=item_ids, organisation=organisation, facility=facility
+        ):
+            fulfilled = confirmed_by_item[item.id] + current_by_item[item.id]
             item.state = (
                 "DISPENSED"
-                if _remaining_quantity(item=item) <= Decimal("0.00")
+                if fulfilled >= item.quantity
                 else "PARTIALLY_DISPENSED"
             )
             item.version += 1
             item.save(update_fields=["state", "version", "updated_at"])
+
     dispense.status = "CONFIRMED"
     dispense.confirmed_by = actor
     dispense.confirmed_at = now()

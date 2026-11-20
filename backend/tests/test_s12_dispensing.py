@@ -724,3 +724,103 @@ def test_s12_instruction_template_has_version_and_audit(tenant, authed_client):
         assert AuditEvent.objects.filter(
             event_code="PRODUCT_INSTRUCTION_TEMPLATE_SET"
         ).count() == 1
+
+
+def test_s29_r4_confirm_dispense_fulfilment_uses_confirmed_quantities(
+    tenant, authed_client
+):
+    """S-29-R4: a provisional second handover cannot complete an item."""
+
+    stock = _stock(authed_client, tenant, quantity="100.00")
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"], quantity="10.00"
+    )
+    claimed = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s29-r4-claim-{uuid4().hex}",
+    )
+    assert claimed.status_code == 201, claimed.data
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+
+    dispense_ids = []
+    for index in range(2):
+        prepared = authed_client.post(
+            f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+            {"lines": [{"prescription_item_id": str(item.id), "quantity": "5.00"}]},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY=f"s29-r4-prepare-{index}-{uuid4().hex}",
+        )
+        assert prepared.status_code == 201, prepared.data
+        assert prepared.data["lines"][0]["quantity"] == "5.00"
+        dispense_ids.append(prepared.data["id"])
+
+    confirm_key = f"s29-r4-confirm-0-{uuid4().hex}"
+    first = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{dispense_ids[0]}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=confirm_key,
+    )
+    assert first.status_code == 200, first.data
+    with tenant_atomic(tenant.organisation.id):
+        assert PrescriptionItem.objects.get(id=item.id).state == "PARTIALLY_DISPENSED"
+        assert Prescription.objects.get(id=prescription.id).status == "ACTIVE"
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 1
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 1
+        )
+        assert (
+            BatchLocationBalance.objects.get(
+                batch_id=stock["batch_id"], location_id=stock["location_id"]
+            ).quantity
+            == Decimal("95.00")
+        )
+
+    replay = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{dispense_ids[0]}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=confirm_key,
+    )
+    assert replay.status_code == 200, replay.data
+    assert replay.headers["Idempotent-Replay"] == "true"
+    with tenant_atomic(tenant.organisation.id):
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 1
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 1
+
+    second = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{dispense_ids[1]}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s29-r4-confirm-1-{uuid4().hex}",
+    )
+    assert second.status_code == 200, second.data
+    with tenant_atomic(tenant.organisation.id):
+        assert PrescriptionItem.objects.get(id=item.id).state == "DISPENSED"
+        assert Prescription.objects.get(id=prescription.id).status == "COMPLETED"
+        line_ids = {
+            str(row.id)
+            for row in DispenseLine.objects.filter(dispense_id__in=dispense_ids)
+        }
+        movements = StockMovement.objects.filter(source_type="DispenseLine")
+        assert movements.count() == 2
+        assert {row.source_id for row in movements} == line_ids
+        assert {row.quantity for row in movements} == {Decimal("-5.00")}
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 2
+        )
+        assert (
+            BatchLocationBalance.objects.get(
+                batch_id=stock["batch_id"], location_id=stock["location_id"]
+            ).quantity
+            == Decimal("90.00")
+        )

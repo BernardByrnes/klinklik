@@ -433,3 +433,71 @@ def test_pg_s12_dispense_and_payment_serialise_on_the_invoice(
         assert (
             StockMovement.objects.filter(source_type="DispenseLine").count() == 1
         )
+
+
+def test_pg_s29_r4_partial_fulfilment_counts_only_confirmed_handovers(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-29-R4 (PG): two provisional handovers do not complete the item."""
+
+    stock, prescription, _checked_in = _active(
+        tenant, authed_client, quantity="10.00", stock_quantity="100.00"
+    )
+    organisation = tenant.organisation
+    facility = tenant.facility
+    with tenant_atomic(organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        claim_prescription(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            prescription_id=prescription.id,
+        )
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+        first = prepare_dispense(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            lines=[{"prescription_item_id": str(item.id), "quantity": "5.00"}],
+        )
+        second = prepare_dispense(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            lines=[{"prescription_item_id": str(item.id), "quantity": "5.00"}],
+        )
+
+    for dispense in (first, second):
+        with tenant_atomic(organisation.id):
+            actor = User.objects.get(id=tenant.user.id)
+            confirm_dispense(
+                organisation=organisation,
+                facility=facility,
+                actor=actor,
+                dispense_id=dispense.id,
+            )
+        if dispense == first:
+            with tenant_atomic(organisation.id):
+                assert (
+                    PrescriptionItem.objects.get(id=item.id).state
+                    == "PARTIALLY_DISPENSED"
+                )
+                assert StockMovement.objects.filter(
+                    source_type="DispenseLine"
+                ).count() == 1
+
+    with tenant_atomic(organisation.id):
+        assert PrescriptionItem.objects.get(id=item.id).state == "DISPENSED"
+        assert Prescription.objects.get(id=prescription.id).status == "COMPLETED"
+        movements = StockMovement.objects.filter(source_type="DispenseLine")
+        assert movements.count() == 2
+        assert {row.quantity for row in movements} == {Decimal("-5.00")}
+        assert (
+            BatchLocationBalance.objects.get(
+                batch_id=stock["batch_id"], location_id=stock["location_id"]
+            ).quantity
+            == Decimal("90.00")
+        )
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 2
