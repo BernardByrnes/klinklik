@@ -253,15 +253,78 @@ test("S-12 prescribes, signs, dispenses and charges one exact handover", async (
     .filter({ hasText: "Synthetic S12 medicine" })
     .first();
   await expect(row).toBeVisible();
-  const confirmed = page.waitForResponse(
+  const claimed = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/confirm/") && response.request().method() === "POST"
+      response.url().endsWith("/claim/") && response.request().method() === "POST"
   );
-  await row.getByRole("button", { name: "Dispense & charge" }).click();
-  expect((await confirmed).status()).toBe(200);
+  await row.getByRole("button", { name: "Claim prescription", exact: true }).click();
+  expect((await claimed).status()).toBe(201);
+
+  const prepared = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/dispenses/") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Prepare dispense", exact: true }).click();
+  const prepareResponse = await prepared;
+  expect(prepareResponse.status()).toBe(201);
+  const provisionalId = ((await prepareResponse.json()) as { id: string }).id;
+
+  const review = page.getByRole("region", { name: "Dispense review" });
+  await expect(review).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      Boolean(document.activeElement?.closest('[aria-label="Dispense review"]'))
+    )
+  ).toBeTruthy();
+  await expect(review.getByText(/Synthetic S12 medicine/).first()).toBeVisible();
+  await expect(review.getByText(/B-S12-/)).toBeVisible();
+  await expect(review.getByText(/2500\.00/).first()).toBeVisible();
+  await expect(review.getByRole("button", { name: "Confirm handover", exact: true })).toBeEnabled();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Pharmacy" })).toBeVisible();
+  const resumedRow = page
+    .getByRole("listitem")
+    .filter({ hasText: patientName })
+    .filter({ hasText: "Synthetic S12 medicine" })
+    .first();
   await expect(
-    page.getByText("Dispense handed over, stock moved and the charge recorded.")
+    resumedRow.getByRole("button", { name: "Resume preparation", exact: true })
   ).toBeVisible();
+  await resumedRow.getByRole("button", { name: "Resume preparation", exact: true }).click();
+  await expect(review).toBeVisible();
+  await expect(review.getByText(/2500\.00/).first()).toBeVisible();
+
+  const confirmAttempts: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith(`/dispenses/${provisionalId}/confirm/`)
+    ) {
+      confirmAttempts.push(request.headers()["idempotency-key"] ?? "");
+    }
+  });
+  let lostConfirm = false;
+  await page.route(
+    `**/api/v1/pharmacy/dispenses/${provisionalId}/confirm/`,
+    async (route) => {
+      if (!lostConfirm) {
+        lostConfirm = true;
+        await route.fetch();
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    }
+  );
+  await review.getByRole("button", { name: "Confirm handover", exact: true }).click();
+  await expect(page.getByText(/pharmacy outcome is uncertain/i)).toBeVisible();
+  await page.getByRole("button", { name: "Retry uncertain pharmacy step", exact: true }).click();
+  await expect(
+    page.getByText(`${patientName} · dispense confirmed`)
+  ).toBeVisible();
+  expect(confirmAttempts).toHaveLength(2);
+  expect(confirmAttempts[1]).toBe(confirmAttempts[0]);
 
   session = await apiLogin(page);
   const invoice = await page.request.get(
@@ -485,10 +548,13 @@ test("S-29-R6 lost prepare response resumes the original provisional identity", 
     }
   );
 
-  await row.getByRole("button", { name: "Dispense & charge", exact: true }).click();
+  await row.getByRole("button", { name: "Claim prescription", exact: true }).click();
+  await page.getByRole("button", { name: "Prepare dispense", exact: true }).click();
   await expect(page.getByText(/pharmacy outcome is uncertain/i)).toBeVisible();
   await page.getByRole("button", { name: "Retry uncertain pharmacy step", exact: true }).click();
-  await expect(page.getByText(/Dispense handed over/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "Dispense review" })).toBeVisible();
+  await page.getByRole("button", { name: "Confirm handover", exact: true }).click();
+  await expect(page.getByText(`${patientName} · dispense confirmed`)).toBeVisible();
 
   expect(prepareAttempts).toHaveLength(2);
   expect(prepareAttempts[1].key).toBe(prepareAttempts[0].key);

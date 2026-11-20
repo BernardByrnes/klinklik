@@ -6,7 +6,14 @@ from uuid import uuid4
 
 import pytest
 
-from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
+from accounts.models import (
+    OrganisationMembership,
+    Permission,
+    Role,
+    RolePermission,
+    User,
+    UserFacilityRole,
+)
 from audit.models import AuditEvent
 from billing.models import Invoice
 from clinical.models import Encounter
@@ -39,6 +46,7 @@ from pharmacy.models import (
 from scheduling.models import Visit
 from tests.test_s05_billing import check_in, register
 from tests.test_s09_inventory import _locations, _product, _receive
+from tests.test_s10_counts import _price
 
 pytestmark = pytest.mark.django_db
 TODAY = date.today()
@@ -932,3 +940,243 @@ def test_s31_dispense_detail_supplies_server_derived_review_data(tenant, authed_
     assert Decimal(line["unit_price"]) > Decimal("0.00")
     assert Decimal(line["amount"]) == Decimal(line["quantity"]) * Decimal(line["unit_price"])
     assert body["total"] == str(Decimal(line["amount"]))
+
+
+def _s31_other_pharmacist(tenant):
+    with tenant_atomic(tenant.organisation.id):
+        other = User.objects.create_user(f"s31-owner-{uuid4().hex[:6]}", "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=other)
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=other,
+            role=Role.objects.get(
+                organisation=tenant.organisation, template_code="OWNER_ADMIN"
+            ),
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    from rest_framework.test import APIClient
+
+    client = APIClient()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": other.username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    return client
+
+
+def test_s31_only_claim_owner_can_review_and_hand_over(tenant, authed_client):
+    """S-31: claim ownership gates both the review projection and handover."""
+
+    stock = _stock(authed_client, tenant, quantity="20.00")
+    prescription, _checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"]
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-owner-claim-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "5.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-owner-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+
+    other = _s31_other_pharmacist(tenant)
+    detail = other.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["eligible"] is False
+    assert detail.data["blocked_reason"] == "PRESCRIPTION_CLAIMED"
+    denied = other.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-owner-confirm-{uuid4().hex}",
+    )
+    assert denied.status_code == 409
+    assert denied.data["code"] == "PRESCRIPTION_CLAIMED"
+
+    owner_detail = authed_client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert owner_detail.data["eligible"] is True
+    confirmed = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-owner-confirm-final-{uuid4().hex}",
+    )
+    assert confirmed.status_code == 200, confirmed.data
+
+
+def test_s31_two_fefo_batches_match_ledger_and_invoice_sources(tenant, authed_client):
+    """S-31: one handover across two FEFO batches produces exact linked effects."""
+
+    location = _locations(authed_client)[0]
+    product = _product(authed_client)
+    _price(authed_client, product["id"])
+    first_receipt = _receive(
+        authed_client,
+        product["id"],
+        location["id"],
+        quantity="5.00",
+        expiry=date.today() + timedelta(days=30),
+    )
+    second_receipt = _receive(
+        authed_client,
+        product["id"],
+        location["id"],
+        quantity="5.00",
+        expiry=date.today() + timedelta(days=60),
+    )
+    assert first_receipt.status_code == 201
+    assert second_receipt.status_code == 201
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, product["id"], quantity="10.00"
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-fefo-claim-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-fefo-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    dispense_id = prepared.data["id"]
+    with tenant_atomic(tenant.organisation.id):
+        lines = list(DispenseLine.objects.filter(dispense_id=dispense_id).order_by("id"))
+        assert len(lines) == 2
+        line_ids = {str(line.id) for line in lines}
+        assert len({line.batch_id for line in lines}) == 2
+    confirmed = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{dispense_id}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-fefo-confirm-{uuid4().hex}",
+    )
+    assert confirmed.status_code == 200, confirmed.data
+    with tenant_atomic(tenant.organisation.id):
+        movements = StockMovement.objects.filter(source_id__in=line_ids)
+        assert {row.source_id for row in movements} == line_ids
+        assert sum((-row.quantity for row in movements), Decimal("0.00")) == Decimal("10.00")
+        charges = Invoice.objects.get(id=checked_in["invoice_id"]).items.filter(
+            source_type="DISPENSE_LINE"
+        )
+        assert {str(row.source_id) for row in charges} == line_ids
+        assert sum((row.amount for row in charges), Decimal("0.00")) == Decimal(confirmed.data["total"])
+
+
+def test_s31_expired_allocation_is_blocked_before_handover(tenant, authed_client):
+    """S-31: an expired provisional batch is non-actionable with no stock effect."""
+
+    stock = _stock(authed_client, tenant, quantity="20.00")
+    prescription, _checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"]
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-expired-claim-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "5.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-expired-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    with tenant_atomic(tenant.organisation.id):
+        StockBatch.objects.filter(id=stock["batch_id"]).update(
+            expiry_date=date.today() - timedelta(days=1)
+        )
+    detail = authed_client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert detail.data["eligible"] is False
+    assert detail.data["blocked_reason"] == "EXPIRED_BATCH"
+    movements_before = authed_client.get("/api/v1/inventory/movements/").data
+    denied = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-expired-confirm-{uuid4().hex}",
+    )
+    assert denied.status_code == 422
+    assert denied.data["code"] == "EXPIRED_BATCH"
+    assert authed_client.get("/api/v1/inventory/movements/").data == movements_before
+
+
+def test_s31_dispense_detail_requires_dispense_capability(tenant, authed_client):
+    """S-31: queue viewers cannot read a protected provisional review payload."""
+
+    stock = _stock(authed_client, tenant, quantity="20.00")
+    prescription, _checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"]
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-limited-claim-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "5.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-limited-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    with tenant_atomic(tenant.organisation.id):
+        limited = User.objects.create_user(f"s31-limited-{uuid4().hex[:6]}", "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=limited)
+        role = Role.objects.create(
+            organisation=tenant.organisation,
+            name=f"S31 Queue Viewer {uuid4().hex[:6]}",
+            template_code="S31_QUEUE_VIEWER",
+        )
+        permission, _ = Permission.objects.get_or_create(code="pharmacy.queue.view")
+        RolePermission.objects.create(
+            organisation=tenant.organisation, role=role, permission=permission
+        )
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=limited,
+            role=role,
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    client = authed_client.__class__()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": limited.username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    denied = client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert denied.status_code == 403

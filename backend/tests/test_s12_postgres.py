@@ -501,3 +501,51 @@ def test_pg_s29_r4_partial_fulfilment_counts_only_confirmed_handovers(
             == Decimal("90.00")
         )
         assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 2
+
+
+def test_pg_s31_review_projection_and_claim_owner_guard(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-31 (PG): review data is server-derived and only the claim owner hands over."""
+
+    from rest_framework.test import APIClient
+
+    stock, prescription, _checked_in = _active(tenant, authed_client)
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-pg-claim-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-pg-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    detail = authed_client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["eligible"] is True
+    assert detail.data["lines"][0]["batch_no"]
+    assert detail.data["lines"][0]["unit_price"] == "500.00"
+    assert detail.data["allergy"]["patient_id"] == str(prescription.patient_id)
+
+    other = _role_user(tenant, prefix="s31-pg-other")
+    with tenant_atomic(tenant.organisation.id):
+        try:
+            confirm_dispense(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=other,
+                dispense_id=prepared.data["id"],
+            )
+        except CanonicalError as exc:
+            assert exc.code == "PRESCRIPTION_CLAIMED"
+        else:
+            raise AssertionError("Non-owner confirmation was allowed")
+    with tenant_atomic(tenant.organisation.id):
+        assert Dispense.objects.get(id=prepared.data["id"]).status == "PROVISIONAL"
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
