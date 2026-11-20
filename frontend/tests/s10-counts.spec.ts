@@ -124,3 +124,112 @@ test("S-10 blind count submits, approves and posts the exact correction", async 
   await expect(page.getByText(/variance -5\.00/)).toBeVisible();
   await expect(page.getByText(/95\.00/).first()).toBeVisible();
 });
+
+test("S-29-R2 blank count lines are identified and explicit zero is submitted exactly", async ({
+  page,
+}) => {
+  await login(page);
+  const sessionResponse = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "demo", password: DEMO_PASSWORD },
+  });
+  expect(sessionResponse.ok()).toBeTruthy();
+  const session = (await sessionResponse.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  const headers = {
+    Authorization: `Bearer ${session.access_token}`,
+    "X-Facility-Id": session.facilities[0].id,
+    "Content-Type": "application/json",
+  };
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const locationResponse = await page.request.post(`${API}/api/v1/inventory/locations/`, {
+    headers,
+    data: { code: `S29R2-LOC-${suffix}`, name: `S29R2 Store ${suffix}`, location_type: "STORE" },
+  });
+  expect(locationResponse.ok(), await locationResponse.text()).toBeTruthy();
+  const locationId = ((await locationResponse.json()) as { id: string }).id;
+  const expiry = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const batches = [`B-R2A-${suffix}`, `B-R2B-${suffix}`];
+
+  for (const [index, batch] of batches.entries()) {
+    const productResponse = await page.request.post(`${API}/api/v1/inventory/products/`, {
+      headers,
+      data: {
+        code: `S29R2-${index}-${suffix}`,
+        generic_name: `Synthetic S29 R2 product ${index} ${suffix}`,
+        dosage_form: "TABLET",
+        dispensing_unit: "TABLET",
+        strength: index === 0 ? "250 mg" : "125 mg",
+        category: "MEDICINE",
+      },
+    });
+    expect(productResponse.ok(), await productResponse.text()).toBeTruthy();
+    const product = (await productResponse.json()) as { id: string };
+    await page.request.post(`${API}/api/v1/inventory/prices/`, {
+      headers: { ...headers, "Idempotency-Key": `s29-r2-price-${index}-${suffix}` },
+      data: {
+        product_id: product.id,
+        amount: "500.00",
+        effective_from: new Date().toISOString().slice(0, 10),
+      },
+    });
+    const receipt = await page.request.post(`${API}/api/v1/inventory/receipts/`, {
+      headers: { ...headers, "Idempotency-Key": `s29-r2-receipt-${index}-${suffix}` },
+      data: {
+        receipt_no: `GRN-S29R2-${index}-${suffix}`,
+        lines: [
+          {
+            product_id: product.id,
+            location_id: locationId,
+            batch_no: batch,
+            expiry_date: expiry,
+            quantity: index === 0 ? "100.00" : "50.00",
+          },
+        ],
+      },
+    });
+    expect(receipt.ok(), await receipt.text()).toBeTruthy();
+  }
+
+  await page.goto("/inventory");
+  await expect(page.getByText("Blind stock count", { exact: true })).toBeVisible();
+  await page.getByLabel("Location", { exact: true }).selectOption(locationId);
+  await page.getByRole("button", { name: "Open count", exact: true }).click();
+  await expect(page.getByLabel(`Counted quantity ${batches[0]}`)).toBeVisible();
+  await expect(page.getByLabel(`Counted quantity ${batches[1]}`)).toBeVisible();
+
+  let submitRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/v1\/inventory\/counts\/[0-9a-f-]+\/submit\/$/.test(request.url())
+    ) {
+      submitRequests += 1;
+    }
+  });
+  await page.getByRole("button", { name: "Submit count", exact: true }).click();
+  await page.waitForTimeout(500);
+  expect(submitRequests).toBe(0);
+  await expect(page.getByText(/Enter a counted quantity for every line/)).toBeVisible();
+  await expect(page.getByLabel(`Counted quantity ${batches[0]}`)).toHaveAttribute(
+    "aria-invalid",
+    "true"
+  );
+
+  await page.getByLabel(`Counted quantity ${batches[0]}`).fill("95.00");
+  await page.getByLabel(`Counted quantity ${batches[1]}`).fill("0");
+  const submitRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      /\/api\/v1\/inventory\/counts\/[0-9a-f-]+\/submit\/$/.test(request.url())
+  );
+  await page.getByRole("button", { name: "Submit count", exact: true }).click();
+  const body = JSON.parse((await submitRequest).postData() ?? "{}") as {
+    lines: Array<{ counted_qty: string }>;
+  };
+  const submittedValues = body.lines.map((line) => line.counted_qty);
+  expect(submittedValues).toEqual(expect.arrayContaining(["95.00", "0"]));
+  expect(submittedValues).not.toContain("0.00");
+  await expect(page.getByText(/Count submitted/)).toBeVisible();
+});

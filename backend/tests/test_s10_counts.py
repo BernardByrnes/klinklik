@@ -369,3 +369,77 @@ def test_s10_ledger_running_balance_and_audited_export(tenant, authed_client):
     assert "running_balance" in exported.content.decode()
     with tenant_atomic(tenant.organisation.id):
         assert AuditEvent.objects.filter(event_code="INVENTORY_LEDGER_EXPORTED").count() == 1
+
+
+def test_s29_r2_incomplete_count_rejected_without_state_audit_or_movement(tenant, authed_client):
+    """S-29-R2: an unobserved line cannot become a recorded zero."""
+
+    _threshold(tenant)
+    location = _locations(authed_client)[0]
+    first = _product(authed_client)
+    second = _product(
+        authed_client,
+        generic_name="Synthetic Second Count Product",
+        strength="250 mg",
+    )
+    _price(authed_client, first["id"])
+    _price(authed_client, second["id"])
+    assert _receive(authed_client, first["id"], location["id"], quantity="100.00").status_code == 201
+    assert _receive(authed_client, second["id"], location["id"], quantity="50.00").status_code == 201
+    opened = authed_client.post(
+        "/api/v1/inventory/counts/open/",
+        {"location_id": location["id"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s29-r2-count-open",
+    )
+    assert opened.status_code == 201, opened.data
+    count_id = opened.data["id"]
+    sheet = authed_client.get(f"/api/v1/inventory/counts/{count_id}/")
+    assert sheet.status_code == 200, sheet.data
+    assert len(sheet.data["lines"]) == 2
+
+    with tenant_atomic(tenant.organisation.id):
+        before = (
+            StockCount.objects.get(id=count_id).state,
+            StockCount.objects.get(id=count_id).version,
+            tuple(
+                StockCountLine.objects.filter(count_id=count_id)
+                .order_by("id")
+                .values_list("counted_qty", flat=True)
+            ),
+            AuditEvent.objects.count(),
+            StockMovement.objects.filter(movement_type="ADJUSTMENT").count(),
+            StockAdjustment.objects.count(),
+        )
+
+    refused = authed_client.post(
+        f"/api/v1/inventory/counts/{count_id}/submit/",
+        {
+            "expected_version": opened.data["version"],
+            "lines": [
+                {
+                    "line_id": sheet.data["lines"][0]["id"],
+                    "counted_qty": "95.00",
+                }
+            ],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s29-r2-count-submit-incomplete",
+    )
+    assert refused.status_code == 422, refused.data
+    assert refused.data["code"] == "PREREQUISITE_MISSING"
+
+    with tenant_atomic(tenant.organisation.id):
+        after = (
+            StockCount.objects.get(id=count_id).state,
+            StockCount.objects.get(id=count_id).version,
+            tuple(
+                StockCountLine.objects.filter(count_id=count_id)
+                .order_by("id")
+                .values_list("counted_qty", flat=True)
+            ),
+            AuditEvent.objects.count(),
+            StockMovement.objects.filter(movement_type="ADJUSTMENT").count(),
+            StockAdjustment.objects.count(),
+        )
+    assert after == before

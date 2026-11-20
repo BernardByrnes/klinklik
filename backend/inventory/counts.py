@@ -216,7 +216,9 @@ def submit_count(
         supplied[line_id] = counted
     if set(supplied) != set(by_id):
         raise CanonicalError(
-            "PREREQUISITE_MISSING", "Every count line must be counted before submission.", 422
+            "PREREQUISITE_MISSING",
+            "Every count line must be counted before submission.",
+            status_code=422,
         )
     for line in lines:
         line.counted_qty = supplied[str(line.id)]

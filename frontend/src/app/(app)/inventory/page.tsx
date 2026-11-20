@@ -105,6 +105,7 @@ export default function InventoryPage() {
   const [supplierName, setSupplierName] = useState("");
   const [countSheet, setCountSheet] = useState<CountSheet | null>(null);
   const [countValues, setCountValues] = useState<Record<string, string>>({});
+  const [countValidationFailed, setCountValidationFailed] = useState(false);
 
   const stockKey = useProtectedQueryKey("inventory-stock", search);
   const locationsKey = useProtectedQueryKey("inventory-locations");
@@ -195,6 +196,7 @@ export default function InventoryPage() {
           sheet.lines.map((line) => [line.id, line.counted_qty ?? ""]),
         ),
       );
+      setCountValidationFailed(false);
       setNotice("Blind count opened. Enter the observed quantities.");
       setError("");
     },
@@ -207,6 +209,18 @@ export default function InventoryPage() {
   const submitCount = useMutation({
     mutationFn: () => {
       if (!countSheet) throw new Error("Open a count first.");
+      const observed = countSheet.lines.map((line) => ({
+        line_id: line.id,
+        value: (countValues[line.id] ?? "").trim(),
+      }));
+      const incomplete = observed.some(
+        ({ value }) => !/^\d+(\.\d{1,2})?$/.test(value),
+      );
+      if (incomplete) {
+        setCountValidationFailed(true);
+        throw new Error("Enter a counted quantity for every line before submitting.");
+      }
+      setCountValidationFailed(false);
       return apiRequest<CountSheet>(
         `/api/v1/inventory/counts/${countSheet.id}/submit/`,
         {
@@ -214,9 +228,9 @@ export default function InventoryPage() {
           headers: { "Idempotency-Key": newIdempotencyKey("inventory-count-submit") },
           body: JSON.stringify({
             expected_version: countSheet.version,
-            lines: countSheet.lines.map((line) => ({
-              line_id: line.id,
-              counted_qty: countValues[line.id] || "0.00",
+            lines: observed.map(({ line_id, value }) => ({
+              line_id,
+              counted_qty: value,
             })),
           }),
         },
@@ -224,6 +238,7 @@ export default function InventoryPage() {
     },
     onSuccess: (count) => {
       setCountSheet((current) => (current ? { ...current, ...count } : current));
+      setCountValidationFailed(false);
       setNotice("Count submitted. A separate approver posts the exact variances.");
       setError("");
     },
@@ -432,37 +447,54 @@ export default function InventoryPage() {
                     {countSheet.blind ? " · blind sheet (expected quantities hidden)" : ""}
                   </p>
                   <ul className="rounded-[14px] border border-line-soft divide-y divide-line-soft">
-                    {countSheet.lines.map((line) => (
-                      <li key={line.id} className="px-3.5 py-2.5 text-[12.5px]">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-medium text-ink">
-                            {line.product_name} {line.strength} · {line.batch_no}
-                          </span>
-                          <span className="text-muted">exp {line.expiry_date}</span>
-                        </div>
-                        {countSheet.state === "DRAFT" ? (
-                          <TextInput
-                            className="mt-2"
-                            inputMode="decimal"
-                            aria-label={`Counted quantity ${line.batch_no}`}
-                            value={countValues[line.id] ?? ""}
-                            onChange={(event) =>
-                              setCountValues((current) => ({
-                                ...current,
-                                [line.id]: event.target.value,
-                              }))
-                            }
-                          />
-                        ) : (
-                          <p className="mt-1 text-secondary">
-                            Counted {line.counted_qty ?? "0.00"}
-                            {line.expected_qty !== undefined
-                              ? ` · expected ${line.expected_qty} · variance ${line.variance_qty}`
-                              : ""}
-                          </p>
-                        )}
-                      </li>
-                    ))}
+                    {countSheet.lines.map((line) => {
+                      const value = countValues[line.id] ?? "";
+                      const invalid =
+                        countValidationFailed && !/^\d+(\.\d{1,2})?$/.test(value.trim());
+                      return (
+                        <li key={line.id} className="px-3.5 py-2.5 text-[12.5px]">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-medium text-ink">
+                              {line.product_name} {line.strength} · {line.batch_no}
+                            </span>
+                            <span className="text-muted">exp {line.expiry_date}</span>
+                          </div>
+                          {countSheet.state === "DRAFT" ? (
+                            <>
+                              <TextInput
+                                className="mt-2"
+                                inputMode="decimal"
+                                aria-label={`Counted quantity ${line.batch_no}`}
+                                aria-invalid={invalid || undefined}
+                                aria-describedby={invalid ? `count-help-${line.id}` : undefined}
+                                value={value}
+                                onChange={(event) =>
+                                  setCountValues((current) => ({
+                                    ...current,
+                                    [line.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                              {invalid ? (
+                                <p
+                                  id={`count-help-${line.id}`}
+                                  className="mt-1 text-[12px] font-medium text-rose-700"
+                                >
+                                  Enter the observed quantity for this line. Zero is valid if none was seen.
+                                </p>
+                              ) : null}
+                            </>
+                          ) : (
+                            <p className="mt-1 text-secondary">
+                              Counted {line.counted_qty ?? "0.00"}
+                              {line.expected_qty !== undefined
+                                ? ` · expected ${line.expected_qty} · variance ${line.variance_qty}`
+                                : ""}
+                            </p>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                   {countSheet.state === "DRAFT" ? (
                     <Button disabled={submitCount.isPending} onClick={() => submitCount.mutate()}>
