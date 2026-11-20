@@ -166,7 +166,7 @@
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
           "path_reviewed": [
-            "backend/laboratory/views.py:35",
+            "backend/laboratory/views.py:40",
             "backend/laboratory/services.py:33"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -192,7 +192,7 @@
           ],
           "note": "Registry code maps to emitted QUEUE_SERVICE_COMPLETED.",
           "path_reviewed": [
-            "backend/laboratory/views.py:35",
+            "backend/laboratory/views.py:40",
             "backend/laboratory/services.py:33"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -214,12 +214,12 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:578"
+              "evidence": "backend/laboratory/services.py:603"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
           "path_reviewed": [
-            "backend/laboratory/views.py:35",
+            "backend/laboratory/views.py:40",
             "backend/laboratory/services.py:33"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -231,12 +231,12 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:578"
+              "evidence": "backend/laboratory/services.py:603"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
           "path_reviewed": [
-            "backend/laboratory/views.py:35",
+            "backend/laboratory/views.py:40",
             "backend/laboratory/services.py:33"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -257,12 +257,12 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:578"
+              "evidence": "backend/laboratory/services.py:603"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
           "path_reviewed": [
-            "backend/laboratory/views.py:35",
+            "backend/laboratory/views.py:40",
             "backend/laboratory/services.py:33"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -283,12 +283,12 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:578"
+              "evidence": "backend/laboratory/services.py:603"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
           "path_reviewed": [
-            "backend/laboratory/views.py:35",
+            "backend/laboratory/views.py:40",
             "backend/laboratory/services.py:33"
           ],
           "proposed_disposition": "accept documented mapping",
