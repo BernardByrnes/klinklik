@@ -58,6 +58,21 @@ type Movement = {
   occurred_at: string;
 };
 
+type ReceiptIntent = {
+  key: string;
+  body: {
+    receipt_no: string;
+    supplier_name: string;
+    lines: Array<{
+      product_id: string;
+      location_id: string;
+      batch_no: string;
+      expiry_date: string;
+      quantity: string;
+    }>;
+  };
+};
+
 type CountLine = {
   id: string;
   product_name: string;
@@ -106,6 +121,7 @@ export default function InventoryPage() {
   const [countSheet, setCountSheet] = useState<CountSheet | null>(null);
   const [countValues, setCountValues] = useState<Record<string, string>>({});
   const [countValidationFailed, setCountValidationFailed] = useState(false);
+  const [pendingReceipt, setPendingReceipt] = useState<ReceiptIntent | null>(null);
 
   const stockKey = useProtectedQueryKey("inventory-stock", search);
   const locationsKey = useProtectedQueryKey("inventory-locations");
@@ -137,28 +153,13 @@ export default function InventoryPage() {
   });
 
   const receive = useMutation({
-    mutationFn: () =>
+    mutationFn: (intent: ReceiptIntent) =>
       apiRequest<{ receipt_no: string; warning_near_expiry: boolean }>(
         "/api/v1/inventory/receipts/",
         {
           method: "POST",
-          headers: { "Idempotency-Key": newIdempotencyKey("inventory-receipt") },
-          body: JSON.stringify({
-            receipt_no: `GRN-${Date.now()}`,
-            supplier_name: supplierName.trim(),
-            lines: [
-              {
-                product_id: productId,
-                location_id:
-                  locationId ||
-                  locations.data?.find((location) => location.is_default)?.id ||
-                  locations.data?.[0]?.id,
-                batch_no: batchNo.trim(),
-                expiry_date: expiryDate,
-                quantity,
-              },
-            ],
-          }),
+          headers: { "Idempotency-Key": intent.key },
+          body: JSON.stringify(intent.body),
         },
       ),
     onSuccess: (result) => {
@@ -168,6 +169,7 @@ export default function InventoryPage() {
           : `Stock received on ${result.receipt_no}.`,
       );
       setError("");
+      setPendingReceipt(null);
       setBatchNo("");
       setQuantity("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-stock") });
@@ -175,9 +177,53 @@ export default function InventoryPage() {
     },
     onError: (reason) => {
       setNotice("");
-      setError(errorMessage(reason));
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) {
+        setPendingReceipt(null);
+        setError(errorMessage(reason));
+        queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-stock") });
+        queryClient.invalidateQueries({ queryKey: protectedQueryKey("inventory-movements") });
+        return;
+      }
+      setError(
+        "The receipt outcome is uncertain. Retry the same receipt; do not post a new one.",
+      );
     },
   });
+
+  const confirmReceipt = () => {
+    const location =
+      locationId ||
+      locations.data?.find((item) => item.is_default)?.id ||
+      locations.data?.[0]?.id;
+    if (!productId || !location || !batchNo.trim() || !expiryDate || !quantity.trim()) {
+      setError("Complete every receipt field before posting.");
+      return;
+    }
+    const intent: ReceiptIntent = {
+      key: newIdempotencyKey("inventory-receipt"),
+      body: {
+        receipt_no: `GRN-${Date.now()}`,
+        supplier_name: supplierName.trim(),
+        lines: [
+          {
+            product_id: productId,
+            location_id: location,
+            batch_no: batchNo.trim(),
+            expiry_date: expiryDate,
+            quantity: quantity.trim(),
+          },
+        ],
+      },
+    };
+    setPendingReceipt(intent);
+    setError("");
+    receive.mutate(intent);
+  };
 
   const openCount = useMutation({
     mutationFn: async () => {
@@ -352,6 +398,7 @@ export default function InventoryPage() {
                 <Select
                   id="receive-product"
                   value={productId}
+                  disabled={Boolean(pendingReceipt)}
                   onChange={(event) => setProductId(event.target.value)}
                 >
                   <option value="">Select product…</option>
@@ -366,6 +413,7 @@ export default function InventoryPage() {
                 <Select
                   id="receive-location"
                   value={locationId || defaultLocation}
+                  disabled={Boolean(pendingReceipt)}
                   onChange={(event) => setLocationId(event.target.value)}
                 >
                   {(locations.data ?? []).map((location) => (
@@ -379,6 +427,7 @@ export default function InventoryPage() {
                 <TextInput
                   id="receive-batch"
                   value={batchNo}
+                  disabled={Boolean(pendingReceipt)}
                   onChange={(event) => setBatchNo(event.target.value)}
                 />
               </Field>
@@ -387,6 +436,7 @@ export default function InventoryPage() {
                   id="receive-expiry"
                   type="date"
                   value={expiryDate}
+                  disabled={Boolean(pendingReceipt)}
                   onChange={(event) => setExpiryDate(event.target.value)}
                 />
               </Field>
@@ -395,6 +445,7 @@ export default function InventoryPage() {
                   id="receive-quantity"
                   inputMode="decimal"
                   value={quantity}
+                  disabled={Boolean(pendingReceipt)}
                   onChange={(event) => setQuantity(event.target.value)}
                 />
               </Field>
@@ -402,22 +453,33 @@ export default function InventoryPage() {
                 <TextInput
                   id="receive-supplier"
                   value={supplierName}
+                  disabled={Boolean(pendingReceipt)}
                   onChange={(event) => setSupplierName(event.target.value)}
                 />
               </Field>
               <Button
                 disabled={
                   receive.isPending ||
+                  Boolean(pendingReceipt) ||
                   !productId ||
                   !(locationId || defaultLocation) ||
                   !batchNo.trim() ||
                   !expiryDate ||
                   !quantity.trim()
                 }
-                onClick={() => receive.mutate()}
+                onClick={confirmReceipt}
               >
                 {receive.isPending ? "Posting…" : "Post receipt"}
               </Button>
+              {pendingReceipt && receive.isError ? (
+                <Button
+                  variant="secondary"
+                  disabled={receive.isPending}
+                  onClick={() => receive.mutate(pendingReceipt)}
+                >
+                  Retry uncertain receipt
+                </Button>
+              ) : null}
               <p className="text-[11.5px] font-medium text-muted">
                 Expired batches are refused. Expiry inside 90 days is accepted with a warning.
               </p>
