@@ -581,7 +581,7 @@ async function s30SwitchUser(page: Page, username: string, password: string) {
   await steadyFill(page, "Username", username);
   await steadyFill(page, "Password", password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page).toHaveURL(/\/(overview|consultations)$/);
 }
 
 test("S-30 technician enters results and a verifier releases the observed version", async ({
@@ -678,4 +678,41 @@ test("S-30 rejected sample shows the safe reason and approved next action", asyn
   );
   await recollect.click();
   expect((await recollectResponse).status()).toBe(200);
+});
+
+test("S-30 clinician sees status only until release, then read-only results", async ({
+  page,
+}) => {
+  await login(page);
+  const demo = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const setup = await s30SetupLabItem(page, demo, suffix, { action: "enter" });
+
+  await page.getByRole("tab", { name: "Investigations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Investigations" })).toBeVisible();
+  await expect(page.getByText("RESULT_ENTERED")).toBeVisible();
+  await expect(page.getByText("13.2")).toHaveCount(0);
+
+  const admin = await apiLogin(page, "admin@clinicopus.local", ADMIN_PASSWORD);
+  const detail = await page.request.get(
+    `${API}/api/v1/lab/items/${setup.itemId}/detail/`,
+    { headers: headers(admin) }
+  );
+  expect(detail.ok(), await detail.text()).toBeTruthy();
+  const observed = (await detail.json()) as { version_no: number };
+  const released = await page.request.post(
+    `${API}/api/v1/lab/items/${setup.itemId}/release/`,
+    {
+      headers: { ...headers(admin), "Idempotency-Key": `s30-clinician-release-${suffix}` },
+      data: { expected_version: observed.version_no },
+    }
+  );
+  expect(released.ok(), await released.text()).toBeTruthy();
+
+  await page.getByRole("button", { name: "Refresh results", exact: true }).click();
+  await expect(page.getByText("13.2")).toBeVisible();
+  await expect(page.getByText("HIGH")).toBeVisible();
+  await expect(page.getByText(/Released/).first()).toBeVisible();
+  await expect(page.getByText(/Enter results/)).toHaveCount(0);
+
 });

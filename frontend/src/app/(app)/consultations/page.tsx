@@ -5,8 +5,18 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type Keybo
 import { useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
-import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
+import {
+  ApiRequestError,
+  StaleAuthorityResponseError,
+  apiRequest,
+  newIdempotencyKey,
+} from "../../../lib/api";
+import {
+  getAuthoritySnapshot,
+  isCurrentAuthority,
+  protectedQueryKey,
+  useProtectedQueryKey,
+} from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import {
   ActiveAllergy,
@@ -50,6 +60,7 @@ import {
   TextInput,
   Textarea,
   UnauthorisedState,
+  formatDate,
   formatTime,
   queueStatusBadge,
 } from "../../../components/ui";
@@ -74,6 +85,43 @@ const WORKSPACE_PANEL_ID = "consultation-workspace-panel";
 
 type WorkspaceSectionId = (typeof WORKSPACE_SECTIONS)[number]["id"];
 type FoundationSectionId = Exclude<WorkspaceSectionId, "notes" | "treatment">;
+
+type LabEncounterItem = {
+  item_id: string;
+  test_name: string;
+  state: string;
+  priority: string;
+  ordered_at: string;
+  specimen_id: string;
+};
+
+type LabEncounterResult = {
+  item_id: string;
+  test_name: string;
+  specimen_type: string;
+  version_no: number;
+  values: Array<{
+    code: string;
+    name: string;
+    unit: string;
+    value: string | null;
+    flag: string;
+    range_low?: string | null;
+    range_high?: string | null;
+    not_done?: boolean;
+  }>;
+  comments: string;
+  released_at: string;
+  verified_by: string | null;
+  self_verified: boolean;
+  amended: boolean;
+};
+
+type LabEncounterPayload = {
+  results: LabEncounterResult[];
+  items: LabEncounterItem[];
+  status: { total: number; released: number; cancelled: number; pending: number; ready: boolean };
+};
 const DEFAULT_CONSULTATION_NOTE = "Assessment: \nPlan: ";
 const AUTOSAVE_DELAY_MS = 3000;
 const RETRY_BACKOFF_MS = [2000, 5000, 10000, 20000, 30000] as const;
@@ -848,6 +896,90 @@ function FoundationSection({ section }: { section: FoundationSectionId }) {
         hint={FOUNDATION_HINTS[section]}
       />
     </div>
+  );
+}
+
+function InvestigationsSection({
+  payload,
+  isLoading,
+  isError,
+  onRefresh,
+}: {
+  payload: LabEncounterPayload | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <section className="space-y-3" aria-label="Investigations">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-[13px] font-bold text-ink">Investigations</h2>
+        <Button variant="small-secondary" disabled={isLoading} onClick={onRefresh}>
+          Refresh results
+        </Button>
+      </div>
+      {isLoading ? (
+        <p className="rounded-[14px] border border-line-soft px-4 py-5 text-[12.5px] text-secondary" role="status" aria-busy="true">
+          Loading laboratory results…
+        </p>
+      ) : isError ? (
+        <p className="rounded-[14px] border border-line-soft px-4 py-5 text-[12.5px] text-ink" role="alert">
+          Laboratory results could not be loaded.
+        </p>
+      ) : !payload ? (
+        <p className="rounded-[14px] border border-line-soft px-4 py-5 text-[12.5px] text-secondary">
+          No laboratory work is linked to this encounter.
+        </p>
+      ) : (
+        <>
+          {payload.results.length ? (
+            <ul className="space-y-3">
+              {payload.results.map((result) => (
+                <li key={result.item_id} className="rounded-[14px] border border-line-soft bg-white p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-[12.5px] font-bold text-ink">{result.test_name}</h3>
+                    <span className="text-[11px] font-medium text-muted">
+                      v{result.version_no} · Released {formatDate(result.released_at)}
+                      {result.verified_by ? ` · ${result.verified_by}` : ""}
+                      {result.amended ? " · amended" : ""}
+                    </span>
+                  </div>
+                  <ul className="mt-2 divide-y divide-line-soft">
+                    {result.values.map((value) => (
+                      <li key={value.code} className="flex flex-wrap items-center justify-between gap-2 py-1.5 text-[12px]">
+                        <span className="font-medium text-ink">
+                          {value.name} · {value.value ?? "Not done"} {value.unit}
+                        </span>
+                        <span className="flex items-center gap-2 text-secondary">
+                          <span>{value.range_low ?? "—"} – {value.range_high ?? "—"}</span>
+                          {value.flag !== "NONE" ? <StatusBadge tone="neutral">{value.flag}</StatusBadge> : null}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {payload.items.filter((item) => item.state !== "RELEASED").length ? (
+            <ul className="space-y-2">
+              {payload.items
+                .filter((item) => item.state !== "RELEASED")
+                .map((item) => (
+                  <li key={item.item_id} className="rounded-[14px] border border-line-soft bg-surface-muted px-4 py-3 text-[12px] text-secondary">
+                    {item.test_name} · {item.state}
+                  </li>
+                ))}
+            </ul>
+          ) : null}
+          {payload.results.length === 0 && payload.items.length === 0 ? (
+            <p className="rounded-[14px] border border-line-soft px-4 py-5 text-[12.5px] text-secondary">
+              No investigations recorded.
+            </p>
+          ) : null}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -2160,6 +2292,24 @@ function ConsultationsWorkspace() {
     () => queueEntries.find((entry) => entry.id === selectedId) ?? null,
     [queueEntries, selectedId],
   );
+  const labResultsKey = useProtectedQueryKey(
+    "lab-encounter-results",
+    encounter?.id ?? "",
+    selected?.patient_id ?? "",
+  );
+  const labResults = useQuery({
+    queryKey: labResultsKey,
+    queryFn: async () => {
+      const origin = getAuthoritySnapshot();
+      const payload = await apiRequest<LabEncounterPayload>(
+        `/api/v1/lab/encounters/${encounter!.id}/results/`,
+      );
+      if (!isCurrentAuthority(origin)) throw new StaleAuthorityResponseError();
+      return payload;
+    },
+    enabled: Boolean(encounter?.id) && activeSection === "investigations" && can("encounter.read"),
+    staleTime: 10_000,
+  });
   // Start is only offered from a confirmed, currently reachable row.
   const worklistUnavailable = queue.isError;
   const worklistSettling = queue.isFetching;
@@ -4755,6 +4905,13 @@ function ConsultationsWorkspace() {
                       }}
                     />
                   )
+                ) : activeSection === "investigations" ? (
+                  <InvestigationsSection
+                    payload={labResults.data}
+                    isLoading={labResults.isLoading}
+                    isError={labResults.isError}
+                    onRefresh={() => void labResults.refetch()}
+                  />
                 ) : activeSection !== "notes" ? (
                   activeSection === "summary" && !encounter ? (
                     <div className="space-y-3">

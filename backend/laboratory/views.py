@@ -25,6 +25,7 @@ from laboratory.services import (
     collect_item,
     configure_test,
     create_order,
+    encounter_item_states,
     encounter_lab_status,
     order_status,
     released_results_for_encounter,
@@ -288,6 +289,11 @@ class LabEncounterResultsView(TenantAPIView):
         return Response(
             {
                 "results": results,
+                "items": encounter_item_states(
+                    organisation=request.organisation,
+                    facility=request.facility,
+                    encounter_id=encounter_id,
+                ),
                 "status": encounter_lab_status(
                     organisation=request.organisation,
                     facility=request.facility,

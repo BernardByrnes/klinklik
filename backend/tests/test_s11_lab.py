@@ -842,3 +842,17 @@ def test_s30_worklist_supports_bounded_pages(tenant, authed_client):
     assert second.data["pagination"]["has_more"] is False
     assert len(first.data["to_collect"]) == 2
     assert len(second.data["to_collect"]) == 1
+
+
+def test_s30_encounter_payload_shows_status_without_draft_values(tenant, authed_client):
+    """S-30: unreleased encounter results expose only work state, never values."""
+
+    encounter_id, item_id, _analyte_id = _s30_entered_item(tenant, authed_client, code="S30ENC")
+    before = authed_client.get(f"/api/v1/lab/encounters/{encounter_id}/results/")
+    assert before.status_code == 200, before.data
+    assert before.data["results"] == []
+    assert any(
+        row["item_id"] == item_id and row["state"] == "RESULT_ENTERED" and "values" not in row
+        for row in before.data["items"]
+    )
+    assert "13.2" not in str(before.data)

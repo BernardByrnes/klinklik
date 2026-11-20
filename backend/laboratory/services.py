@@ -875,6 +875,27 @@ def released_results_for_encounter(*, organisation, facility, encounter_id, acto
     return body
 
 
+def encounter_item_states(*, organisation, facility, encounter_id):
+    """Status-only projection for unreleased items; never includes values."""
+
+    items = LabOrderItem.objects.filter(
+        organisation=organisation,
+        facility=facility,
+        order__encounter_id=encounter_id,
+    ).select_related("test", "order").order_by("id")
+    return [
+        {
+            "item_id": str(item.id),
+            "test_name": item.test.name,
+            "state": item.state,
+            "priority": item.priority,
+            "ordered_at": item.order.created_at,
+            "specimen_id": item.specimen_id,
+        }
+        for item in items
+    ]
+
+
 def encounter_lab_status(*, organisation, facility, encounter_id):
     items = LabOrderItem.objects.filter(
         organisation=organisation,
