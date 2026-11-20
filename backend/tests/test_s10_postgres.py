@@ -9,7 +9,14 @@ from uuid import uuid4
 import pytest
 from django.db import close_old_connections, connection
 
-from accounts.models import User
+from accounts.models import (
+    OrganisationMembership,
+    Permission,
+    Role,
+    RolePermission,
+    User,
+    UserFacilityRole,
+)
 from core.errors import CanonicalError
 from core.rls import rls_status
 from core.services import tenant_atomic
@@ -259,6 +266,23 @@ def test_pg_s10_count_list_and_movements_during_count(tenant, authed_client):
             actor=actor,
             location_id=loc.id,
         )
+    with tenant_atomic(organisation.id):
+        receive_stock(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            receipt_no=f"PG-S10-D04-{uuid4().hex[:6]}",
+            lines=[
+                {
+                    "product_id": med.id,
+                    "location_id": loc.id,
+                    "batch_no": f"PG-S10-D04-B-{uuid4().hex[:6]}",
+                    "expiry_date": date.today() + timedelta(days=365),
+                    "quantity": "5.00",
+                }
+            ],
+            source_event_id=f"PG-S10-D04-EVENT-{uuid4().hex}",
+        )
     lines = count.lines.all()
     with tenant_atomic(organisation.id):
         submit_count(
@@ -279,4 +303,42 @@ def test_pg_s10_count_list_and_movements_during_count(tenant, authed_client):
     detail = authed_client.get(f"/api/v1/inventory/counts/{count.id}/?reveal=1")
     assert detail.status_code == 200, detail.data
     assert detail.data["lines"][0]["variance_qty"] == "-5.00"
-    assert "movements_during_count" in detail.data
+    assert len(detail.data["movements_during_count"]) >= 1
+
+    with tenant_atomic(organisation.id):
+        reader = User.objects.create_user(
+            f"s10-pg-reader-{uuid4().hex[:6]}", "test-password-123"
+        )
+        OrganisationMembership.objects.create(organisation=organisation, user=reader)
+        role = Role.objects.create(
+            organisation=organisation,
+            name=f"S10 PG reader {uuid4().hex[:6]}",
+            template_code="S10_PG_COUNT_READER",
+        )
+        permission, _ = Permission.objects.get_or_create(code="inventory.read")
+        RolePermission.objects.create(organisation=organisation, role=role, permission=permission)
+        UserFacilityRole.objects.create(
+            organisation=organisation,
+            user=reader,
+            role=role,
+            facility=facility,
+            department=tenant.department,
+        )
+    from rest_framework.test import APIClient
+
+    reader_client = APIClient()
+    login = reader_client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": reader.username,
+            "password": "test-password-123",
+            "organisation_id": str(organisation.id),
+        },
+        format="json",
+    )
+    reader_client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    reader_client.defaults["HTTP_X_FACILITY_ID"] = str(facility.id)
+    reader_detail = reader_client.get(f"/api/v1/inventory/counts/{count.id}/?reveal=1")
+    assert reader_detail.status_code == 200, reader_detail.data
+    assert "expected_qty" not in reader_detail.data["lines"][0]
+    assert reader_detail.data["movements_during_count"] == []

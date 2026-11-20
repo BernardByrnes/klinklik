@@ -174,7 +174,9 @@ def count_list(*, organisation, facility, state=None, limit=50, offset=0):
     }
 
 
-def count_sheet(*, organisation, facility, count, reveal_expected=None):
+def count_sheet(
+    *, organisation, facility, count, reveal_expected=None, include_movements=False
+):
     if reveal_expected is None:
         policy = FacilityWorkflowPolicy.objects.filter(
             organisation=organisation, facility=facility
@@ -213,21 +215,25 @@ def count_sheet(*, organisation, facility, count, reveal_expected=None):
         "approved_at": count.approved_at,
         "blind": not reveal_expected,
         "lines": body,
-        "movements_during_count": [
-            {
-                "id": str(movement.id),
-                "movement_type": movement.movement_type,
-                "quantity": str(movement.quantity),
-                "batch_id": str(movement.batch_id),
-                "occurred_at": movement.occurred_at,
-            }
-            for movement in StockMovement.objects.filter(
-                organisation=organisation,
-                facility=facility,
-                location_id=count.location_id,
-                occurred_at__gte=count.created_at,
-            ).order_by("occurred_at", "id")
-        ],
+        "movements_during_count": (
+            [
+                {
+                    "id": str(movement.id),
+                    "movement_type": movement.movement_type,
+                    "quantity": str(movement.quantity),
+                    "batch_id": str(movement.batch_id),
+                    "occurred_at": movement.occurred_at,
+                }
+                for movement in StockMovement.objects.filter(
+                    organisation=organisation,
+                    facility=facility,
+                    location_id=count.location_id,
+                    occurred_at__gte=count.created_at,
+                ).order_by("occurred_at", "id")
+            ]
+            if include_movements
+            else []
+        ),
     }
 
 

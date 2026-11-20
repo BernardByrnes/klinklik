@@ -6,7 +6,14 @@ from uuid import uuid4
 
 import pytest
 
-from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
+from accounts.models import (
+    OrganisationMembership,
+    Permission,
+    Role,
+    RolePermission,
+    User,
+    UserFacilityRole,
+)
 from audit.models import AuditEvent
 from core.services import tenant_atomic
 from inventory.models import (
@@ -460,6 +467,8 @@ def test_s32_approver_lists_submitted_counts_and_opens_blind_sheet(tenant, authe
     )
     assert opened.status_code == 201, opened.data
     count_id = opened.data["id"]
+    # D-04: create a movement after the count opens so the approver has data to interpret.
+    assert _receive(authed_client, product["id"], location["id"], quantity="5.00").status_code == 201
     sheet = authed_client.get(f"/api/v1/inventory/counts/{count_id}/")
     submitted = authed_client.post(
         f"/api/v1/inventory/counts/{count_id}/submit/",
@@ -488,9 +497,50 @@ def test_s32_approver_lists_submitted_counts_and_opens_blind_sheet(tenant, authe
     detail = approver.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
     assert detail.status_code == 200, detail.data
     assert detail.data["lines"][0]["expected_qty"]
-    assert "movements_during_count" in detail.data
+    assert len(detail.data["movements_during_count"]) >= 1
     assert detail.data["blind"] is False
 
     blind = approver.get(f"/api/v1/inventory/counts/{count_id}/")
     assert blind.status_code == 200
     assert "expected_qty" not in blind.data["lines"][0]
+
+    with tenant_atomic(tenant.organisation.id):
+        reader = User.objects.create_user(
+            f"s10-reader-{uuid4().hex[:6]}", "test-password-123"
+        )
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=reader)
+        role = Role.objects.create(
+            organisation=tenant.organisation,
+            name=f"S10 reader {uuid4().hex[:6]}",
+            template_code="S10_COUNT_READER",
+        )
+        permission, _ = Permission.objects.get_or_create(code="inventory.read")
+        RolePermission.objects.create(
+            organisation=tenant.organisation, role=role, permission=permission
+        )
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=reader,
+            role=role,
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    from rest_framework.test import APIClient
+
+    reader_client = APIClient()
+    login = reader_client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": reader.username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    reader_client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    reader_client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    reader_detail = reader_client.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
+    assert reader_detail.status_code == 200, reader_detail.data
+    assert "expected_qty" not in reader_detail.data["lines"][0]
+    assert "variance_qty" not in reader_detail.data["lines"][0]
+    assert reader_detail.data["movements_during_count"] == []

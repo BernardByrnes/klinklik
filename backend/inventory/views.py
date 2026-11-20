@@ -482,6 +482,9 @@ class StockCountDetailView(TenantAPIView):
                 facility=request.facility,
                 count=count,
                 reveal_expected=reveal or None,
+                include_movements=request.user.has_capability(
+                    "inventory.approve", request.facility
+                ),
             )
         )
 
