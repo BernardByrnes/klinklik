@@ -2,10 +2,12 @@
   "affected_rows": 27,
   "base": "93c1af7",
   "classification_counts": {
-    "NAMING_MAPPING": 16,
-    "UNRESOLVED": 21
+    "MISSING_EMISSION": 15,
+    "NAMING_MAPPING": 20,
+    "REGISTRY_SUPERSEDED": 2
   },
   "generated": "2026-11-20",
+  "resolved_entries": 21,
   "rows": [
     {
       "command_id": "CMD-007",
@@ -15,7 +17,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "INVOICE_STATE",
           "emitted_codes": [
             {
@@ -23,21 +25,29 @@
               "evidence": "backend/scheduling/services.py:311"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "LWBS close path emits VISIT_CLOSED_LWBS and a refund-review fact, but no invoice-state event; all branches read.",
+          "path_reviewed": [
+            "backend/application/reception/views.py:479",
+            "backend/scheduling/services.py:618"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "other"
         },
         {
-          "classification": "UNRESOLVED",
+          "classification": "NAMING_MAPPING",
           "declared_code": "QUEUE_LWBS",
           "emitted_codes": [
             {
-              "code": "CREATE",
-              "evidence": "backend/scheduling/services.py:311"
+              "code": "VISIT_CLOSED_LWBS",
+              "evidence": "backend/scheduling/queue.py:1773"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "note": "Declared queue outcome is emitted by the Visit close path under VISIT_CLOSED_LWBS.",
+          "path_reviewed": [
+            "backend/application/reception/views.py:479",
+            "backend/scheduling/services.py:618"
+          ],
+          "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
       ],
@@ -50,7 +60,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "REGISTRY_SUPERSEDED",
           "declared_code": "ENCOUNTER_RESUMED",
           "emitted_codes": [
             {
@@ -58,8 +68,12 @@
               "evidence": "backend/clinical/services.py:75"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "note": "Resume is folded into encounter open/reuse; no separate resume command exists in the implemented design. Owner \u00a759 registry revision question.",
+          "path_reviewed": [
+            "backend/clinical/views.py:534",
+            "backend/clinical/services.py:34"
+          ],
+          "proposed_disposition": "owner \u00a759 registry revision",
           "risk_class": null
         }
       ],
@@ -73,16 +87,20 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "NAMING_MAPPING",
           "declared_code": "CLINICAL_NOTE_SIGNED",
           "emitted_codes": [
             {
-              "code": "UPDATE",
-              "evidence": "backend/clinical/services.py:75"
+              "code": "ENCOUNTER_SIGNED",
+              "evidence": "backend/application/clinical/commands.py:352"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "note": "The signed note event is emitted as ENCOUNTER_SIGNED by the sign owner service.",
+          "path_reviewed": [
+            "backend/clinical/views.py:937",
+            "backend/clinical/services.py:326"
+          ],
+          "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
         {
@@ -95,6 +113,10 @@
             }
           ],
           "note": "Registry code maps to emitted QUEUE_SERVICE_COMPLETED.",
+          "path_reviewed": [
+            "backend/clinical/views.py:486",
+            "backend/clinical/services.py:23"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -108,7 +130,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "CLINICAL_NOTE_AMENDED",
           "emitted_codes": [
             {
@@ -116,9 +138,13 @@
               "evidence": "backend/clinical/services.py:75"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Amend path writes the immutable note version and generic UPDATE audit action but no declared amendment event; all branches read.",
+          "path_reviewed": [
+            "backend/clinical/views.py:995",
+            "backend/clinical/services.py:395"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "encounter_addendum"
@@ -139,6 +165,10 @@
             }
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
+          "path_reviewed": [
+            "backend/laboratory/views.py:33",
+            "backend/laboratory/services.py:33"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -161,6 +191,10 @@
             }
           ],
           "note": "Registry code maps to emitted QUEUE_SERVICE_COMPLETED.",
+          "path_reviewed": [
+            "backend/laboratory/views.py:33",
+            "backend/laboratory/services.py:33"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -184,6 +218,10 @@
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "path_reviewed": [
+            "backend/laboratory/views.py:33",
+            "backend/laboratory/services.py:33"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
@@ -197,6 +235,10 @@
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "path_reviewed": [
+            "backend/laboratory/views.py:33",
+            "backend/laboratory/services.py:33"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -219,6 +261,10 @@
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "path_reviewed": [
+            "backend/laboratory/views.py:33",
+            "backend/laboratory/services.py:33"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -241,6 +287,10 @@
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
+          "path_reviewed": [
+            "backend/laboratory/views.py:33",
+            "backend/laboratory/services.py:33"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -255,16 +305,20 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "NAMING_MAPPING",
           "declared_code": "DISPENSE_CREATED",
           "emitted_codes": [
             {
-              "code": "CREATE",
-              "evidence": "backend/pharmacy/dispensing.py:229"
+              "code": "DISPENSE_PREPARED",
+              "evidence": "backend/pharmacy/dispensing.py:558"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "note": "Provisional dispense creation emits DISPENSE_PREPARED at the prepare service.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:177",
+            "backend/pharmacy/dispensing.py:404"
+          ],
+          "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
         {
@@ -277,6 +331,10 @@
             }
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:177",
+            "backend/pharmacy/dispensing.py:35"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -291,7 +349,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "PRESCRIPTION_CLAIM_RELEASED",
           "emitted_codes": [
             {
@@ -299,12 +357,16 @@
               "evidence": "backend/pharmacy/dispensing.py:229"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Handover confirms the dispense but no claim-release event is emitted; the active claim becomes implicit via dispense state. All branches read.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:197",
+            "backend/pharmacy/dispensing.py:564"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "dispensing"
         },
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "PRESCRIPTION_OUTCOME",
           "emitted_codes": [
             {
@@ -312,9 +374,13 @@
               "evidence": "backend/pharmacy/dispensing.py:229"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Item state is versioned on confirmation, but no PRESCRIPTION_OUTCOME audit event is emitted. All branches read.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:197",
+            "backend/pharmacy/dispensing.py:564"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "dispensing"
         }
       ],
       "operation": "dispense_handover"
@@ -336,11 +402,15 @@
             }
           ],
           "note": "Registry code maps to emitted OTC_SALE_COMPLETED.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:308",
+            "backend/pharmacy/dispensing.py:35"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "RECEIPT_ISSUED",
           "emitted_codes": [
             {
@@ -348,9 +418,13 @@
               "evidence": "backend/pharmacy/dispensing.py:229"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "OTC sale emits OTC_SALE_COMPLETED and a stock movement but no receipt event; no receipt is created on this path. All branches read.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:308",
+            "backend/pharmacy/dispensing.py:790"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "money"
         }
       ],
       "operation": "otc_sale"
@@ -371,6 +445,10 @@
             }
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
+          "path_reviewed": [
+            "backend/billing/views.py:71",
+            "backend/billing/services.py:34"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -385,7 +463,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "ALLOCATIONS_REVERSED",
           "emitted_codes": [
             {
@@ -393,12 +471,16 @@
               "evidence": "backend/billing/services.py:374"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Reversal emits PAYMENT_REVERSED only; allocation rows are reversed without a distinct audit event. All branches read.",
+          "path_reviewed": [
+            "backend/billing/views.py:355",
+            "backend/billing/services.py:1137"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "money"
         },
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "INVOICE_STATE",
           "emitted_codes": [
             {
@@ -406,9 +488,13 @@
               "evidence": "backend/billing/services.py:374"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Payment reversal recomputes the invoice projection but emits no invoice-state event. All branches read.",
+          "path_reviewed": [
+            "backend/billing/views.py:355",
+            "backend/billing/services.py:1137"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "money"
         }
       ],
       "operation": "payment_reverse"
@@ -430,11 +516,15 @@
             }
           ],
           "note": "Registry code maps to emitted CREDIT_NOTE_VOIDED.",
+          "path_reviewed": [
+            "backend/billing/views.py:545",
+            "backend/billing/services.py:34"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "INVOICE_STATE",
           "emitted_codes": [
             {
@@ -442,9 +532,13 @@
               "evidence": "backend/billing/services.py:374"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Credit-note creation emits CREDIT_NOTE_ISSUED and recomputes the invoice projection but emits no INVOICE_STATE event. All branches read.",
+          "path_reviewed": [
+            "backend/billing/views.py:545",
+            "backend/billing/services.py:1366"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "money"
         }
       ],
       "operation": "credit_note_create"
@@ -456,7 +550,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "REGISTRY_SUPERSEDED",
           "declared_code": "REFUND_PROCESSED",
           "emitted_codes": [
             {
@@ -464,8 +558,12 @@
               "evidence": "backend/billing/services.py:374"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "note": "CMD-079 route is RefundApproveFencedView and refuses until \u00a7973 MFA authority; no processing path exists to emit REFUND_PROCESSED. Owner \u00a759 registry/fence question.",
+          "path_reviewed": [
+            "backend/billing/views.py:616",
+            "backend/billing/services.py:1597"
+          ],
+          "proposed_disposition": "owner \u00a759 registry revision",
           "risk_class": null
         }
       ],
@@ -487,6 +585,10 @@
             }
           ],
           "note": "Registry code maps to emitted SHIFT_OPENED.",
+          "path_reviewed": [
+            "backend/billing/views.py:389",
+            "backend/billing/services.py:34"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -510,6 +612,10 @@
             }
           ],
           "note": "Registry code maps to emitted SHIFT_CLOSED.",
+          "path_reviewed": [
+            "backend/billing/views.py:389",
+            "backend/billing/services.py:34"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
@@ -523,6 +629,10 @@
             }
           ],
           "note": "Registry code maps to emitted SHIFT_CLOSED.",
+          "path_reviewed": [
+            "backend/billing/views.py:389",
+            "backend/billing/services.py:34"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -536,7 +646,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "ALLERGY_RECORDED",
           "emitted_codes": [
             {
@@ -544,9 +654,13 @@
               "evidence": "backend/clinical/allergies.py:266"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "add_allergy emits a generic CREATE action audit fact with no declared event code; all branches read.",
+          "path_reviewed": [
+            "backend/clinical/views.py:374",
+            "backend/clinical/allergies.py:209"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "patient_allergy_record"
@@ -558,7 +672,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "ALLERGY_STATUS_SET",
           "emitted_codes": [
             {
@@ -566,9 +680,13 @@
               "evidence": "backend/clinical/allergies.py:266"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "set_allergy_status emits a generic action audit fact with no declared event code; all branches read.",
+          "path_reviewed": [
+            "backend/clinical/views.py:406",
+            "backend/clinical/allergies.py:280"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "patient_allergy_status_set"
@@ -580,7 +698,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "ALLERGY_ENTERED_ERROR",
           "emitted_codes": [
             {
@@ -588,9 +706,13 @@
               "evidence": "backend/clinical/allergies.py:266"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "enter_allergy_in_error emits a generic action audit fact with no declared event code; all branches read.",
+          "path_reviewed": [
+            "backend/clinical/views.py:440",
+            "backend/clinical/allergies.py:352"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "allergy_entered_error"
@@ -602,7 +724,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "ALLERGY_REVIEWED",
           "emitted_codes": [
             {
@@ -610,9 +732,13 @@
               "evidence": "backend/clinical/allergies.py:266"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "review_encounter_allergies emits a generic action audit fact with no declared event code; all branches read.",
+          "path_reviewed": [
+            "backend/clinical/views.py:486",
+            "backend/clinical/allergies.py:453"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "encounter_allergy_review"
@@ -624,7 +750,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "DIAGNOSIS_SAVED",
           "emitted_codes": [
             {
@@ -632,9 +758,13 @@
               "evidence": "backend/clinical/diagnoses.py:210"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "Diagnosis create/update/remove emit generic action audit facts only; no declared DIAGNOSIS_SAVED event on any branch.",
+          "path_reviewed": [
+            "backend/clinical/views.py:590",
+            "backend/clinical/diagnoses.py:191"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "diagnosis_save"
@@ -646,7 +776,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "DISPOSITION_SET",
           "emitted_codes": [
             {
@@ -654,9 +784,13 @@
               "evidence": "backend/clinical/dispositions.py:167"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "set_disposition emits action='UPDATE' with no event_code on every branch; no declared event exists.",
+          "path_reviewed": [
+            "backend/clinical/views.py:754",
+            "backend/clinical/dispositions.py:134"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "disposition_set"
@@ -668,7 +802,7 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "MISSING_EMISSION",
           "declared_code": "FOLLOWUP_RECORDED",
           "emitted_codes": [
             {
@@ -676,9 +810,13 @@
               "evidence": "backend/clinical/followups.py:226"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
-          "risk_class": null
+          "note": "save_follow_up emits generic action audit facts only; no declared FOLLOWUP_RECORDED event on any branch.",
+          "path_reviewed": [
+            "backend/clinical/views.py:793",
+            "backend/clinical/followups.py:158"
+          ],
+          "proposed_disposition": "emit declared code in a separate authorized slice",
+          "risk_class": "final-clinical"
         }
       ],
       "operation": "followup_record"
@@ -700,6 +838,10 @@
             }
           ],
           "note": "Registry code maps to emitted PRESCRIPTION_ITEM_NOT_DISPENSED.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:177",
+            "backend/pharmacy/dispensing.py:35"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         },
@@ -713,6 +855,10 @@
             }
           ],
           "note": "Registry code maps to emitted INVOICE_VOIDED.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:177",
+            "backend/pharmacy/dispensing.py:35"
+          ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
@@ -726,16 +872,20 @@
       ],
       "entries": [
         {
-          "classification": "UNRESOLVED",
+          "classification": "NAMING_MAPPING",
           "declared_code": "PRESCRIPTION_ACCESSED",
           "emitted_codes": [
             {
-              "code": "CREATE",
-              "evidence": "backend/pharmacy/dispensing.py:229"
+              "code": "PRESCRIPTION_CLAIMED",
+              "evidence": "backend/pharmacy/dispensing.py:380"
             }
           ],
-          "note": "Only a generic action audit event was found in the implementing path; no domain-specific emission confirmed.",
-          "proposed_disposition": "escalate to owner (\u00a759) after full path review",
+          "note": "Claim access is emitted as PRESCRIPTION_CLAIMED by the claim service.",
+          "path_reviewed": [
+            "backend/pharmacy/views.py:153",
+            "backend/pharmacy/dispensing.py:332"
+          ],
+          "proposed_disposition": "accept documented mapping",
           "risk_class": null
         }
       ],

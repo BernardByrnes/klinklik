@@ -29,7 +29,7 @@ def test_s22_declared_codes_match_the_registry_and_classifications_are_valid():
         for entry in row['entries']:
             assert entry['classification'] in VOCAB
             if entry['classification'] == 'MISSING_EMISSION':
-                assert entry['risk_class'] in {'stock', 'money', 'dispensing', 'final clinical', 'other'}
+                assert entry['risk_class'] in {'stock', 'money', 'dispensing', 'final-clinical', 'other'}
 
 
 def test_s22_every_evidence_pointer_exists_and_contains_the_cited_token():
@@ -42,3 +42,28 @@ def test_s22_every_evidence_pointer_exists_and_contains_the_cited_token():
                 source = (ROOT / path).read_text(encoding='utf-8').splitlines()
                 assert 1 <= int(line_no) <= len(source), emitted['evidence']
                 assert emitted['code'] in source[int(line_no) - 1], emitted
+
+
+def test_s23_full_path_review_fields_are_complete():
+    audit_map = json.loads(MAP.read_text(encoding='utf-8'))
+    counts = {}
+    for row in audit_map['rows']:
+        for entry in row['entries']:
+            classification = entry['classification']
+            counts[classification] = counts.get(classification, 0) + 1
+            reviewed = entry.get('path_reviewed') or []
+            assert reviewed, (row['command_id'], entry['declared_code'])
+            for pointer in reviewed:
+                path, line_no = pointer.rsplit(':', 1)
+                source = (ROOT / path).read_text(encoding='utf-8').splitlines()
+                assert 1 <= int(line_no) <= len(source), pointer
+                assert ('def ' in source[int(line_no) - 1]
+                        or 'class ' in source[int(line_no) - 1]), pointer
+            if classification == 'MISSING_EMISSION':
+                assert entry.get('risk_class') in {'stock', 'money', 'dispensing', 'final-clinical', 'other'}
+                assert len(reviewed) >= 2, row['command_id']
+            if classification == 'REGISTRY_SUPERSEDED':
+                assert '§59' in entry['note'], row['command_id']
+    assert counts == audit_map['classification_counts']
+    assert audit_map['resolved_entries'] == 21
+    assert 'MISSING_EMISSION' not in {entry['classification'] for row in audit_map['rows'] for entry in row['entries'] if entry.get('path_reviewed') == []}
