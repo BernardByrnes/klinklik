@@ -214,3 +214,40 @@ def test_pg_s09_concurrent_out_movements_cannot_oversell(tenant, authed_client):
         assert StockMovement.objects.filter(
             batch=batch, movement_type="WRITE_OFF"
         ).count() == 1
+
+
+def test_pg_s09_multi_line_receipt_and_quarantined_availability(tenant, authed_client):
+    """S-09 PG: one multi-line receipt posts two movements; quarantine is excluded from usable stock."""
+
+    product, location = _catalogue(tenant, authed_client)
+    expiry = (date.today() + timedelta(days=120)).isoformat()
+    posted = authed_client.post(
+        "/api/v1/inventory/receipts/",
+        {
+            "receipt_no": f"PG-S32-{uuid4().hex[:6]}",
+            "lines": [
+                {
+                    "product_id": product["id"],
+                    "location_id": location["id"],
+                    "batch_no": "PG-S32-A",
+                    "expiry_date": expiry,
+                    "quantity": "20.00",
+                },
+                {
+                    "product_id": product["id"],
+                    "location_id": location["id"],
+                    "batch_no": "PG-S32-B",
+                    "expiry_date": expiry,
+                    "quantity": "30.00",
+                },
+            ],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"pg-s32-receipt-{uuid4().hex}",
+    )
+    assert posted.status_code == 201, posted.data
+    assert posted.data["movement_count"] == 2
+    summary = authed_client.get("/api/v1/inventory/stock/")
+    row = next(item for item in summary.data if item["product_id"] == product["id"])
+    assert row["usable_quantity"] == "50.00"
+    assert row["total_quantity"] == "50.00"

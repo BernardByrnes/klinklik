@@ -246,3 +246,37 @@ def test_pg_s10_adjustment_and_quarantine_races_cannot_oversell(tenant, authed_c
     with tenant_atomic(organisation.id):
         assert BatchLocationBalance.objects.get(batch=batch, location=loc).quantity == 5
         assert BatchLocationBalance.objects.get(batch=batch, location=quarantine).quantity == 15
+
+
+def test_pg_s10_count_list_and_movements_during_count(tenant, authed_client):
+    """S-10 PG: submitted counts are discoverable and D-04 movements are projected."""
+
+    organisation, facility, actor, med, loc, _batch = _setup(tenant, authed_client)
+    with tenant_atomic(organisation.id):
+        count = open_count(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            location_id=loc.id,
+        )
+    lines = count.lines.all()
+    with tenant_atomic(organisation.id):
+        submit_count(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            count_id=count.id,
+            expected_version=count.version,
+            line_counts=[
+                {"line_id": line.id, "counted_qty": "95.00"} for line in lines
+            ],
+        )
+    listing = authed_client.get("/api/v1/inventory/counts/")
+    assert listing.status_code == 200, listing.data
+    row = next(item for item in listing.data["counts"] if item["id"] == str(count.id))
+    assert row["state"] == "SUBMITTED"
+    assert "expected_qty" not in row
+    detail = authed_client.get(f"/api/v1/inventory/counts/{count.id}/?reveal=1")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["lines"][0]["variance_qty"] == "-5.00"
+    assert "movements_during_count" in detail.data
