@@ -289,3 +289,223 @@ test("S-12 prescribes, signs, dispenses and charges one exact handover", async (
   }>;
   expect(movementBody.some((item) => item.movement_type === "OUT_DISPENSE")).toBeTruthy();
 });
+
+test("S-29-R6 lost prepare response resumes the original provisional identity", async ({
+  page,
+}) => {
+  await login(page);
+  let session = await apiLogin(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+
+  const locations = (await (
+    await page.request.get(`${API}/api/v1/inventory/locations/`, { headers: headers(session) })
+  ).json()) as Array<{ id: string }>;
+  const productResponse = await page.request.post(`${API}/api/v1/inventory/products/`, {
+    headers: headers(session),
+    data: {
+      code: `S29R6-${suffix}`,
+      generic_name: `Synthetic S29 R6 medicine ${suffix}`,
+      dosage_form: "TABLET",
+      dispensing_unit: "TABLET",
+      strength: "500 mg",
+      category: "MEDICINE",
+    },
+  });
+  expect(productResponse.ok(), await productResponse.text()).toBeTruthy();
+  const product = (await productResponse.json()) as { id: string };
+  const receipt = await page.request.post(`${API}/api/v1/inventory/receipts/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s29-r6-grn-${suffix}` },
+    data: {
+      receipt_no: `GRN-S29R6-${suffix}`,
+      lines: [
+        {
+          product_id: product.id,
+          location_id: locations[0].id,
+          batch_no: `B-S29R6-${suffix}`,
+          expiry_date: new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10),
+          quantity: "20.00",
+          unit_cost: "100.00",
+        },
+      ],
+    },
+  });
+  expect(receipt.ok(), await receipt.text()).toBeTruthy();
+  const price = await page.request.post(`${API}/api/v1/inventory/prices/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s29-r6-price-${suffix}` },
+    data: {
+      product_id: product.id,
+      amount: "500.00",
+      effective_from: new Date().toISOString().slice(0, 10),
+    },
+  });
+  expect(price.ok(), await price.text()).toBeTruthy();
+
+  const patient = await page.request.post(`${API}/api/v1/patients/`, {
+    headers: headers(session),
+    data: {
+      first_name: "S29R6",
+      last_name: `Pharmacy${suffix}`,
+      sex: "FEMALE",
+      phone: `076${suffix.slice(-6).padStart(6, "0")}`,
+    },
+  });
+  expect(patient.ok(), await patient.text()).toBeTruthy();
+  const patientId = ((await patient.json()) as { id: string }).id;
+  const patientName = `S29R6 Pharmacy${suffix}`;
+  const checkIn = await page.request.post(`${API}/api/v1/reception/visits/check-in/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s29-r6-checkin-${suffix}` },
+    data: { patient_id: patientId, visit_type: "OUTPATIENT_NEW", payer_type: "CASH" },
+  });
+  expect(checkIn.ok(), await checkIn.text()).toBeTruthy();
+  const checkedIn = (await checkIn.json()) as { visit_id: string; queue_id: string };
+
+  const triageWorklist = await page.request.get(
+    `${API}/api/v1/clinic/queue/operational/?queue_type=TRIAGE&state=WAITING,CALLED`,
+    { headers: headers(session) }
+  );
+  const triageRows = (await triageWorklist.json()) as {
+    entries: Array<{ id: string; version: number }>;
+  };
+  const triageRow = triageRows.entries.find((row) => row.id === checkedIn.queue_id);
+  expect(triageRow).toBeTruthy();
+  const triage = await page.request.post(
+    `${API}/api/v1/clinic/triage/${triageRow!.id}/`,
+    {
+      headers: {
+        ...headers(session),
+        "If-Match": `"${triageRow!.version}"`,
+        "Idempotency-Key": `s29-r6-triage-${suffix}`,
+      },
+      data: {
+        expected_version: triageRow!.version,
+        acuity: "ROUTINE",
+        chief_complaint: "Synthetic S29 R6 complaint",
+      },
+    }
+  );
+  expect(triage.status(), await triage.text()).toBe(201);
+
+  await page.goto("/consultations");
+  await page.getByRole("listitem").filter({ hasText: patientName }).click();
+  const encounterPromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/clinic/encounters/") &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  const encounter = (await (await encounterPromise).json()) as { id: string };
+
+  await page.getByRole("button", { name: "No known allergies", exact: true }).click();
+  await page.getByRole("button", { name: "Review allergies", exact: true }).click();
+  await page.getByRole("tab", { name: "Diagnosis", exact: true }).click();
+  await page.getByRole("button", { name: "Record no final diagnosis", exact: true }).click();
+  await steadyFill(page, "Reason", "Synthetic S29 R6 no final diagnosis");
+  await page.getByRole("button", { name: "Save no final diagnosis", exact: true }).click();
+  await expect(page.getByTestId("no-diagnosis-state")).toBeVisible();
+  await page.getByRole("tab", { name: "Treatment", exact: true }).click();
+  await page.getByLabel("Disposition", { exact: true }).selectOption("TREATED_AND_DISCHARGED");
+  await page.getByRole("button", { name: "Save disposition", exact: true }).click();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await steadyFill(page, "Presenting complaint", "Synthetic S29 R6 chest pain");
+
+  session = await apiLogin(page);
+  const draft = await page.request.patch(
+    `${API}/api/v1/pharmacy/prescriptions/draft/`,
+    {
+      headers: { ...headers(session), "Idempotency-Key": `s29-r6-draft-${suffix}` },
+      data: {
+        encounter_id: encounter.id,
+        items: [
+          {
+            product_id: product.id,
+            dose_amount: "1.00",
+            dose_unit: "TABLET",
+            route: "PO",
+            frequency: "BD",
+            duration_value: 5,
+            duration_unit: "DAYS",
+            quantity: "5.00",
+            instructions: "Synthetic S29 R6 instructions",
+          },
+        ],
+      },
+    }
+  );
+  expect(draft.ok(), await draft.text()).toBeTruthy();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  const savePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/clinic/encounters/${encounter.id}/notes/`) &&
+      response.request().method() === "PATCH"
+  );
+  await page.getByRole("button", { name: "Save draft" }).click();
+  expect((await savePromise).status()).toBe(200);
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+
+  const signPromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/clinic/encounters/${encounter.id}/sign/`) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Sign consultation" }).click();
+  await page.getByRole("button", { name: "Confirm signature" }).click();
+  expect((await signPromise).status()).toBe(200);
+
+  await page.goto("/pharmacy");
+  const row = page
+    .getByRole("listitem")
+    .filter({ hasText: patientName })
+    .filter({ hasText: `Synthetic S29 R6 medicine ${suffix}` })
+    .first();
+  await expect(row).toBeVisible();
+
+  const prepareAttempts: Array<{ key: string | undefined; body: string | null }> = [];
+  const confirmUrls: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    if (/\/api\/v1\/pharmacy\/prescriptions\/[^/]+\/dispenses\/$/.test(request.url())) {
+      prepareAttempts.push({
+        key: request.headers()["idempotency-key"],
+        body: request.postData(),
+      });
+    }
+    if (request.url().endsWith("/confirm/")) confirmUrls.push(request.url());
+  });
+  let lostPrepare = false;
+  await page.route(
+    /\/api\/v1\/pharmacy\/prescriptions\/[^/]+\/dispenses\/$/,
+    async (route) => {
+      if (!lostPrepare) {
+        lostPrepare = true;
+        await route.fetch();
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    }
+  );
+
+  await row.getByRole("button", { name: "Dispense & charge", exact: true }).click();
+  await expect(page.getByText(/pharmacy outcome is uncertain/i)).toBeVisible();
+  await page.getByRole("button", { name: "Retry uncertain pharmacy step", exact: true }).click();
+  await expect(page.getByText(/Dispense handed over/)).toBeVisible();
+
+  expect(prepareAttempts).toHaveLength(2);
+  expect(prepareAttempts[1].key).toBe(prepareAttempts[0].key);
+  expect(prepareAttempts[1].body).toBe(prepareAttempts[0].body);
+  expect(prepareAttempts[0].key).toBeTruthy();
+  expect(confirmUrls).toHaveLength(1);
+  const provisionalId = confirmUrls[0].match(/\/dispenses\/([0-9a-f-]+)\/confirm\//)?.[1];
+  expect(provisionalId).toBeTruthy();
+  session = await apiLogin(page);
+  const queueResponse = await page.request.get(`${API}/api/v1/pharmacy/queue/`, {
+    headers: headers(session),
+  });
+  expect(queueResponse.ok(), await queueResponse.text()).toBeTruthy();
+  const queue = (await queueResponse.json()) as {
+    counselling: Array<{ patient_name: string; dispense_id: string }>;
+  };
+  const counselling = queue.counselling.filter((item) => item.patient_name === patientName);
+  expect(counselling).toHaveLength(1);
+  expect(counselling[0].dispense_id).toBe(provisionalId);
+});

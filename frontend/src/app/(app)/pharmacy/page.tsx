@@ -1,8 +1,9 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
-import { apiRequest, newIdempotencyKey } from "../../../lib/api";
+import { ApiRequestError, apiRequest, newIdempotencyKey } from "../../../lib/api";
 import { protectedQueryKey, useProtectedQueryKey } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { IconBilling, IconCheckCircle } from "../../../components/icons";
@@ -51,6 +52,15 @@ type Queue = {
   uncollected: QueueRow[];
   uncollected_window_days: number;
   counselling: CounsellingRow[];
+};
+
+type PharmacyStep = "claim" | "prepare" | "confirm";
+type PharmacyIntent = {
+  prescriptionId: string;
+  lines: Array<{ prescription_item_id: string; quantity: string }>;
+  keys: { claim: string; prepare: string; confirm: string };
+  provisionalId: string | null;
+  step: PharmacyStep;
 };
 
 function errorMessage(error: unknown) {
@@ -103,41 +113,83 @@ export default function PharmacyPage() {
     queryFn: () => apiRequest<Queue>("/api/v1/pharmacy/queue/"),
     enabled: can("pharmacy.queue.view"),
   });
+  const [pendingIntent, setPendingIntent] = useState<PharmacyIntent | null>(null);
+  const [error, setError] = useState("");
 
   const dispense = useMutation({
-    mutationFn: async (row: QueueRow) => {
-      await apiRequest(`/api/v1/pharmacy/prescriptions/${row.prescription_id}/claim/`, {
-        method: "POST",
-        headers: { "Idempotency-Key": newIdempotencyKey("pharmacy-claim") },
-        body: JSON.stringify({}),
-      });
-      const pending = row.items.filter((item) => item.state === "PENDING");
-      if (!pending.length) {
-        throw new Error("This prescription has no pending item to dispense.");
-      }
-      const prepared = await apiRequest<{ id: string }>(
-        `/api/v1/pharmacy/prescriptions/${row.prescription_id}/dispenses/`,
-        {
+    mutationFn: async (intent: PharmacyIntent) => {
+      let current = intent;
+      if (current.step === "claim") {
+        await apiRequest(`/api/v1/pharmacy/prescriptions/${current.prescriptionId}/claim/`, {
           method: "POST",
-          headers: { "Idempotency-Key": newIdempotencyKey("pharmacy-prepare") },
-          body: JSON.stringify({
-            lines: pending.map((item) => ({
-              prescription_item_id: item.id,
-              quantity: item.quantity,
-            })),
-          }),
-        }
-      );
-      return apiRequest(`/api/v1/pharmacy/dispenses/${prepared.id}/confirm/`, {
+          headers: { "Idempotency-Key": current.keys.claim },
+          body: JSON.stringify({}),
+        });
+        current = { ...current, step: "prepare" };
+        setPendingIntent(current);
+      }
+      if (current.step === "prepare") {
+        const prepared = await apiRequest<{ id: string }>(
+          `/api/v1/pharmacy/prescriptions/${current.prescriptionId}/dispenses/`,
+          {
+            method: "POST",
+            headers: { "Idempotency-Key": current.keys.prepare },
+            body: JSON.stringify({ lines: current.lines }),
+          }
+        );
+        current = { ...current, provisionalId: prepared.id, step: "confirm" };
+        setPendingIntent(current);
+      }
+      return apiRequest(`/api/v1/pharmacy/dispenses/${current.provisionalId}/confirm/`, {
         method: "POST",
-        headers: { "Idempotency-Key": newIdempotencyKey("pharmacy-confirm") },
+        headers: { "Idempotency-Key": current.keys.confirm },
         body: JSON.stringify({}),
       });
     },
     onSuccess: () => {
+      setPendingIntent(null);
+      setError("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("pharmacy-queue") });
     },
+    onError: (reason) => {
+      const definite =
+        reason instanceof ApiRequestError &&
+        reason.status < 500 &&
+        reason.status !== 408 &&
+        reason.status !== 429;
+      if (definite) {
+        setPendingIntent(null);
+        queryClient.invalidateQueries({ queryKey: protectedQueryKey("pharmacy-queue") });
+        setError(errorMessage(reason));
+        return;
+      }
+      setError("The pharmacy outcome is uncertain. Retry the same step after checking the queue.");
+    },
   });
+
+  const startDispense = (row: QueueRow) => {
+    const lines = row.items
+      .filter((item) => item.state === "PENDING")
+      .map((item) => ({ prescription_item_id: item.id, quantity: item.quantity }));
+    if (!lines.length) {
+      setError("This prescription has no pending item to dispense.");
+      return;
+    }
+    const intent: PharmacyIntent = {
+      prescriptionId: row.prescription_id,
+      lines,
+      keys: {
+        claim: newIdempotencyKey("pharmacy-claim"),
+        prepare: newIdempotencyKey("pharmacy-prepare"),
+        confirm: newIdempotencyKey("pharmacy-confirm"),
+      },
+      provisionalId: null,
+      step: "claim",
+    };
+    setPendingIntent(intent);
+    setError("");
+    dispense.mutate(intent);
+  };
 
   if (!can("pharmacy.queue.view")) {
     return <UnauthorisedState capability="pharmacy.queue.view" />;
@@ -149,7 +201,16 @@ export default function PharmacyPage() {
         title="Pharmacy"
         subtitle="Dispense prescribed medicine from non-expired stock and charge it in the same handover."
       />
-      {dispense.isError ? <ErrorBanner message={errorMessage(dispense.error)} /> : null}
+      {error ? <ErrorBanner message={error} onDismiss={() => setError("")} /> : null}
+      {pendingIntent && dispense.isError ? (
+        <Button
+          variant="secondary"
+          disabled={dispense.isPending}
+          onClick={() => dispense.mutate(pendingIntent)}
+        >
+          Retry uncertain pharmacy step
+        </Button>
+      ) : null}
       {dispense.isSuccess ? (
         <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink">
           <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
@@ -186,8 +247,8 @@ export default function PharmacyPage() {
                     action={
                       <Button
                         variant="secondary"
-                        disabled={dispense.isPending}
-                        onClick={() => dispense.mutate(row)}
+                        disabled={dispense.isPending || Boolean(pendingIntent)}
+                        onClick={() => startDispense(row)}
                       >
                         Dispense &amp; charge
                       </Button>
