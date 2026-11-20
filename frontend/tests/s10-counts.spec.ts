@@ -233,3 +233,109 @@ test("S-29-R2 blank count lines are identified and explicit zero is submitted ex
   expect(submittedValues).not.toContain("0.00");
   await expect(page.getByText(/Count submitted/)).toBeVisible();
 });
+
+async function signInAs(page: Page, username: string, password: string) {
+  await page.context().clearCookies();
+  await page.goto("/");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/login$/);
+  await steadyFill(page, "Username", username);
+  await steadyFill(page, "Password", password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/(overview|inventory)$/);
+}
+
+test("S-32 independent approver discovers a submitted count from their own session", async ({
+  page,
+}) => {
+  await login(page);
+  const sessionResponse = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "demo", password: DEMO_PASSWORD },
+  });
+  const session = (await sessionResponse.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  const headers = {
+    Authorization: `Bearer ${session.access_token}`,
+    "X-Facility-Id": session.facilities[0].id,
+    "Content-Type": "application/json",
+  };
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const product = (await (
+    await page.request.post(`${API}/api/v1/inventory/products/`, {
+      headers,
+      data: {
+        code: `S32AP-${suffix}`,
+        generic_name: `S32 approver product ${suffix}`,
+        dosage_form: "TABLET",
+        dispensing_unit: "TABLET",
+        strength: "250 mg",
+        category: "MEDICINE",
+      },
+    })
+  ).json()) as { id: string };
+  const location = (await (
+    await page.request.post(`${API}/api/v1/inventory/locations/`, {
+      headers,
+      data: { code: `S32APLOC-${suffix}`, name: `S32 approver store ${suffix}`, location_type: "STORE" },
+    })
+  ).json()) as { id: string };
+  await page.request.post(`${API}/api/v1/inventory/prices/`, {
+    headers: { ...headers, "Idempotency-Key": `s32ap-price-${suffix}` },
+    data: {
+      product_id: product.id,
+      amount: "500.00",
+      effective_from: new Date().toISOString().slice(0, 10),
+    },
+  });
+  await page.request.post(`${API}/api/v1/inventory/receipts/`, {
+    headers: { ...headers, "Idempotency-Key": `s32ap-receipt-${suffix}` },
+    data: {
+      receipt_no: `GRN-S32AP-${suffix}`,
+      lines: [
+        {
+          product_id: product.id,
+          location_id: location.id,
+          batch_no: `B-S32AP-${suffix}`,
+          expiry_date: new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10),
+          quantity: "100.00",
+        },
+      ],
+    },
+  });
+  const opened = await page.request.post(`${API}/api/v1/inventory/counts/open/`, {
+    headers: { ...headers, "Idempotency-Key": `s32ap-open-${suffix}` },
+    data: { location_id: location.id },
+  });
+  expect(opened.ok(), await opened.text()).toBeTruthy();
+  const countId = ((await opened.json()) as { id: string }).id;
+  const sheet = (await (
+    await page.request.get(`${API}/api/v1/inventory/counts/${countId}/`, { headers })
+  ).json()) as { version: number; lines: Array<{ id: string }> };
+  const submitted = await page.request.post(
+    `${API}/api/v1/inventory/counts/${countId}/submit/`,
+    {
+      headers: { ...headers, "Idempotency-Key": `s32ap-submit-${suffix}` },
+      data: {
+        expected_version: sheet.version,
+        lines: sheet.lines.map((line) => ({ line_id: line.id, counted_qty: "95.00" })),
+      },
+    }
+  );
+  expect(submitted.ok(), await submitted.text()).toBeTruthy();
+
+  await signInAs(page, "admin@clinicopus.local", "ClinicopusDemo123!");
+  await page.goto("/inventory");
+  await expect(page.getByText("Count review", { exact: true })).toBeVisible();
+  const countRow = page
+    .getByRole("listitem")
+    .filter({ hasText: `S32 approver store ${suffix}` })
+    .first();
+  await expect(countRow).toBeVisible();
+  await countRow.getByRole("button", { name: "Review count", exact: true }).click();
+  await expect(page.getByText(/variance -5\.00/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Movements during count/ })).toBeVisible();
+});

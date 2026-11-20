@@ -74,6 +74,19 @@ test("S-09 receives non-expired stock, warns near expiry and refuses expired bat
   soon.setDate(soon.getDate() + 30);
   await steadyFill(page, "Expiry date", soon.toISOString().slice(0, 10));
   await steadyFill(page, "Quantity", "25.00");
+  await page.getByRole("button", { name: "Add receipt line", exact: true }).click();
+  await steadyFill(page, "Batch number 2", `B2-${suffix}`);
+  await steadyFill(page, "Expiry date 2", soon.toISOString().slice(0, 10));
+  await steadyFill(page, "Quantity 2", "15.00");
+  let receiptBody = "";
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/inventory/receipts/")
+    ) {
+      receiptBody = request.postData() ?? "";
+    }
+  });
   const receiptPosted = page.waitForResponse(
     (response) =>
       response.url().endsWith("/api/v1/inventory/receipts/") &&
@@ -81,6 +94,13 @@ test("S-09 receives non-expired stock, warns near expiry and refuses expired bat
   );
   await page.getByRole("button", { name: "Post receipt", exact: true }).click();
   expect((await receiptPosted).status()).toBe(201);
+  const postedReceipt = JSON.parse(receiptBody) as {
+    receipt_no: string;
+    lines: Array<{ batch_no: string; quantity: string }>;
+  };
+  expect(postedReceipt.lines).toHaveLength(2);
+  expect(postedReceipt.receipt_no).toMatch(/^GRN-/);
+  expect(postedReceipt.lines.map((line) => line.quantity)).toEqual(["25.00", "15.00"]);
   await expect(page.getByText(/Stock received on GRN-/)).toBeVisible();
   await expect(page.getByText(/90-day warning horizon/)).toBeVisible();
   await expect(page.getByText(product.generic_name).first()).toBeVisible();
