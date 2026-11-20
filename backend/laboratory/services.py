@@ -772,7 +772,7 @@ def result_detail(*, organisation, facility, actor, item_id, request=None):
     assert_transaction_active()
     item = LabOrderItem.objects.filter(
         id=item_id, organisation=organisation, facility=facility
-    ).select_related("test", "result").first()
+    ).select_related("test", "result", "order__visit__patient").first()
     if item is None:
         raise CanonicalError("NOT_FOUND", "Laboratory item was not found.", status_code=404)
     try:
@@ -782,6 +782,23 @@ def result_detail(*, organisation, facility, actor, item_id, request=None):
     version = (
         result.versions.order_by("-version_no").first() if result is not None else None
     )
+    patient = item.order.visit.patient
+    analytes = []
+    for analyte in item.test.analytes.filter(active=True).order_by("sequence", "id"):
+        applied = _range_for(analyte=analyte, patient=patient)
+        analytes.append(
+            {
+                "id": str(analyte.id),
+                "code": analyte.code,
+                "name": analyte.name,
+                "unit": analyte.unit,
+                "result_type": analyte.result_type,
+                "sequence": analyte.sequence,
+                "coded_options": analyte.coded_options or item.test.coded_options,
+                "range_low": str(applied.low) if applied and applied.low is not None else None,
+                "range_high": str(applied.high) if applied and applied.high is not None else None,
+            }
+        )
     body = {
         "item_id": str(item.id),
         "test_name": item.test.name,
@@ -789,6 +806,7 @@ def result_detail(*, organisation, facility, actor, item_id, request=None):
         "state": item.state,
         "priority": item.priority,
         "version_no": version.version_no if version is not None else None,
+        "analytes": analytes,
         "values": version.values if version is not None else [],
         "comments": version.comments if version is not None else "",
         "entered_by": str(result.entered_by) if result and result.entered_by_id else None,

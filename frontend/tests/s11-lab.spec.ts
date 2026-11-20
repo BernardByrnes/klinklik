@@ -207,25 +207,22 @@ test("S-11 orders from the Encounter, collects, releases and exposes the result"
   await adminApi.dispose();
 
   await page.reload();
+  const verifyRow = page
+    .getByRole("listitem")
+    .filter({ hasText: `Synthetic S11 lab ${suffix}` });
   await expect(
-    page
-      .getByRole("listitem")
-      .filter({ hasText: `Synthetic S11 lab ${suffix}` })
-      .getByRole("button", { name: "Release result" })
+    verifyRow.getByRole("button", { name: "Review and release" })
   ).toBeVisible();
+  await verifyRow.getByRole("button", { name: "Review and release", exact: true }).click();
   const released = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/api/v1/lab/items/${itemId}/release/`) &&
       response.request().method() === "POST"
   );
-  await page
-    .getByRole("listitem")
-    .filter({ hasText: `Synthetic S11 lab ${suffix}` })
-    .getByRole("button", { name: "Release result", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Verify & release", exact: true }).click();
   const releaseResponse = await released;
   expect(releaseResponse.status(), await releaseResponse.text()).toBe(200);
-  await expect(page.getByText("Laboratory state updated.")).toBeVisible();
+  await expect(page.getByText("Result released to the ordering clinician.")).toBeVisible();
   session = await apiLogin(page, "demo", DEMO_PASSWORD);
   const results = await page.request.get(
     `${API}/api/v1/lab/encounters/${encounter.id}/results/`,
@@ -395,7 +392,7 @@ test("S-29-R1 limited lab technician sees the verification queue without release
     .getByRole("listitem")
     .filter({ hasText: `Synthetic S29 R1 lab ${suffix}` });
   await expect(verifyRow).toBeVisible();
-  const releaseButton = verifyRow.getByRole("button", { name: "Release result", exact: true });
+  const releaseButton = verifyRow.getByRole("button", { name: "Review and release", exact: true });
   await expect(releaseButton).toBeDisabled();
   await expect(
     verifyRow.getByText("A separate authorized verifier must release this result.")
@@ -410,4 +407,275 @@ test("S-29-R1 limited lab technician sees the verification queue without release
     }
   );
   expect(forcedRelease.status()).toBe(403);
+});
+
+async function s30SetupLabItem(
+  page: Page,
+  session: { token: string; facilityId: string },
+  suffix: string,
+  options: { action: "collect" | "enter" | "reject"; priority?: "ROUTINE" | "URGENT" },
+) {
+  const services = (await (
+    await page.request.get(`${API}/api/v1/billing/services/`, { headers: headers(session) })
+  ).json()) as Array<{ id: string }>;
+
+  const patient = await page.request.post(`${API}/api/v1/patients/`, {
+    headers: headers(session),
+    data: {
+      first_name: "S30",
+      last_name: `Lab${suffix}`,
+      sex: "FEMALE",
+      phone: `075${suffix.slice(-6).padStart(6, "0")}`,
+    },
+  });
+  expect(patient.ok(), await patient.text()).toBeTruthy();
+  const patientId = ((await patient.json()) as { id: string }).id;
+  const patientName = `S30 Lab${suffix}`;
+  const checkIn = await page.request.post(`${API}/api/v1/reception/visits/check-in/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s30-checkin-${suffix}` },
+    data: { patient_id: patientId, visit_type: "OUTPATIENT_NEW", payer_type: "CASH" },
+  });
+  expect(checkIn.ok(), await checkIn.text()).toBeTruthy();
+  const checkedIn = (await checkIn.json()) as { visit_id: string; queue_id: string };
+
+  const context = await page.request.get(
+    `${API}/api/v1/reception/visits/${checkedIn.visit_id}/`,
+    { headers: headers(session) }
+  );
+  const contextBody = (await context.json()) as { allergy: { etag: string } | null };
+  const nka = await page.request.post(
+    `${API}/api/v1/clinic/patients/${patientId}/allergy-status/`,
+    {
+      headers: {
+        ...headers(session),
+        "Idempotency-Key": `s30-nka-${suffix}`,
+        "If-Match": contextBody.allergy!.etag,
+      },
+      data: { status: "NKA" },
+    }
+  );
+  expect(nka.ok(), await nka.text()).toBeTruthy();
+  const queueRows = (await (
+    await page.request.get(`${API}/api/v1/clinic/queue/`, { headers: headers(session) })
+  ).json()) as Array<{ id: string; version: number }>;
+  const queueRow = queueRows.find((row) => row.id === checkedIn.queue_id);
+  expect(queueRow).toBeTruthy();
+  const triage = await page.request.post(
+    `${API}/api/v1/clinic/triage/${checkedIn.queue_id}/`,
+    {
+      headers: {
+        ...headers(session),
+        "If-Match": `"${queueRow!.version}"`,
+        "Idempotency-Key": `s30-triage-${suffix}`,
+      },
+      data: {
+        expected_version: queueRow!.version,
+        acuity: "ROUTINE",
+        chief_complaint: "Synthetic S30 lab complaint",
+      },
+    }
+  );
+  expect(triage.status(), await triage.text()).toBe(201);
+
+  await page.goto("/consultations");
+  await page.getByRole("listitem").filter({ hasText: patientName }).click();
+  const encounterPromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/clinic/encounters/") &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Start encounter" }).click();
+  const encounter = (await (await encounterPromise).json()) as { id: string };
+
+  session = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const labTest = await page.request.post(`${API}/api/v1/lab/tests/`, {
+    headers: headers(session),
+    data: {
+      code: `S30-${suffix}`,
+      name: `Synthetic S30 lab ${suffix}`,
+      service_id: services[0].id,
+      result_type: "PANEL",
+      analytes: [
+        {
+          code: "HB",
+          name: "Haemoglobin",
+          unit: "g/dL",
+          result_type: "NUMERIC",
+          sanity_min: "0",
+          sanity_max: "250",
+          range: { low: "4", high: "11" },
+        },
+        {
+          code: "WBC",
+          name: "White cell count",
+          unit: "x10^9/L",
+          result_type: "NUMERIC",
+          sanity_min: "0",
+          sanity_max: "100",
+          range: { low: "4", high: "11" },
+        },
+      ],
+    },
+  });
+  expect(labTest.ok(), await labTest.text()).toBeTruthy();
+  const testBody = (await labTest.json()) as {
+    id: string;
+    analytes: Array<{ id: string; code: string }>;
+  };
+  const order = await page.request.post(`${API}/api/v1/lab/orders/`, {
+    headers: { ...headers(session), "Idempotency-Key": `s30-order-${suffix}` },
+    data: {
+      encounter_id: encounter.id,
+      test_ids: [testBody.id],
+      priority: options.priority ?? "ROUTINE",
+    },
+  });
+  expect(order.ok(), await order.text()).toBeTruthy();
+  const itemId = ((await order.json()) as { items: Array<{ id: string }> }).items[0].id;
+  const collected = await page.request.post(
+    `${API}/api/v1/lab/items/${itemId}/collect/`,
+    {
+      headers: { ...headers(session), "Idempotency-Key": `s30-collect-${suffix}` },
+      data: {},
+    }
+  );
+  expect(collected.ok(), await collected.text()).toBeTruthy();
+
+  if (options.action === "collect") {
+    // The browser test enters the result through the bench UI.
+  } else if (options.action === "reject") {
+    const rejected = await page.request.post(
+      `${API}/api/v1/lab/items/${itemId}/reject/`,
+      {
+        headers: { ...headers(session), "Idempotency-Key": `s30-reject-${suffix}` },
+        data: { reason: "Synthetic haemolysed sample" },
+      }
+    );
+    expect(rejected.ok(), await rejected.text()).toBeTruthy();
+  } else {
+    const saved = await page.request.patch(
+      `${API}/api/v1/lab/items/${itemId}/results/`,
+      {
+        headers: { ...headers(session), "Idempotency-Key": `s30-result-${suffix}` },
+        data: {
+          values: testBody.analytes.map((analyte, index) => ({
+            analyte_id: analyte.id,
+            value: index === 0 ? "13.2" : "6.0",
+          })),
+          complete: true,
+        },
+      }
+    );
+    expect(saved.ok(), await saved.text()).toBeTruthy();
+  }
+  return { patientName, encounter, itemId, testBody };
+}
+
+async function s30SwitchUser(page: Page, username: string, password: string) {
+  await page.context().clearCookies();
+  await page.goto("/");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/login$/);
+  await steadyFill(page, "Username", username);
+  await steadyFill(page, "Password", password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/overview$/);
+}
+
+test("S-30 technician enters results and a verifier releases the observed version", async ({
+  page,
+}) => {
+  await login(page);
+  const demo = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const setup = await s30SetupLabItem(page, demo, suffix, { action: "collect" });
+
+  await s30SwitchUser(page, "labtech@clinicopus.local", ADMIN_PASSWORD);
+  await page.goto("/lab");
+  const benchRow = page
+    .getByRole("listitem")
+    .filter({ hasText: `Synthetic S30 lab ${suffix}` });
+  await expect(benchRow).toBeVisible();
+  await benchRow.getByRole("button", { name: "Enter results", exact: true }).click();
+
+  const hb = page.getByLabel(/Haemoglobin/).first();
+  const wbc = page.getByLabel(/White cell count/).first();
+  await expect(hb).toBeVisible();
+  await expect(page.getByText(/g\/dL/).first()).toBeVisible();
+  await hb.fill("251");
+  await wbc.fill("6.0");
+  const rangeError = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/lab/items/${setup.itemId}/results/`) &&
+      response.request().method() === "PATCH"
+  );
+  await page.getByRole("button", { name: "Save results", exact: true }).click();
+  expect((await rangeError).status()).toBe(422);
+  await expect(page.getByText(/outside the sanity bounds/i)).toBeVisible();
+
+  await hb.fill("13.2");
+  await wbc.fill("6.0");
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/lab/items/${setup.itemId}/results/`) &&
+      response.request().method() === "PATCH"
+  );
+  await page.getByRole("button", { name: "Save results", exact: true }).click();
+  expect((await saved).status()).toBe(201);
+
+  await s30SwitchUser(page, "admin@clinicopus.local", ADMIN_PASSWORD);
+  await page.goto("/lab");
+  const verifyRow = page
+    .getByRole("listitem")
+    .filter({ hasText: `Synthetic S30 lab ${suffix}` });
+  await verifyRow.getByRole("button", { name: "Review and release", exact: true }).click();
+  await expect(page.getByText("13.2")).toBeVisible();
+  await expect(page.getByText("HIGH")).toBeVisible();
+  const verifierApi = await apiLogin(page, "admin@clinicopus.local", ADMIN_PASSWORD);
+  const detail = await page.request.get(
+    `${API}/api/v1/lab/items/${setup.itemId}/detail/`,
+    { headers: headers(verifierApi) }
+  );
+  expect(detail.ok(), await detail.text()).toBeTruthy();
+  const observed = (await detail.json()) as { version_no: number };
+  const released = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/lab/items/${setup.itemId}/release/`) &&
+      response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Verify & release", exact: true }).click();
+  const releaseResponse = await released;
+  expect(releaseResponse.status()).toBe(200);
+  expect(JSON.parse(releaseResponse.request().postData() ?? "{}").expected_version).toBe(
+    observed.version_no
+  );
+  await expect(page.getByText(/result released/i)).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Released/ })).toBeVisible();
+});
+
+test("S-30 rejected sample shows the safe reason and approved next action", async ({
+  page,
+}) => {
+  await login(page);
+  const demo = await apiLogin(page, "demo", DEMO_PASSWORD);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  await s30SetupLabItem(page, demo, suffix, { action: "reject" });
+
+  await s30SwitchUser(page, "labtech@clinicopus.local", ADMIN_PASSWORD);
+  await page.goto("/lab");
+  const rejectedRow = page
+    .getByRole("listitem")
+    .filter({ hasText: `Synthetic S30 lab ${suffix}` });
+  await expect(rejectedRow).toBeVisible();
+  await expect(rejectedRow.getByText("Synthetic haemolysed sample")).toBeVisible();
+  const recollect = rejectedRow.getByRole("button", { name: "Recollect sample", exact: true });
+  await expect(recollect).toBeEnabled();
+  const recollectResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/collect/") && response.request().method() === "POST"
+  );
+  await recollect.click();
+  expect((await recollectResponse).status()).toBe(200);
 });

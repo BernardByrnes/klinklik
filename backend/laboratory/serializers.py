@@ -80,6 +80,7 @@ class LabResultDetailSerializer(serializers.Serializer):
     state = serializers.CharField()
     priority = serializers.CharField()
     version_no = serializers.IntegerField(allow_null=True)
+    analytes = serializers.ListField(child=serializers.DictField())
     values = serializers.ListField(child=serializers.DictField())
     comments = serializers.CharField()
     entered_by = serializers.CharField(allow_null=True)
