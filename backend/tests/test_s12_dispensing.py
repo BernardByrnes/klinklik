@@ -17,6 +17,7 @@ from accounts.models import (
 from audit.models import AuditEvent
 from billing.models import Invoice
 from clinical.models import Encounter
+from core.clock import now
 from core.errors import CanonicalError
 from core.services import tenant_atomic
 from inventory.models import (
@@ -866,6 +867,7 @@ def test_s31_queue_exposes_claim_holder_and_actor_resume_reference(tenant, authe
     )
     assert row["claim_holder_name"] == str(tenant.user)
     assert row["resumable_dispense_id"] == prepared.data["id"]
+    assert row["items"][0]["remaining_quantity"] == "0.00"
 
     with tenant_atomic(tenant.organisation.id):
         other = User.objects.create_user(f"s31-other-{uuid4().hex[:6]}", "test-password-123")
@@ -1180,3 +1182,240 @@ def test_s31_dispense_detail_requires_dispense_capability(tenant, authed_client)
     client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
     denied = client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
     assert denied.status_code == 403
+
+
+def test_s35_r2_handover_after_prescription_cancellation_is_refused(
+    tenant, authed_client
+):
+    """S-35 Fix 2 red: cancelled prescriptions cannot be handed over."""
+
+    stock = _stock(authed_client, tenant, quantity="100.00")
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"], quantity="10.00"
+    )
+    claimed = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-claim-{uuid4().hex}",
+    )
+    assert claimed.status_code == 201, claimed.data
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    cancelled = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/cancel/",
+        {"reason": "Synthetic prescriber cancellation"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-cancel-{uuid4().hex}",
+    )
+    assert cancelled.status_code == 200, cancelled.data
+    assert cancelled.data["status"] == "CANCELLED"
+    blocked_review = authed_client.get(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/"
+    )
+    assert blocked_review.data["eligible"] is False
+    assert blocked_review.data["blocked_reason"] == "INVALID_STATE"
+
+    confirmed = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-confirm-{uuid4().hex}",
+    )
+    assert confirmed.status_code == 409, confirmed.data
+    assert confirmed.data["code"] == "INVALID_STATE"
+    with tenant_atomic(tenant.organisation.id):
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 0
+        )
+        assert Dispense.objects.get(id=prepared.data["id"]).status == "PROVISIONAL"
+        assert PrescriptionItem.objects.get(id=item.id).state == "CANCELLED"
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 0
+
+
+def test_s35_r2_not_dispensed_item_blocks_handover(tenant, authed_client):
+    """S-35 Fix 2: an explicitly refused item cannot be handed over."""
+
+    stock = _stock(authed_client, tenant, quantity="100.00")
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"], quantity="10.00"
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-claim-refused-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-prepare-refused-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    refused = authed_client.post(
+        f"/api/v1/pharmacy/items/{item.id}/not-dispensed/",
+        {"reason": "PATIENT_DECLINED"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-not-dispensed-{uuid4().hex}",
+    )
+    assert refused.status_code == 200, refused.data
+    confirmed = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-confirm-refused-{uuid4().hex}",
+    )
+    assert confirmed.status_code == 409, confirmed.data
+    assert confirmed.data["code"] == "INVALID_STATE"
+    with tenant_atomic(tenant.organisation.id):
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 0
+        )
+        assert PrescriptionItem.objects.get(id=item.id).state == "NOT_DISPENSED"
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 0
+
+
+def test_s35_r2_missing_active_claim_blocks_handover(tenant, authed_client):
+    """S-35 Fix 2: a released claim cannot authorise a later handover."""
+
+    stock = _stock(authed_client, tenant, quantity="100.00")
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"], quantity="10.00"
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-claim-released-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-prepare-released-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    with tenant_atomic(tenant.organisation.id):
+        PrescriptionClaim.objects.filter(prescription=prescription).update(
+            released_at=now()
+        )
+    detail = authed_client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert detail.data["blocked_reason"] == "PHARMACY_CLAIM_REQUIRED"
+    confirmed = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-confirm-released-{uuid4().hex}",
+    )
+    assert confirmed.status_code == 409, confirmed.data
+    assert confirmed.data["code"] == "PHARMACY_CLAIM_REQUIRED"
+    with tenant_atomic(tenant.organisation.id):
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 0
+        )
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 0
+
+
+def test_s35_r2_competing_confirmation_has_one_stock_outcome(tenant, authed_client):
+    """S-35 Fix 2: two prepared records cannot fulfil more than prescribed."""
+
+    stock = _stock(authed_client, tenant, quantity="100.00")
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"], quantity="10.00"
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-claim-competing-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "6.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-prepare-competing-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    with tenant_atomic(tenant.organisation.id):
+        original = Dispense.objects.get(id=prepared.data["id"])
+        competing = Dispense.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            prescription=original.prescription,
+            patient=original.patient,
+            visit=original.visit,
+            status="PROVISIONAL",
+            prepared_by=tenant.user,
+            total=original.total,
+            currency=original.currency,
+            source_event_id=f"s35-r2-competing-{uuid4().hex}",
+        )
+        for line in original.lines.select_related(
+            "product", "batch", "location", "prescription_item"
+        ).order_by("id"):
+            DispenseLine.objects.create(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                dispense=competing,
+                prescription_item=line.prescription_item,
+                product=line.product,
+                batch=line.batch,
+                location=line.location,
+                quantity=line.quantity,
+                unit_price=line.unit_price,
+                amount=line.amount,
+            )
+        competing_id = str(competing.id)
+
+    first = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-confirm-first-{uuid4().hex}",
+    )
+    assert first.status_code == 200, first.data
+    second = authed_client.post(
+        f"/api/v1/pharmacy/dispenses/{competing_id}/confirm/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-r2-confirm-second-{uuid4().hex}",
+    )
+    assert second.status_code == 409, second.data
+    assert second.data["code"] == "EXCEEDS_PRESCRIBED_QUANTITY"
+    with tenant_atomic(tenant.organisation.id):
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 1
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 1
+        )
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 1
+        assert Dispense.objects.get(id=competing_id).status == "PROVISIONAL"
+        assert PrescriptionItem.objects.get(id=item.id).state == "PARTIALLY_DISPENSED"

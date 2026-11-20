@@ -10,19 +10,24 @@ from django.db import DatabaseError, close_old_connections, connection
 
 from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
 from audit.models import AuditEvent
+from billing.models import Invoice
+from core.clock import now
 from core.errors import CanonicalError
 from core.rls import rls_status
 from core.services import tenant_atomic
 from inventory.models import BatchLocationBalance, StockMovement
 from pharmacy.dispensing import (
     activate_for_encounter,
+    cancel_prescription,
     claim_prescription,
     confirm_dispense,
     create_otc_sale,
     prepare_dispense,
+    record_not_dispensed,
 )
 from pharmacy.models import (
     Dispense,
+    DispenseLine,
     OTCSale,
     Prescription,
     PrescriptionClaim,
@@ -549,3 +554,178 @@ def test_pg_s31_review_projection_and_claim_owner_guard(
     with tenant_atomic(tenant.organisation.id):
         assert Dispense.objects.get(id=prepared.data["id"]).status == "PROVISIONAL"
         assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
+
+
+def test_pg_s35_r2_cancelled_prescription_cannot_be_handed_over(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-35 Fix 2 (PG): cancellation blocks the final handover."""
+
+    _stock_row, prescription, checked_in = _active(tenant, authed_client)
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        claim_prescription(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+        )
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+        dispense = prepare_dispense(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            lines=[{"prescription_item_id": str(item.id), "quantity": "10.00"}],
+        )
+        cancel_prescription(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            reason="Synthetic prescriber cancellation",
+        )
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        with pytest.raises(CanonicalError) as exc:
+            confirm_dispense(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=actor,
+                dispense_id=dispense.id,
+            )
+        assert exc.value.code == "INVALID_STATE"
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 0
+        )
+        assert Dispense.objects.get(id=dispense.id).status == "PROVISIONAL"
+        assert PrescriptionItem.objects.get(id=item.id).state == "CANCELLED"
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 0
+
+
+def test_pg_s35_r2_missing_claim_blocks_handover(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-35 Fix 2 (PG): no active claim means no handover."""
+
+    _stock_row, prescription, checked_in = _active(tenant, authed_client)
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        claim_prescription(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+        )
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+        dispense = prepare_dispense(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            lines=[{"prescription_item_id": str(item.id), "quantity": "10.00"}],
+        )
+        PrescriptionClaim.objects.filter(prescription=prescription).update(
+            released_at=now()
+        )
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        with pytest.raises(CanonicalError) as exc:
+            confirm_dispense(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=actor,
+                dispense_id=dispense.id,
+            )
+        assert exc.value.code == "PHARMACY_CLAIM_REQUIRED"
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 0
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 0
+        )
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 0
+
+
+def test_pg_s35_r2_competing_handover_has_one_effect(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-35 Fix 2 (PG): competing prepared records cannot both fulfil an item."""
+
+    stock, prescription, checked_in = _active(tenant, authed_client)
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        claim_prescription(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+        )
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+        dispense = prepare_dispense(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            prescription_id=prescription.id,
+            lines=[{"prescription_item_id": str(item.id), "quantity": "6.00"}],
+        )
+        competing = Dispense.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            prescription=dispense.prescription,
+            patient=dispense.patient,
+            visit=dispense.visit,
+            status="PROVISIONAL",
+            prepared_by=actor,
+            total=dispense.total,
+            currency=dispense.currency,
+            source_event_id=f"s35-r2-pg-competing-{uuid4().hex}",
+        )
+        for line in dispense.lines.select_related(
+            "product", "batch", "location", "prescription_item"
+        ).order_by("id"):
+            DispenseLine.objects.create(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                dispense=competing,
+                prescription_item=line.prescription_item,
+                product=line.product,
+                batch=line.batch,
+                location=line.location,
+                quantity=line.quantity,
+                unit_price=line.unit_price,
+                amount=line.amount,
+            )
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        confirm_dispense(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            dispense_id=dispense.id,
+        )
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        with pytest.raises(CanonicalError) as exc:
+            confirm_dispense(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=actor,
+                dispense_id=competing.id,
+            )
+        assert exc.value.code == "EXCEEDS_PRESCRIBED_QUANTITY"
+        assert StockMovement.objects.filter(source_type="DispenseLine").count() == 1
+        assert (
+            Invoice.objects.get(id=checked_in["invoice_id"])
+            .items.filter(source_type="DISPENSE_LINE")
+            .count()
+            == 1
+        )
+        assert AuditEvent.objects.filter(event_code="DISPENSE_CONFIRMED").count() == 1
+        assert Dispense.objects.get(id=competing.id).status == "PROVISIONAL"
+        assert PrescriptionItem.objects.get(id=item.id).state == "PARTIALLY_DISPENSED"

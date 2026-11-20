@@ -82,13 +82,34 @@ def _assigned_claim(*, prescription, actor):
         .first()
     )
     actor_id = getattr(actor, "id", actor)
-    if claim is not None and claim.claimed_by_id != actor_id:
+    if claim is None:
+        raise CanonicalError(
+            "PHARMACY_CLAIM_REQUIRED",
+            "Claim this prescription before preparing or handing it over.",
+            status_code=409,
+        )
+    if claim.claimed_by_id != actor_id:
         raise CanonicalError(
             "PRESCRIPTION_CLAIMED",
             "Another pharmacist is preparing this prescription.",
             status_code=409,
         )
     return claim
+
+
+def _require_active_prescription(*, prescription):
+    if prescription.status != "ACTIVE":
+        raise CanonicalError(
+            "INVALID_STATE",
+            "The prescription is not active.",
+            status_code=409,
+        )
+    if prescription.encounter_id and prescription.encounter.status != "SIGNED":
+        raise CanonicalError(
+            "INVALID_STATE",
+            "The prescription is not active yet.",
+            status_code=409,
+        )
 
 
 def _remaining_quantity(*, item):
@@ -143,7 +164,7 @@ def save_draft(
                 "NOT_FOUND", "The source prescription was not found.", status_code=404
             )
     prescription = (
-        Prescription.objects.select_for_update()
+        Prescription.objects.select_for_update(of=("self",))
         .filter(
             organisation=organisation,
             facility=facility,
@@ -244,7 +265,7 @@ def activate_for_encounter(*, encounter, actor=None, request=None):
 
     assert_transaction_active()
     prescription = (
-        Prescription.objects.select_for_update()
+        Prescription.objects.select_for_update(of=("self",))
         .filter(
             organisation_id=encounter.organisation_id,
             encounter=encounter,
@@ -335,6 +356,7 @@ def queue(*, organisation, facility, actor=None):
                     "id": str(item.id),
                     "medicine_name": item.medicine_name,
                     "quantity": str(item.quantity),
+                    "remaining_quantity": str(_remaining_quantity(item=item)),
                     "state": item.state,
                 }
                 for item in items
@@ -362,7 +384,7 @@ def dispense_review(*, organisation, facility, actor, dispense_id):
         Dispense.objects.filter(
             id=dispense_id, organisation=organisation, facility=facility
         )
-        .select_related("prescription", "patient", "visit")
+        .select_related("prescription", "prescription__encounter", "patient", "visit")
         .first()
     )
     if dispense is None:
@@ -387,58 +409,105 @@ def dispense_review(*, organisation, facility, actor, dispense_id):
             "product", "batch", "location", "prescription_item"
         ).order_by("id")
     )
-    projected_lines = []
+    projected_lines = [
+        {
+            "id": str(line.id),
+            "prescription_item_id": str(line.prescription_item_id) if line.prescription_item_id else None,
+            "prescribed_medicine_name": line.prescription_item.medicine_name if line.prescription_item else None,
+            "prescribed_quantity": str(line.prescription_item.quantity) if line.prescription_item else None,
+            "dose_amount": str(line.prescription_item.dose_amount) if line.prescription_item else None,
+            "dose_unit": line.prescription_item.dose_unit if line.prescription_item else None,
+            "route": line.prescription_item.route if line.prescription_item else None,
+            "frequency": line.prescription_item.frequency if line.prescription_item else None,
+            "duration_value": line.prescription_item.duration_value if line.prescription_item else None,
+            "duration_unit": line.prescription_item.duration_unit if line.prescription_item else None,
+            "instructions": line.prescription_item.instructions if line.prescription_item else None,
+            "product_id": str(line.product_id),
+            "product_name": line.product.generic_name,
+            "batch_id": str(line.batch_id),
+            "batch_no": line.batch.batch_no,
+            "expiry_date": line.batch.expiry_date.isoformat(),
+            "location_id": str(line.location_id),
+            "quantity": str(line.quantity),
+            "unit_price": str(line.unit_price),
+            "amount": str(line.amount),
+            "state": line.state,
+            "version": line.version,
+        }
+        for line in lines
+    ]
+
     blocked_reason = None
-    for line in lines:
-        item = line.prescription_item
-        projected_lines.append(
-            {
-                "id": str(line.id),
-                "prescription_item_id": str(line.prescription_item_id) if line.prescription_item_id else None,
-                "prescribed_medicine_name": item.medicine_name if item else None,
-                "prescribed_quantity": str(item.quantity) if item else None,
-                "dose_amount": str(item.dose_amount) if item else None,
-                "dose_unit": item.dose_unit if item else None,
-                "route": item.route if item else None,
-                "frequency": item.frequency if item else None,
-                "duration_value": item.duration_value if item else None,
-                "duration_unit": item.duration_unit if item else None,
-                "instructions": item.instructions if item else None,
-                "product_id": str(line.product_id),
-                "product_name": line.product.generic_name,
-                "batch_id": str(line.batch_id),
-                "batch_no": line.batch.batch_no,
-                "expiry_date": line.batch.expiry_date.isoformat(),
-                "location_id": str(line.location_id),
-                "quantity": str(line.quantity),
-                "unit_price": str(line.unit_price),
-                "amount": str(line.amount),
-                "state": line.state,
-                "version": line.version,
-            }
-        )
-        if blocked_reason:
-            continue
-        if batch_is_expired(line.batch):
-            blocked_reason = "EXPIRED_BATCH"
-            continue
-        balance = BatchLocationBalance.objects.filter(
-            organisation=organisation,
-            facility=facility,
-            batch=line.batch,
-            location=line.location,
-        ).first()
-        if balance is None or balance.quantity < line.quantity:
-            blocked_reason = "INSUFFICIENT_STOCK"
-    if blocked_reason is None:
-        if dispense.status == "AWAITING_PAYMENT":
-            blocked_reason = "PAYMENT_REQUIRED"
-        elif dispense.status != "PROVISIONAL":
+    if dispense.status == "AWAITING_PAYMENT":
+        blocked_reason = "PAYMENT_REQUIRED"
+    elif dispense.status != "PROVISIONAL":
+        blocked_reason = "INVALID_STATE"
+    elif not lines:
+        blocked_reason = "NO_LINES"
+    elif prescription is not None:
+        if prescription.status != "ACTIVE" or (
+            prescription.encounter_id and prescription.encounter.status != "SIGNED"
+        ):
             blocked_reason = "INVALID_STATE"
-        elif not lines:
-            blocked_reason = "NO_LINES"
-        elif claim is not None and claim.claimed_by_id != getattr(actor, "id", actor):
+        elif claim is None:
+            blocked_reason = "PHARMACY_CLAIM_REQUIRED"
+        elif claim.claimed_by_id != getattr(actor, "id", actor):
             blocked_reason = "PRESCRIPTION_CLAIMED"
+
+    item_ids = list(
+        dict.fromkeys(
+            line.prescription_item_id for line in lines if line.prescription_item_id
+        )
+    )
+    confirmed_by_item = defaultdict(lambda: Decimal("0.00"))
+    current_by_item = defaultdict(lambda: Decimal("0.00"))
+    if item_ids:
+        for row in (
+            DispenseLine.objects.filter(
+                prescription_item_id__in=item_ids, dispense__status="CONFIRMED"
+            )
+            .exclude(dispense_id=dispense.id)
+            .values("prescription_item_id", "quantity")
+        ):
+            confirmed_by_item[row["prescription_item_id"]] += row["quantity"]
+    for line in lines:
+        if line.prescription_item_id:
+            current_by_item[line.prescription_item_id] += line.quantity
+
+    if blocked_reason is None and prescription is not None:
+        items_by_id = {
+            str(item.id): item
+            for item in prescription.items.filter(id__in=item_ids)
+        }
+        for item_id in item_ids:
+            item = items_by_id.get(str(item_id))
+            if item is None or item.state in {"CANCELLED", "NOT_DISPENSED", "DISPENSED"}:
+                blocked_reason = "INVALID_STATE"
+                break
+            if confirmed_by_item[item_id] + current_by_item[item_id] > item.quantity:
+                blocked_reason = "EXCEEDS_PRESCRIBED_QUANTITY"
+                break
+
+    if blocked_reason is None:
+        for line in lines:
+            if batch_is_expired(line.batch):
+                blocked_reason = "EXPIRED_BATCH"
+                break
+    if blocked_reason is None:
+        needed = defaultdict(lambda: Decimal("0.00"))
+        for line in lines:
+            needed[(line.batch_id, line.location_id)] += line.quantity
+        for (batch_id, location_id), quantity in needed.items():
+            balance = BatchLocationBalance.objects.filter(
+                organisation=organisation,
+                facility=facility,
+                batch_id=batch_id,
+                location_id=location_id,
+            ).first()
+            if balance is None or balance.quantity < quantity:
+                blocked_reason = "INSUFFICIENT_STOCK"
+                break
+
     return {
         "id": str(dispense.id),
         "prescription_id": str(prescription.id) if prescription else None,
@@ -467,7 +536,7 @@ def claim_prescription(
 
     assert_transaction_active()
     prescription = (
-        Prescription.objects.select_for_update()
+        Prescription.objects.select_for_update(of=("self",))
         .filter(
             id=prescription_id,
             organisation=organisation,
@@ -545,7 +614,7 @@ def prepare_dispense(
 
     assert_transaction_active()
     prescription = (
-        Prescription.objects.select_for_update()
+        Prescription.objects.select_for_update(of=("self",))
         .filter(
             id=prescription_id,
             organisation=organisation,
@@ -696,6 +765,45 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
     """Hand over: stock movement, billing charge and dispense state atomically."""
 
     assert_transaction_active()
+    candidate = (
+        Dispense.objects.filter(
+            id=dispense_id, organisation=organisation, facility=facility
+        )
+        .values("prescription_id")
+        .first()
+    )
+    if candidate is None:
+        raise CanonicalError("NOT_FOUND", "Dispense was not found.", status_code=404)
+
+    prescription = None
+    items = []
+    if candidate["prescription_id"] is not None:
+        prescription = (
+            Prescription.objects.select_for_update(of=("self",))
+            .filter(
+                id=candidate["prescription_id"],
+                organisation=organisation,
+                facility=facility,
+            )
+            .select_related("encounter", "patient")
+            .first()
+        )
+        if prescription is None:
+            raise CanonicalError(
+                "NOT_FOUND", "Prescription was not found.", status_code=404
+            )
+        items = list(
+            PrescriptionItem.objects.select_for_update()
+            .filter(
+                prescription=prescription,
+                organisation=organisation,
+                facility=facility,
+            )
+            .order_by("id")
+        )
+        _require_active_prescription(prescription=prescription)
+        _assigned_claim(prescription=prescription, actor=actor)
+
     dispense = (
         Dispense.objects.select_for_update(of=("self",))
         .filter(id=dispense_id, organisation=organisation, facility=facility)
@@ -704,12 +812,16 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
     )
     if dispense is None:
         raise CanonicalError("NOT_FOUND", "Dispense was not found.", status_code=404)
+    if prescription is not None and dispense.prescription_id != prescription.id:
+        raise CanonicalError(
+            "INVALID_STATE",
+            "The dispense no longer belongs to this prescription.",
+            status_code=409,
+        )
     if dispense.status != "PROVISIONAL":
         raise CanonicalError(
             "INVALID_STATE", "This dispense cannot be confirmed.", status_code=409
         )
-    if dispense.prescription is not None:
-        _assigned_claim(prescription=dispense.prescription, actor=actor)
     invoice = None
     if dispense.visit_id:
         invoice = (
@@ -736,11 +848,24 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
             "INVALID_STATE", "A dispense must have at least one line.", status_code=409
         )
 
-    item_ids = list(
-        dict.fromkeys(
-            line.prescription_item_id for line in lines if line.prescription_item_id
-        )
-    )
+    items_by_id = {str(item.id): item for item in items}
+    candidate_items = []
+    item_ids = []
+    for line in lines:
+        item_id = line.prescription_item_id
+        if item_id is None:
+            continue
+        item = items_by_id.get(str(item_id))
+        if item is None:
+            raise CanonicalError(
+                "INVALID_STATE",
+                "A dispense line no longer belongs to this prescription.",
+                status_code=409,
+            )
+        if item.id not in item_ids:
+            item_ids.append(item.id)
+            candidate_items.append(item)
+
     confirmed_by_item = defaultdict(lambda: Decimal("0.00"))
     current_by_item = defaultdict(lambda: Decimal("0.00"))
     if item_ids:
@@ -757,6 +882,20 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
         if line.prescription_item_id:
             current_by_item[line.prescription_item_id] += line.quantity
 
+    for item in candidate_items:
+        if item.state in {"CANCELLED", "NOT_DISPENSED", "DISPENSED"}:
+            raise CanonicalError(
+                "INVALID_STATE",
+                "A prescription item is no longer available for handover.",
+                status_code=409,
+            )
+        if confirmed_by_item[item.id] + current_by_item[item.id] > item.quantity:
+            raise CanonicalError(
+                "EXCEEDS_PRESCRIBED_QUANTITY",
+                "The handover exceeds the remaining prescribed quantity.",
+                status_code=409,
+            )
+
     for line in lines:
         if batch_is_expired(line.batch):
             raise CanonicalError(
@@ -764,19 +903,8 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
                 "The selected batch has expired; reselect.",
                 status_code=422,
             )
-        append_movement(
-            organisation=organisation,
-            facility=facility,
-            actor=actor,
-            product=line.product,
-            batch=line.batch,
-            location=line.location,
-            movement_type="OUT_DISPENSE",
-            quantity=-line.quantity,
-            source_type="DispenseLine",
-            source_id=str(line.id),
-        )
-        if invoice is not None:
+    if invoice is not None:
+        for line in lines:
             issue_source_line(
                 organisation=organisation,
                 facility=facility,
@@ -790,18 +918,28 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
                 source_line_identity=str(line.id),
                 request=request,
             )
-    if item_ids:
-        for item in PrescriptionItem.objects.select_for_update().filter(
-            id__in=item_ids, organisation=organisation, facility=facility
-        ):
-            fulfilled = confirmed_by_item[item.id] + current_by_item[item.id]
-            item.state = (
-                "DISPENSED"
-                if fulfilled >= item.quantity
-                else "PARTIALLY_DISPENSED"
-            )
-            item.version += 1
-            item.save(update_fields=["state", "version", "updated_at"])
+    for line in lines:
+        append_movement(
+            organisation=organisation,
+            facility=facility,
+            actor=actor,
+            product=line.product,
+            batch=line.batch,
+            location=line.location,
+            movement_type="OUT_DISPENSE",
+            quantity=-line.quantity,
+            source_type="DispenseLine",
+            source_id=str(line.id),
+        )
+    for item in candidate_items:
+        fulfilled = confirmed_by_item[item.id] + current_by_item[item.id]
+        item.state = (
+            "DISPENSED"
+            if fulfilled >= item.quantity
+            else "PARTIALLY_DISPENSED"
+        )
+        item.version += 1
+        item.save(update_fields=["state", "version", "updated_at"])
 
     dispense.status = "CONFIRMED"
     dispense.confirmed_by = actor
@@ -816,11 +954,10 @@ def confirm_dispense(*, organisation, facility, actor, dispense_id, request=None
             "updated_at",
         ]
     )
-    if dispense.prescription is not None:
-        prescription = dispense.prescription
+    if prescription is not None:
         if all(
             item.state in {"DISPENSED", "CANCELLED", "NOT_DISPENSED"}
-            for item in prescription.items.all()
+            for item in items
         ):
             prescription.status = "COMPLETED"
             prescription.version += 1
@@ -853,7 +990,7 @@ def cancel_prescription(
             "INVALID_INPUT", "A cancellation reason is required.", status_code=400
         )
     prescription = (
-        Prescription.objects.select_for_update()
+        Prescription.objects.select_for_update(of=("self",))
         .filter(id=prescription_id, organisation=organisation, facility=facility)
         .first()
     )
@@ -865,7 +1002,7 @@ def cancel_prescription(
             "Only an active prescription can be cancelled.",
             status_code=409,
         )
-    for item in prescription.items.all():
+    for item in prescription.items.select_for_update().order_by("id"):
         if item.state not in {"DISPENSED", "PARTIALLY_DISPENSED"}:
             item.state = "CANCELLED"
             item.version += 1
@@ -904,10 +1041,37 @@ def record_not_dispensed(
         raise CanonicalError(
             "INVALID_INPUT", "Select a valid not-dispensed reason.", status_code=400
         )
+    candidate = (
+        PrescriptionItem.objects.filter(
+            id=prescription_item_id,
+            organisation=organisation,
+            facility=facility,
+        )
+        .values("prescription_id")
+        .first()
+    )
+    if candidate is None:
+        raise CanonicalError(
+            "NOT_FOUND", "Prescription item was not found.", status_code=404
+        )
+    prescription = (
+        Prescription.objects.select_for_update(of=("self",))
+        .filter(
+            id=candidate["prescription_id"],
+            organisation=organisation,
+            facility=facility,
+        )
+        .first()
+    )
+    if prescription is None:
+        raise CanonicalError(
+            "NOT_FOUND", "Prescription was not found.", status_code=404
+        )
     item = (
         PrescriptionItem.objects.select_for_update()
         .filter(
             id=prescription_item_id,
+            prescription=prescription,
             organisation=organisation,
             facility=facility,
         )

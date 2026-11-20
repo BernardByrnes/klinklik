@@ -560,26 +560,48 @@ test("S-29-R6 lost prepare response resumes the original provisional identity", 
   await page.getByRole("button", { name: "Prepare dispense", exact: true }).click();
   await expect(page.getByText(/pharmacy outcome is uncertain/i)).toBeVisible();
   await page.getByRole("button", { name: "Retry uncertain pharmacy step", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Dispense review" })).toBeVisible();
-  await page.getByRole("button", { name: "Confirm handover", exact: true }).click();
-  await expect(page.getByText(`${patientName} · dispense confirmed`)).toBeVisible();
+  const review = page.getByRole("region", { name: "Dispense review" });
+  await expect(review).toBeVisible();
 
   expect(prepareAttempts).toHaveLength(2);
   expect(prepareAttempts[1].key).toBe(prepareAttempts[0].key);
   expect(prepareAttempts[1].body).toBe(prepareAttempts[0].body);
   expect(prepareAttempts[0].key).toBeTruthy();
-  expect(confirmUrls).toHaveLength(1);
-  const provisionalId = confirmUrls[0].match(/\/dispenses\/([0-9a-f-]+)\/confirm\//)?.[1];
-  expect(provisionalId).toBeTruthy();
+
   session = await apiLogin(page);
   const queueResponse = await page.request.get(`${API}/api/v1/pharmacy/queue/`, {
     headers: headers(session),
   });
   expect(queueResponse.ok(), await queueResponse.text()).toBeTruthy();
   const queue = (await queueResponse.json()) as {
-    counselling: Array<{ patient_name: string; dispense_id: string }>;
+    active: Array<{ prescription_id: string; patient_name: string }>;
   };
-  const counselling = queue.counselling.filter((item) => item.patient_name === patientName);
-  expect(counselling).toHaveLength(1);
-  expect(counselling[0].dispense_id).toBe(provisionalId);
+  const target = queue.active.find((item) => item.patient_name === patientName);
+  expect(target).toBeTruthy();
+  const cancelled = await page.request.post(
+    `${API}/api/v1/pharmacy/prescriptions/${target!.prescription_id}/cancel/`,
+    {
+      headers: { ...headers(session), "Idempotency-Key": `s35-r2-browser-cancel-${suffix}` },
+      data: { reason: "Synthetic prescriber cancellation" },
+    }
+  );
+  expect(cancelled.ok(), await cancelled.text()).toBeTruthy();
+
+  const provisionalId = review.locator("p").filter({ hasText: /provisional / }).first();
+  expect(await provisionalId.textContent()).toMatch(/provisional [0-9a-f-]+/);
+  const dispenseId = (await provisionalId.textContent())!.match(/provisional ([0-9a-f-]+)/)![1];
+  await review.getByRole("button", { name: "Refresh review", exact: true }).click();
+  await expect(review.getByText("INVALID_STATE", { exact: true })).toBeVisible();
+  await expect(review.getByRole("button", { name: "Confirm handover", exact: true })).toBeDisabled();
+  const refused = await page.request.post(
+    `${API}/api/v1/pharmacy/dispenses/${dispenseId}/confirm/`,
+    {
+      headers: { ...headers(session), "Idempotency-Key": `s35-r2-browser-confirm-${suffix}` },
+      data: {},
+    }
+  );
+  expect(refused.status()).toBe(409);
+  expect(((await refused.json()) as { code: string }).code).toBe("INVALID_STATE");
+  expect(confirmUrls).toHaveLength(0);
+  await expect(page.getByText(`${patientName} · dispense confirmed`)).toHaveCount(0);
 });

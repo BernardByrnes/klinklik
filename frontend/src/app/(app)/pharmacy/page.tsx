@@ -25,6 +25,7 @@ type QueueItem = {
   id: string;
   medicine_name: string;
   quantity: string;
+  remaining_quantity: string;
   state: string;
 };
 
@@ -104,6 +105,16 @@ type DispenseReview = {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "The request could not be completed.";
+}
+
+function outstandingLines(row: QueueRow) {
+  return row.items
+    .filter((item) => !["CANCELLED", "NOT_DISPENSED", "DISPENSED"].includes(item.state))
+    .map((item) => {
+      const remaining = item.remaining_quantity ?? item.quantity;
+      return { prescription_item_id: item.id, quantity: remaining };
+    })
+    .filter((line) => Number(line.quantity) > 0);
 }
 
 function Row({
@@ -265,9 +276,7 @@ export default function PharmacyPage() {
   });
 
   const startClaim = (row: QueueRow) => {
-    const lines = row.items
-      .filter((item) => item.state === "PENDING")
-      .map((item) => ({ prescription_item_id: item.id, quantity: item.quantity }));
+    const lines = outstandingLines(row);
     if (!lines.length) {
       setError("This prescription has no pending item to dispense.");
       return;
@@ -292,9 +301,7 @@ export default function PharmacyPage() {
     // Resume identity comes from the server projection, never from persisted keys.
     const next: PharmacyIntent = {
       prescriptionId: row.prescription_id,
-      lines: row.items
-        .filter((item) => item.state === "PENDING")
-        .map((item) => ({ prescription_item_id: item.id, quantity: item.quantity })),
+      lines: outstandingLines(row),
       keys: {
         claim: newIdempotencyKey("pharmacy-claim"),
         prepare: newIdempotencyKey("pharmacy-prepare"),
@@ -355,9 +362,14 @@ export default function PharmacyPage() {
                 {review.data.patient_name} · {review.data.status} · provisional {review.data.id}
               </p>
             </div>
-            <StatusBadge tone={review.data.eligible ? "teal" : "pink"}>
-              {review.data.eligible ? "ELIGIBLE" : review.data.blocked_reason ?? "BLOCKED"}
-            </StatusBadge>
+            <div className="flex items-center gap-2">
+              <StatusBadge tone={review.data.eligible ? "teal" : "pink"}>
+                {review.data.eligible ? "ELIGIBLE" : review.data.blocked_reason ?? "BLOCKED"}
+              </StatusBadge>
+              <Button variant="small-secondary" onClick={() => void review.refetch()}>
+                Refresh review
+              </Button>
+            </div>
           </div>
           {review.data.allergy?.active_allergies?.length ? (
             <p className="mt-3 rounded-[12px] bg-accent-orange-soft px-3 py-2 text-[12px] font-medium text-ink">
