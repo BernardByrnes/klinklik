@@ -7,15 +7,17 @@ from pharmacy.dispensing import (
     claim_prescription,
     confirm_dispense,
     counselling_projection,
+    dispense_review,
     create_otc_sale,
     prepare_dispense,
     queue,
     record_not_dispensed,
     save_draft,
 )
-from pharmacy.models import Dispense, OTCSale
+from pharmacy.models import OTCSale
 from pharmacy.serializers import (
     DispensePrepareSerializer,
+    DispenseReviewSerializer,
     InstructionTemplateSerializer,
     NotDispensedSerializer,
     OTCSaleCreateSerializer,
@@ -143,7 +145,11 @@ class PrescriptionQueueView(TenantAPIView):
     capability = "pharmacy.queue.view"
 
     def get(self, request):
-        payload = queue(organisation=request.organisation, facility=request.facility)
+        payload = queue(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+        )
         payload["counselling"] = counselling_projection(
             organisation=request.organisation, facility=request.facility
         )
@@ -211,23 +217,18 @@ class DispenseConfirmView(TenantAPIView):
 
 
 class DispenseDetailView(TenantAPIView):
-    capability = "pharmacy.queue.view"
+    capability = "pharmacy.dispense"
+    response_serializer_class = DispenseReviewSerializer
 
     def get(self, request, pk):
-        dispense = (
-            Dispense.objects.filter(
-                id=pk,
+        return Response(
+            dispense_review(
                 organisation=request.organisation,
                 facility=request.facility,
+                actor=request.user,
+                dispense_id=pk,
             )
-            .select_related("prescription", "visit")
-            .first()
         )
-        if dispense is None:
-            from core.errors import CanonicalError
-
-            raise CanonicalError("NOT_FOUND", "Dispense was not found.", status_code=404)
-        return Response(dispense_payload(dispense))
 
 
 class PrescriptionCancelView(TenantAPIView):

@@ -23,6 +23,7 @@ export type DepartmentEnvelope = { departments: Array<{ id: string; name: string
 export type DiagnosisStateResponse = { diagnoses: Array<{ id: string; encounter: string; diagnosis_type: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code: string; label: string; coded: boolean; certainty_note: string; is_primary: boolean; no_diagnosis_reason: string; status: "ACTIVE"; recorded_by: string; created_at: string; updated_at: string; }>; consultation_etag: string; };
 export type DiagnosisWrite = { diagnosis_type?: "WORKING" | "FINAL" | "NO_DIAGNOSIS"; code?: string; label?: string; certainty_note?: string; is_primary?: boolean; no_diagnosis_reason?: string; };
 export type DispensePrepare = { lines: Array<{ prescription_item_id: string; product_id?: string | null; quantity?: string; substitution_reason?: string; prescriber_consulted?: boolean; prescriber_consulted_name?: string; }>; };
+export type DispenseReview = { id: string; prescription_id: string | null; encounter_id: string | null; visit_id: string | null; patient_id: string | null; patient_name: string | null; status: string; total: string; currency: string; version: number; claim_holder_id: string | null; claim_holder_name: string | null; allergy: {  } | null; eligible: boolean; blocked_reason: string | null; lines: Array<{  }>; };
 export type Disposal = { batch_id: string; location_id: string; quantity: string; reason: string; source_event_id?: string; };
 export type DispositionResponse = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note: string; consultation_etag: string; encounter_status: "OPEN" | "SIGNED" | "CLOSED" | "CANCELLED"; };
 export type DispositionWrite = { disposition: "TREATED_AND_DISCHARGED" | "REVIEW_SCHEDULED" | "REFERRED_OUT" | "ADMITTED_ELSEWHERE" | "LEFT_AGAINST_ADVICE" | "DECEASED" | "OTHER" | null; disposition_note?: string; };
@@ -345,6 +346,7 @@ export type PartialUpdatePatientRequest = Patient;
 export type PartialUpdatePatientResponse = Patient;
 export type CreatePatientLinkRequest = PatientLink;
 export type CreatePatientLinkResponse = PatientLinkResponse;
+export type RetrieveDispenseDetailResponse = DispenseReview;
 export type CreateNotDispensedRequest = NotDispensed;
 export type CreateNotDispensedResponse = NotDispensed;
 export type CreateOTCSaleCreateRequest = OTCSaleCreate;
@@ -389,7 +391,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "81f23139182e4788c6009b16bcc10a4a926dce635a892371b7a15086a08c8c8e";
+export const GENERATED_API_CONTRACT_SHA256 = "ae37976b2dd1cd3d60a32c0ceb8b0ded066fb7a2d1942a04310814f9ecb8ca6b";
 
 export const GENERATED_API_OPERATIONS = [
   {

@@ -54,6 +54,25 @@ class DispensePrepareSerializer(serializers.Serializer):
     lines = DispenseLineInputSerializer(many=True)
 
 
+class DispenseReviewSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    prescription_id = serializers.UUIDField(allow_null=True)
+    encounter_id = serializers.UUIDField(allow_null=True)
+    visit_id = serializers.UUIDField(allow_null=True)
+    patient_id = serializers.UUIDField(allow_null=True)
+    patient_name = serializers.CharField(allow_null=True)
+    status = serializers.CharField()
+    total = serializers.CharField()
+    currency = serializers.CharField()
+    version = serializers.IntegerField()
+    claim_holder_id = serializers.CharField(allow_null=True)
+    claim_holder_name = serializers.CharField(allow_null=True)
+    allergy = serializers.DictField(allow_null=True)
+    eligible = serializers.BooleanField()
+    blocked_reason = serializers.CharField(allow_null=True)
+    lines = serializers.ListField(child=serializers.DictField())
+
+
 class OTCSaleLineInputSerializer(serializers.Serializer):
     product_id = serializers.UUIDField()
     quantity = serializers.DecimalField(max_digits=12, decimal_places=2)

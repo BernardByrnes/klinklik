@@ -824,3 +824,111 @@ def test_s29_r4_confirm_dispense_fulfilment_uses_confirmed_quantities(
             ).quantity
             == Decimal("90.00")
         )
+
+
+def test_s31_queue_exposes_claim_holder_and_actor_resume_reference(tenant, authed_client):
+    """S-31: a prepared prescription exposes a resumable reference only to its owner."""
+
+    stock = _stock(authed_client, tenant)
+    prescription, _checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"]
+    )
+    claimed = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-claim-{uuid4().hex}",
+    )
+    assert claimed.status_code == 201, claimed.data
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+
+    queue = authed_client.get("/api/v1/pharmacy/queue/")
+    assert queue.status_code == 200, queue.data
+    row = next(
+        item for item in queue.data["active"]
+        if item["prescription_id"] == str(prescription.id)
+    )
+    assert row["claim_holder_name"] == str(tenant.user)
+    assert row["resumable_dispense_id"] == prepared.data["id"]
+
+    with tenant_atomic(tenant.organisation.id):
+        other = User.objects.create_user(f"s31-other-{uuid4().hex[:6]}", "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=other)
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=other,
+            role=Role.objects.get(
+                organisation=tenant.organisation, template_code="OWNER_ADMIN"
+            ),
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    other_client = authed_client.__class__()
+    login = other_client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": other.username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    other_client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    other_client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    other_queue = other_client.get("/api/v1/pharmacy/queue/")
+    other_row = next(
+        item for item in other_queue.data["active"]
+        if item["prescription_id"] == str(prescription.id)
+    )
+    assert other_row["claim_holder_name"] == str(tenant.user)
+    assert other_row["resumable_dispense_id"] is None
+
+
+def test_s31_dispense_detail_supplies_server_derived_review_data(tenant, authed_client):
+    """S-31: the review panel reads allocation and price snapshots from the server."""
+
+    stock = _stock(authed_client, tenant)
+    prescription, checked_in = _active_prescription(
+        authed_client, tenant, stock["product"]["id"]
+    )
+    authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/claim/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-detail-claim-{uuid4().hex}",
+    )
+    with tenant_atomic(tenant.organisation.id):
+        item = PrescriptionItem.objects.get(prescription_id=prescription.id)
+    prepared = authed_client.post(
+        f"/api/v1/pharmacy/prescriptions/{prescription.id}/dispenses/",
+        {"lines": [{"prescription_item_id": str(item.id), "quantity": "10.00"}]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s31-detail-prepare-{uuid4().hex}",
+    )
+    assert prepared.status_code == 201, prepared.data
+    detail = authed_client.get(f"/api/v1/pharmacy/dispenses/{prepared.data['id']}/")
+    assert detail.status_code == 200, detail.data
+    body = detail.data
+    assert body["prescription_id"] == str(prescription.id)
+    assert body["visit_id"] == checked_in["visit_id"]
+    assert body["patient_id"] == str(prescription.patient_id)
+    assert body["allergy"]["patient_id"] == str(prescription.patient_id)
+    assert body["eligible"] is True
+    assert body["blocked_reason"] is None
+    line = body["lines"][0]
+    assert line["prescribed_quantity"] == "10.00"
+    assert line["product_name"] == stock["product"]["generic_name"]
+    assert line["batch_no"]
+    assert line["expiry_date"]
+    assert line["quantity"] == "10.00"
+    assert Decimal(line["unit_price"]) > Decimal("0.00")
+    assert Decimal(line["amount"]) == Decimal(line["quantity"]) * Decimal(line["unit_price"])
+    assert body["total"] == str(Decimal(line["amount"]))

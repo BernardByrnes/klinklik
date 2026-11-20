@@ -16,7 +16,9 @@ from billing.models import Invoice
 from billing.services import issue_source_line, recompute_invoice_projection
 from core.clock import local_service_date, now
 from core.errors import CanonicalError
+from clinical.queries import query_allergy_projection
 from core.services import assert_transaction_active
+from inventory.models import BatchLocationBalance
 from inventory.services import append_movement, batch_is_expired, fefo_selection
 from patients.models import Patient
 from pharmacy.models import (
@@ -270,13 +272,32 @@ def activate_for_encounter(*, encounter, actor=None, request=None):
     return prescription
 
 
-def queue(*, organisation, facility):
+def queue(*, organisation, facility, actor=None):
     """Active, partially dispensed and uncollected prescription projection."""
 
     assert_transaction_active()
     today = local_service_date()
     policy = _policy(organisation=organisation, facility=facility)
     window = policy.prescription_uncollected_window_days if policy else 7
+    claims = {
+        str(claim.prescription_id): claim
+        for claim in PrescriptionClaim.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            released_at__isnull=True,
+        ).select_related("claimed_by")
+    }
+    resumable = {}
+    if actor is not None:
+        for dispense in Dispense.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            prepared_by=actor,
+            status__in=("PROVISIONAL", "AWAITING_PAYMENT"),
+        ).order_by("-created_at"):
+            key = str(dispense.prescription_id) if dispense.prescription_id else None
+            if key and key not in resumable:
+                resumable[key] = str(dispense.id)
     active_rows = []
     partial_rows = []
     uncollected_rows = []
@@ -295,8 +316,12 @@ def queue(*, organisation, facility):
             1 for item in items if item.state in {"DISPENSED", "PARTIALLY_DISPENSED"}
         )
         age_days = (today - local_service_date(prescription.created_at)).days
+        claim = claims.get(str(prescription.id))
         row = {
             "prescription_id": str(prescription.id),
+            "claim_holder_id": str(claim.claimed_by_id) if claim else None,
+            "claim_holder_name": str(claim.claimed_by) if claim else None,
+            "resumable_dispense_id": resumable.get(str(prescription.id)),
             "patient_name": prescription.patient.display_name,
             "patient_no": prescription.patient.patient_no,
             "prescribed_by": str(prescription.prescribed_by_id),
@@ -326,6 +351,111 @@ def queue(*, organisation, facility):
         "partially_dispensed": partial_rows,
         "uncollected": uncollected_rows,
         "uncollected_window_days": window,
+    }
+
+
+def dispense_review(*, organisation, facility, actor, dispense_id):
+    """Bounded server-derived projection for preparing and reviewing one handover."""
+
+    assert_transaction_active()
+    dispense = (
+        Dispense.objects.filter(
+            id=dispense_id, organisation=organisation, facility=facility
+        )
+        .select_related("prescription", "patient", "visit")
+        .first()
+    )
+    if dispense is None:
+        raise CanonicalError("NOT_FOUND", "Dispense was not found.", status_code=404)
+    prescription = dispense.prescription
+    allergies = query_allergy_projection(
+        organisation=organisation,
+        facility=facility,
+        patient_ids=(str(dispense.patient_id),) if dispense.patient_id else (),
+    )
+    claim = None
+    if prescription is not None:
+        claim = (
+            PrescriptionClaim.objects.filter(
+                prescription=prescription, released_at__isnull=True
+            )
+            .select_related("claimed_by")
+            .first()
+        )
+    lines = list(
+        dispense.lines.select_related(
+            "product", "batch", "location", "prescription_item"
+        ).order_by("id")
+    )
+    projected_lines = []
+    blocked_reason = None
+    for line in lines:
+        item = line.prescription_item
+        projected_lines.append(
+            {
+                "id": str(line.id),
+                "prescription_item_id": str(line.prescription_item_id) if line.prescription_item_id else None,
+                "prescribed_medicine_name": item.medicine_name if item else None,
+                "prescribed_quantity": str(item.quantity) if item else None,
+                "dose_amount": str(item.dose_amount) if item else None,
+                "dose_unit": item.dose_unit if item else None,
+                "route": item.route if item else None,
+                "frequency": item.frequency if item else None,
+                "duration_value": item.duration_value if item else None,
+                "duration_unit": item.duration_unit if item else None,
+                "instructions": item.instructions if item else None,
+                "product_id": str(line.product_id),
+                "product_name": line.product.generic_name,
+                "batch_id": str(line.batch_id),
+                "batch_no": line.batch.batch_no,
+                "expiry_date": line.batch.expiry_date.isoformat(),
+                "location_id": str(line.location_id),
+                "quantity": str(line.quantity),
+                "unit_price": str(line.unit_price),
+                "amount": str(line.amount),
+                "state": line.state,
+                "version": line.version,
+            }
+        )
+        if blocked_reason:
+            continue
+        if batch_is_expired(line.batch):
+            blocked_reason = "EXPIRED_BATCH"
+            continue
+        balance = BatchLocationBalance.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            batch=line.batch,
+            location=line.location,
+        ).first()
+        if balance is None or balance.quantity < line.quantity:
+            blocked_reason = "INSUFFICIENT_STOCK"
+    if blocked_reason is None:
+        if dispense.status == "AWAITING_PAYMENT":
+            blocked_reason = "PAYMENT_REQUIRED"
+        elif dispense.status != "PROVISIONAL":
+            blocked_reason = "INVALID_STATE"
+        elif not lines:
+            blocked_reason = "NO_LINES"
+        elif claim is not None and claim.claimed_by_id != getattr(actor, "id", actor):
+            blocked_reason = "PRESCRIPTION_CLAIMED"
+    return {
+        "id": str(dispense.id),
+        "prescription_id": str(prescription.id) if prescription else None,
+        "encounter_id": str(prescription.encounter_id) if prescription and prescription.encounter_id else None,
+        "visit_id": str(dispense.visit_id) if dispense.visit_id else None,
+        "patient_id": str(dispense.patient_id) if dispense.patient_id else None,
+        "patient_name": dispense.patient.display_name if dispense.patient_id else None,
+        "status": dispense.status,
+        "total": str(dispense.total),
+        "currency": dispense.currency,
+        "version": dispense.version,
+        "claim_holder_id": str(claim.claimed_by_id) if claim else None,
+        "claim_holder_name": str(claim.claimed_by) if claim else None,
+        "allergy": allergies.get(str(dispense.patient_id)) if dispense.patient_id else None,
+        "eligible": blocked_reason is None,
+        "blocked_reason": blocked_reason,
+        "lines": projected_lines,
     }
 
 
