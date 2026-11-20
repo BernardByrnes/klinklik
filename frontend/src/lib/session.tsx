@@ -12,6 +12,7 @@ import {
   setFacilityId,
 } from "./api";
 import { subscribeAuthority } from "./authority";
+import { clearIntents } from "./intent-registry";
 import { clearProtectedState } from "./query-state";
 
 type SessionContextValue = {
@@ -40,6 +41,14 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
       unsubscribe();
     };
   }, [queryClient]);
+
+  useEffect(() => {
+    const clearOnHidden = () => {
+      if (typeof document !== "undefined" && document.hidden) clearIntents();
+    };
+    document.addEventListener("visibilitychange", clearOnHidden);
+    return () => document.removeEventListener("visibilitychange", clearOnHidden);
+  }, []);
 
   useEffect(() => {
     let mounted = true;

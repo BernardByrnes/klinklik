@@ -7,6 +7,8 @@ import { useQuery } from "@tanstack/react-query";
 
 import { apiRequest } from "../../lib/api";
 import { useProtectedQueryKey } from "../../lib/authority";
+import { formatSyncTime, useConnectivity, viewFromRoute } from "../../lib/connectivity";
+import { resolveIntent, usePendingIntents } from "../../lib/intent-registry";
 import { useSession } from "../../lib/session";
 import { roleLabel } from "../../lib/roles";
 import { LegacyQueueEntry } from "../../features/clinic";
@@ -24,7 +26,7 @@ import {
   IconSearch,
   IconTriage,
 } from "../icons";
-import { AvatarInitials } from "../ui";
+import { AvatarInitials, Button } from "../ui";
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2";
@@ -65,6 +67,62 @@ function useQueueBadge(enabled: boolean) {
     refetchInterval: 30_000,
   });
   return query.data?.length ?? 0;
+}
+
+function ConnectivityStatus() {
+  const pathname = usePathname();
+  const connectivity = useConnectivity();
+  const pending = usePendingIntents();
+  const [open, setOpen] = useState(false);
+  const view = viewFromRoute(pathname ?? "");
+  const viewSync = connectivity.byView[view] ?? null;
+  const status = connectivity.online
+    ? `Online · ${view} last synced ${formatSyncTime(viewSync)}`
+    : `Offline · ${view} last synced ${formatSyncTime(viewSync)}. Completion is unavailable.`;
+
+  return (
+    <div className="hidden md:flex flex-col items-end gap-1" aria-live="polite" role="status">
+      <p data-testid="connectivity-status" className="text-[11px] font-medium text-secondary">
+        <span
+          aria-hidden="true"
+          className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${connectivity.online ? "bg-accent-teal" : "bg-accent-pink"}`}
+        />
+        {status}
+      </p>
+      {pending.length ? (
+        <>
+          <button
+            type="button"
+            data-testid="pending-intent-review"
+            onClick={() => setOpen((value) => !value)}
+            aria-expanded={open}
+            className={`text-[11px] font-semibold text-primary-text underline ${FOCUS_RING}`}
+          >
+            {pending.length} unresolved action{pending.length === 1 ? "" : "s"} · review
+          </button>
+          {open ? (
+            <ul className="absolute right-4 top-[72px] z-30 w-72 rounded-[14px] border border-line bg-white p-2 shadow-elevated">
+              {pending.map((intent) => (
+                <li key={intent.id} className="flex items-center justify-between gap-2 px-2 py-2 text-[11.5px]">
+                  <span className="text-secondary">
+                    {intent.operation} · {intent.target}
+                  </span>
+                  <Button
+                    variant="small-secondary"
+                    onClick={() => {
+                      void intent.retry().finally(() => resolveIntent(intent.id));
+                    }}
+                  >
+                    Retry
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
@@ -252,6 +310,7 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         )}
 
         <div className="flex items-center gap-2 shrink-0">
+          <ConnectivityStatus />
           <div className="relative" ref={menuRef}>
             <button
               type="button"

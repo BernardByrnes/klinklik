@@ -8,6 +8,7 @@ import {
   setAuthoritySession,
   type AuthoritySnapshot,
 } from "./authority";
+import { markSyncFailure, markSyncStart, markSyncSuccess, viewFromPath } from "./connectivity";
 
 export type ApiSession = SessionResponse;
 export type RoleGrant = SessionResponse["roles"][number];
@@ -149,6 +150,9 @@ function attachExternalAbort(signal: AbortSignal | null | undefined, controller:
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   const origin: AuthoritySnapshot = getAuthoritySnapshot();
+  const view = viewFromPath(path);
+  const tracked = retry;
+  if (tracked) markSyncStart();
   const controller = new AbortController();
   const removeExternalAbort = attachExternalAbort(init.signal, controller);
   activeProtectedControllers.add(controller);
@@ -161,6 +165,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retry 
     headers.set("X-Facility-Id", facilityId);
   }
   try {
+    let succeeded = false;
     const response = await fetch(API_URL + path, {
       ...init,
       headers,
@@ -170,6 +175,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retry 
     if (!isCurrentAuthority(origin)) throw new StaleAuthorityResponseError();
     if (response.status === 401 && retry && (await refreshAccessToken())) {
       if (!isCurrentAuthority(origin)) throw new StaleAuthorityResponseError();
+      if (tracked) markSyncSuccess(view);
       return apiRequest<T>(path, init, false);
     }
     const text = await response.text();
@@ -178,7 +184,12 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retry 
     if (!response.ok) {
       throw new ApiRequestError(response.status, data, response.headers);
     }
+    succeeded = true;
+    if (tracked) markSyncSuccess(view);
     return data as T;
+  } catch (error) {
+    if (tracked) markSyncFailure();
+    throw error;
   } finally {
     removeExternalAbort();
     activeProtectedControllers.delete(controller);
