@@ -102,6 +102,7 @@ def prepare_review_scheduled(tenant, client, label):
 
 
 def test_follow_up_create_round_trips_and_is_exposed_on_encounter(tenant, authed_client):
+    # CMD-101 — mechanical evidence for s17-cmd-audit.
     encounter = create_encounter(tenant, authed_client, "Phase1QACreate")
     initial = read_encounter(authed_client, encounter["id"])
     assert initial["follow_up"] is None

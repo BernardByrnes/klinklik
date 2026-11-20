@@ -148,6 +148,7 @@ def test_default_allergy_state_is_not_recorded(tenant, authed_client):
 
 
 def test_add_allergy_creates_active_recorded_state_and_revision(tenant, authed_client):
+    # CMD-092 — mechanical evidence for s17-cmd-audit.
     encounter = create_encounter(tenant, authed_client, "Phase1MAAdd")
     response = add_allergy(authed_client, encounter["patient"])
 
@@ -163,6 +164,7 @@ def test_add_allergy_creates_active_recorded_state_and_revision(tenant, authed_c
 
 
 def test_explicit_nka_requires_empty_active_state(tenant, authed_client):
+    # CMD-093 — mechanical evidence for s17-cmd-audit.
     encounter = create_encounter(tenant, authed_client, "Phase1MANKA")
     response = set_allergy_status(
         authed_client,
@@ -210,6 +212,7 @@ def test_nka_or_unknown_rejects_active_allergies(tenant, authed_client, requeste
 
 
 def test_entered_in_error_preserves_row_and_hides_it_from_active_state(tenant, authed_client):
+    # CMD-094 — mechanical evidence for s17-cmd-audit.
     encounter = create_encounter(tenant, authed_client, "Phase1MAError")
     added = add_allergy(authed_client, encounter["patient"])
     response = enter_in_error(

@@ -154,6 +154,7 @@ def _complete(client, record_id, record_version, queue_version, payload, *, key=
 
 
 def test_s03_start_save_complete_preserves_the_check_in_invoice(
+    # CMD-026 — mechanical evidence for s17-cmd-audit.
     tenant, authed_client, enabled_mig003_target
 ):
     patient_id, checked_in = _check_in(tenant, authed_client, key="s03-happy-checkin")

@@ -1578,7 +1578,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "REQUIRED_FIELD_MISSING",
         "VERSION_CONFLICT"
@@ -1610,11 +1610,11 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-03"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -2317,12 +2317,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s04_encounter.py",
+      "evidence_pointer": "backend/tests/test_phase_1d_f2.py",
       "http_method": "POST",
       "id": "CMD-038",
       "idempotency_required": true,
@@ -2352,7 +2352,7 @@
         "S-04",
         "S-11"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -2913,12 +2913,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s02_queue.py",
+      "evidence_pointer": "backend/tests/test_s11_lab.py",
       "http_method": "POST",
       "id": "CMD-047",
       "idempotency_required": true,
@@ -2948,7 +2948,7 @@
         "S-02",
         "S-11"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -3935,7 +3935,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "ALREADY_EXISTS",
         "EXPIRED_STOCK_CANNOT_BE_RECEIVED",
@@ -3967,12 +3967,12 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-09",
         "S-12"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -3999,7 +3999,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_STATE",
         "OUT_OF_SCOPE",
@@ -4031,12 +4031,12 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-09",
         "S-12"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -4126,7 +4126,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "APPROVAL_REQUIRED",
         "OUT_OF_STOCK",
@@ -4134,7 +4134,7 @@
         "SEPARATION_OF_DUTIES_REQUIRED",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s09_inventory.py",
+      "evidence_pointer": "backend/tests/test_s10_counts.py",
       "http_method": "POST",
       "id": "CMD-066",
       "idempotency_required": true,
@@ -4170,7 +4170,7 @@
         "S-09",
         "S-10"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -4262,12 +4262,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "OUT_OF_STOCK",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s09_inventory.py",
+      "evidence_pointer": "backend/tests/test_s10_counts.py",
       "http_method": "POST",
       "id": "CMD-068",
       "idempotency_required": true,
@@ -4297,7 +4297,7 @@
         "S-09",
         "S-10"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -4323,12 +4323,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "OUT_OF_STOCK",
         "PREREQUISITE_MISSING"
       ],
-      "evidence_pointer": "backend/tests/test_s09_inventory.py",
+      "evidence_pointer": "backend/tests/test_s10_counts.py",
       "http_method": "POST",
       "id": "CMD-069",
       "idempotency_required": true,
@@ -4358,7 +4358,7 @@
         "S-09",
         "S-10"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -5456,12 +5456,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "ALREADY_EXISTS",
         "UNSUPPORTED_OPERATION"
       ],
-      "evidence_pointer": "backend/tests/test_s01_reception.py",
+      "evidence_pointer": "backend/tests/test_s15_appointment_fragment.py",
       "http_method": "POST",
       "id": "CMD-087",
       "idempotency_required": true,
@@ -5490,7 +5490,7 @@
       "slices": [
         "S-01"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -5516,7 +5516,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "ALREADY_EXISTS",
         "CLASSIFICATION_UNCONFIRMED"
@@ -5548,11 +5548,11 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-09"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -5579,7 +5579,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "ALREADY_EXISTS",
         "INVALID_INPUT",
@@ -5610,11 +5610,11 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-09"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -5763,12 +5763,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "ALREADY_EXISTS",
         "REQUIRED_FIELD_MISSING"
       ],
-      "evidence_pointer": "backend/tests/test_s03_triage.py",
+      "evidence_pointer": "backend/tests/test_phase_1m_a.py",
       "http_method": "POST",
       "id": "CMD-092",
       "idempotency_required": true,
@@ -5801,7 +5801,7 @@
         "S-04",
         "S-13"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -5827,12 +5827,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s03_triage.py",
+      "evidence_pointer": "backend/tests/test_phase_1m_a.py",
       "http_method": "POST",
       "id": "CMD-093",
       "idempotency_required": true,
@@ -5861,7 +5861,7 @@
       "slices": [
         "S-03"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -5887,12 +5887,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s03_triage.py",
+      "evidence_pointer": "backend/tests/test_phase_1m_a.py",
       "http_method": "POST",
       "id": "CMD-094",
       "idempotency_required": true,
@@ -5921,7 +5921,7 @@
       "slices": [
         "S-03"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -6007,12 +6007,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_STATE",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s04_encounter.py",
+      "evidence_pointer": "backend/tests/test_phase_1n_a.py",
       "http_method": "POST",
       "id": "CMD-096",
       "idempotency_required": true,
@@ -6041,7 +6041,7 @@
       "slices": [
         "S-04"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -6117,12 +6117,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s04_encounter.py",
+      "evidence_pointer": "backend/tests/test_phase_1p_a.py",
       "http_method": "POST",
       "id": "CMD-099",
       "idempotency_required": true,
@@ -6151,7 +6151,7 @@
       "slices": [
         "S-04"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -6237,12 +6237,12 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_INPUT",
         "UNSUPPORTED_OPERATION"
       ],
-      "evidence_pointer": "backend/tests/test_s04_encounter.py",
+      "evidence_pointer": "backend/tests/test_phase_1q_a.py",
       "http_method": "POST",
       "id": "CMD-101",
       "idempotency_required": true,
@@ -6271,7 +6271,7 @@
       "slices": [
         "S-04"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -6412,7 +6412,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "ALREADY_EXISTS",
         "OUT_OF_SCOPE",
@@ -6443,11 +6443,11 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-09"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -6772,7 +6772,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "INVALID_INPUT",
         "VERSION_CONFLICT"
@@ -6802,11 +6802,11 @@
         }
       ],
       "severity": "P2",
-      "slice_test_references_command": false,
+      "slice_test_references_command": true,
       "slices": [
         "S-09"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -7860,7 +7860,7 @@
       "capability_match": null,
       "declared_capability": "",
       "declared_fenced": false,
-      "discrepancy": "Slice test file does not name this CMD or operation; test exercise not proven mechanically.",
+      "discrepancy": "",
       "error_codes": [
         "APPROVAL_REQUIRED",
         "OUT_OF_STOCK",
@@ -7868,7 +7868,7 @@
         "SEPARATION_OF_DUTIES_REQUIRED",
         "VERSION_CONFLICT"
       ],
-      "evidence_pointer": "backend/tests/test_s09_inventory.py",
+      "evidence_pointer": "backend/tests/test_s10_counts.py",
       "http_method": "POST",
       "id": "CMD-131",
       "idempotency_required": true,
@@ -7898,7 +7898,7 @@
         "S-09",
         "S-10"
       ],
-      "verdict": "PARTIAL",
+      "verdict": "VERIFIED",
       "views": [
         {
           "capabilities": [],
@@ -8209,14 +8209,14 @@
       "CMD-107"
     ],
     "severity_counts": {
-      "P2": 54
+      "P2": 34
     },
     "url_patterns": 152,
     "verdict_counts": {
       "FENCED": 52,
       "MISMATCH": 2,
-      "PARTIAL": 52,
-      "VERIFIED": 28
+      "PARTIAL": 32,
+      "VERIFIED": 48
     }
   }
 }

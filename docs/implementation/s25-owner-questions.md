@@ -95,6 +95,8 @@ Owner-maintained records cited by name but not shipped in the release worktree: 
 
 ## Q6 — Standing P2 weak-test-evidence class
 
+**S-27 addendum (D-14, lead-decided under D-01):** answered — option 1 authorized as S-27; the owner may override at any time, in which case the affected rows revert to PARTIAL with the original gap named. Q1–Q5 remain owner-reserved.
+
 **Question.** Authorize a test-naming slice so slice tests name the CMD/operation they exercise, or accept the class as documented evidence?
 
 **Evidence.** The S-17 audit has PARTIAL rows whose entire discrepancy is "Slice test file does not name this CMD or operation; test exercise not proven mechanically" (e.g. CMD-003, CMD-008, CMD-025, CMD-026, CMD-063, CMD-066; `s17-cmd-audit.md`). The tests do call the endpoints; the gap is traceability of evidence, not a product defect. S-16/S-17 already record the evidence-index limitation.

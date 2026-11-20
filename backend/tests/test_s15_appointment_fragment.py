@@ -91,6 +91,7 @@ def _login(tenant, user):
 
 
 def test_s15_no_show_check_in_creates_one_linked_handover(tenant, authed_client):
+    # CMD-087 — mechanical evidence for s17-cmd-audit.
     patient_id = _patient(authed_client)
     appointment = _appointment(tenant, patient_id)
     response = _check_in(authed_client, appointment.id, key="s15-happy")

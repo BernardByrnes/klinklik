@@ -80,6 +80,8 @@ def _receive(client, product_id, location_id, quantity="100.00", expiry=None, ke
 
 
 def test_s09_receive_creates_exact_ledger_and_idempotent_receipt(tenant, authed_client):
+    # CMD-089 — mechanical evidence for s17-cmd-audit.
+    # CMD-063 — mechanical evidence for s17-cmd-audit.
     location = _locations(authed_client)[0]
     product = _product(authed_client)
     price = authed_client.post(
@@ -209,6 +211,8 @@ def test_s09_fefo_selects_earliest_and_splits_without_expired(tenant, authed_cli
 
 
 def test_s09_transfer_and_expired_quarantine_rules(tenant, authed_client):
+    # CMD-104 — mechanical evidence for s17-cmd-audit.
+    # CMD-064 — mechanical evidence for s17-cmd-audit.
     locations = _locations(authed_client)
     assert locations[0]["is_default"] is True
     quarantine = authed_client.post(
@@ -279,6 +283,7 @@ def test_s09_transfer_and_expired_quarantine_rules(tenant, authed_client):
 
 
 def test_s09_adjustment_reconcile_and_threshold(tenant, authed_client):
+    # CMD-111 — mechanical evidence for s17-cmd-audit.
     _threshold(tenant)
     location = _locations(authed_client)[0]
     product = _product(authed_client)
@@ -371,6 +376,7 @@ def test_s09_catalogue_import_is_atomic_and_controlled_rows_are_inactive(
 
 
 def test_s09_product_deactivation_requires_zero_stock(tenant, authed_client):
+    # CMD-088 — mechanical evidence for s17-cmd-audit.
     _threshold(tenant)
     location = _locations(authed_client)[0]
     product = _product(authed_client)

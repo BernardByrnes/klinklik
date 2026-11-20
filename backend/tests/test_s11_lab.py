@@ -288,6 +288,7 @@ def test_s11_self_verification_policy_allows_when_enabled(tenant, authed_client)
 
 
 def test_s11_cancel_before_collection_voids_unpaid_line(tenant, authed_client):
+    # CMD-047 — mechanical evidence for s17-cmd-audit.
     patient_id = register(authed_client, "s11-register-cancel")
     checked_in = check_in(authed_client, patient_id, tenant, "s11-checkin-cancel")
     encounter_id = _encounter(tenant, checked_in["visit_id"])

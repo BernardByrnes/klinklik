@@ -215,6 +215,7 @@ def test_other_requires_non_whitespace_note_and_patch_preserves_or_clears_note(t
 
 
 def test_disposition_requires_if_match_and_rejects_stale_shared_etag(tenant, authed_client):
+    # CMD-099 — mechanical evidence for s17-cmd-audit.
     encounter = create_encounter(tenant, authed_client, "Phase1PAConcurrency")
     initial = read_encounter(authed_client, encounter["id"])
 

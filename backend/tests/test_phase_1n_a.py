@@ -241,6 +241,7 @@ def test_working_and_no_diagnosis_can_coexist_in_either_creation_order(tenant, a
 
 
 def test_diagnosis_type_transitions_preserve_symmetric_exclusivity(tenant, authed_client):
+    # CMD-096 — mechanical evidence for s17-cmd-audit.
     working_transition = create_encounter(tenant, authed_client, "Phase1NATransitions")
     working_a = add_diagnosis(
         authed_client,

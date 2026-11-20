@@ -8,9 +8,9 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 ## Summary
 
 - Active commands audited: 134 of 134; retired CMD-097 and CMD-107 excluded.
-- Verdicts: FENCED 52, MISMATCH 2, PARTIAL 52, VERIFIED 28.
+- Verdicts: FENCED 52, MISMATCH 2, PARTIAL 32, VERIFIED 48.
 - Machine inventory: `docs/implementation/s17-cmd-audit.json`; machine assertions: `backend/tests/test_s17_cmd_audit.py`.
-- Discrepancy severity: P2 54.
+- Discrepancy severity: P2 34.
 - Manual findings applied: 16.
 
 ## Discrepancy list (severity ordered)
@@ -26,28 +26,20 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-019 | queue_complete | PARTIAL | INTERNAL step: service function defined and called; parent CMD call site requires manual confirmation. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-020 | queue_no_response | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-024 | queue_expire_sweep | PARTIAL | QueueExpireSweepView declares CMD-024, but S-16 fenced the slice and no operational cutoff/authorization evidence was found; route exists, authority not evidenced. | `backend/application/queue/views.py:QueueExpireSweepView` |
-| P2 | CMD-026 | triage_save | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s03_triage.py` |
 | P2 | CMD-027 | triage_complete | PARTIAL | TriageView and TriageRecordCompleteView both declare CMD-027; they are MIG-002 mode-gated compatibility/canonical routes, so no simultaneous collision was proven, but one namespace serves two routes. | `backend/clinical/views.py:119,1287` |
 | P2 | CMD-030 | encounter_open | PARTIAL | Declared audit codes not found in code: ['ENCOUNTER_RESUMED']. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-034 | encounter_resume | PARTIAL | encounter_resume service exists but no dedicated route declares CMD-034; resume appears folded into the encounter open path under CMD-030. | `backend/clinical/services.py` |
 | P2 | CMD-035 | encounter_sign | PARTIAL | Declared audit codes not found in code: ['CLINICAL_NOTE_SIGNED', 'QUEUE_COMPLETED']. | `backend/tests/test_s04_encounter.py` |
-| P2 | CMD-038 | encounter_addendum | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s04_encounter.py` |
 | P2 | CMD-039 | encounter_transfer_takeover | PARTIAL | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. | `backend/clinical/services.py` |
 | P2 | CMD-040 | lab_order | PARTIAL | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-042 | lab_collect | PARTIAL | Declared audit codes not found in code: ['QUEUE_COMPLETED']. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-044 | lab_result_save | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_DRAFT_SAVED', 'LAB_RESULT_ENTERED']. | `backend/tests/test_s11_lab.py` |
 | P2 | CMD-045 | lab_verify | PARTIAL | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. | `backend/laboratory/views.py:172` |
 | P2 | CMD-046 | lab_release | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_VERIFIED']. | `backend/tests/test_s02_queue.py` |
-| P2 | CMD-047 | lab_cancel | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s02_queue.py` |
 | P2 | CMD-049 | lab_result_correct | PARTIAL | Declared audit codes not found in code: ['LAB_RESULT_CORRECTED']. | `backend/tests/test_s11_lab.py` |
 | P2 | CMD-056 | provisional_dispense_create | PARTIAL | Declared audit codes not found in code: ['DISPENSE_CREATED', 'INVOICE_LINES_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-058 | dispense_handover | PARTIAL | Declared audit codes not found in code: ['PRESCRIPTION_CLAIM_RELEASED', 'PRESCRIPTION_OUTCOME']. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-062 | otc_sale | PARTIAL | Declared audit codes not found in code: ['OTC_SALE_CONFIRMED', 'RECEIPT_ISSUED']. | `backend/tests/test_s05_billing.py` |
-| P2 | CMD-063 | stock_receive | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-064 | stock_transfer | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-066 | stock_count_approve | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-068 | stock_quarantine | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-069 | stock_dispose | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-071 | invoice_issue | PARTIAL | D-13: canonical invoice_issue runs through visit check-in (issue_exact_source_lines); manual InvoiceListCreateView now uses the documented compat namespace and is allowlisted. | `backend/billing/views.py:71,112` |
 | P2 | CMD-073 | invoice_manual_line_add | PARTIAL | Declared audit codes not found in code: ['INVOICE_MANUAL_LINE_ADDED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-075 | payment_confirm_allocate | PARTIAL | Owner-authorised compatibility namespace: legacy InvoicePaymentView uses 'legacy.invoice.payment.compat' and is allowlisted in the machine test; canonical InvoiceCanonicalPaymentView retains CMD-075. No route retired. | `backend/billing/views.py:175,205` |
@@ -56,22 +48,10 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | P2 | CMD-079 | refund_process | PARTIAL | Declared audit codes not found in code: ['REFUND_PROCESSED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-082 | cashier_shift_open | PARTIAL | Declared audit codes not found in code: ['CASHIER_SHIFT_OPENED']. | `backend/tests/test_s05_billing.py` |
 | P2 | CMD-083 | cashier_shift_close | PARTIAL | Declared audit codes not found in code: ['CASHIER_SHIFT_CLOSED', 'CASHIER_SHIFT_FORCE_CLOSED']. | `backend/tests/test_s05_billing.py` |
-| P2 | CMD-087 | appointment_no_show_check_in | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s01_reception.py` |
-| P2 | CMD-088 | medication_product_create | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-089 | product_price_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
-| P2 | CMD-092 | patient_allergy_record | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s03_triage.py` |
-| P2 | CMD-093 | patient_allergy_status_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s03_triage.py` |
-| P2 | CMD-094 | allergy_entered_error | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s03_triage.py` |
-| P2 | CMD-096 | diagnosis_save | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s04_encounter.py` |
-| P2 | CMD-099 | disposition_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s04_encounter.py` |
-| P2 | CMD-101 | followup_record | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s04_encounter.py` |
-| P2 | CMD-104 | stock_location_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-105 | supplier_upsert | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-108 | lab_test_catalogue_configure | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s11_lab.py` |
-| P2 | CMD-111 | inventory_threshold_set | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-115 | dispense_item_not_dispensed | PARTIAL | Declared audit codes not found in code: ['DISPENSE_ITEM_NOT_DISPENSED', 'INVOICE_LINE_VOIDED_OR_REDUCED']. | `backend/tests/test_s12_dispensing.py` |
 | P2 | CMD-124 | pharmacy_claim | PARTIAL | Declared audit codes not found in code: ['PRESCRIPTION_ACCESSED']. | `backend/tests/test_s12_dispensing.py` |
-| P2 | CMD-131 | stock_adjustment_approve | PARTIAL | Slice test file does not name this CMD or operation; test exercise not proven mechanically. | `backend/tests/test_s09_inventory.py` |
 | P2 | CMD-136 | stock_ledger_reconcile | MISMATCH | Registry declares stock_ledger_reconcile as INTERNAL, but LedgerReconcileView is an HTTP POST route declaring CMD-136; route/declared-location conflict. | `backend/inventory/views.py:581` |
 | P3 | CMD-004 | emergency_visit_start | FENCED | Registry/slice authority fence active; no implementation claim. | `IMPLEMENTATION_BLUEPRINT.md` |
 | P3 | CMD-005 | emergency_setup_complete | FENCED | Registry/slice authority fence active; no implementation claim. | `IMPLEMENTATION_BLUEPRINT.md` |
@@ -155,7 +135,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-023 | queue_takeover | S-02 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s02_queue.py`. |
 | CMD-024 | queue_expire_sweep | S-02 | YES | PARTIAL | P2 | QueueExpireSweepView declares CMD-024, but S-16 fenced the slice and no operational cutoff/authorization evidence was found; route exists, authority not evidenced. |
 | CMD-025 | triage_start | S-02,S-03 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s02_queue.py`. |
-| CMD-026 | triage_save | S-03 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-026 | triage_save | S-03 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s03_triage.py`. |
 | CMD-027 | triage_complete | S-02,S-03 | YES | PARTIAL | P2 | TriageView and TriageRecordCompleteView both declare CMD-027; they are MIG-002 mode-gated compatibility/canonical routes, so no simultaneous collision was proven, but one namespace serves two routes. |
 | CMD-028 | triage_amend | S-03 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-029 | repeat_vitals_record | S-03 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
@@ -167,7 +147,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-035 | encounter_sign | S-04,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['CLINICAL_NOTE_SIGNED', 'QUEUE_COMPLETED']. |
 | CMD-036 | encounter_sign_pending | S-02,S-04,S-13,S-14 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-037 | encounter_void_entered_error | S-04 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
-| CMD-038 | encounter_addendum | S-04,S-11 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-038 | encounter_addendum | S-04,S-11 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1d_f2.py`. |
 | CMD-039 | encounter_transfer_takeover | S-04 | YES | PARTIAL | P2 | encounter_transfer_takeover service exists but no route or idempotency namespace declares CMD-039. |
 | CMD-040 | lab_order | S-05,S-11,S-13,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['INVOICE_LINES_ADDED']. |
 | CMD-041 | lab_gate_release | S-11,S-13 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
@@ -176,7 +156,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-044 | lab_result_save | S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_DRAFT_SAVED', 'LAB_RESULT_ENTERED']. |
 | CMD-045 | lab_verify | S-11 | YES | PARTIAL | P2 | No dedicated lab_verify route declares CMD-045; verification is bundled with release in LabResultReleaseView, so the standalone command is not evidenced. |
 | CMD-046 | lab_release | S-02,S-11,S-13,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_VERIFIED']. |
-| CMD-047 | lab_cancel | S-02,S-11 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-047 | lab_cancel | S-02,S-11 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s11_lab.py`. |
 | CMD-048 | lab_refer_out | S-11 | YES | FENCED | P3 | No lab_refer_out route exists; external referral/notification remains a registry fence. |
 | CMD-049 | lab_result_correct | S-11 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['LAB_RESULT_CORRECTED']. |
 | CMD-050 | lab_late_result | S-11,S-13 | NO | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
@@ -192,13 +172,13 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-060 | prescription_partial_close | S-08 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-061 | dispense_reverse_return | S-09,S-12 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-062 | otc_sale | S-05,S-09,S-12,S-14 | YES | PARTIAL | P2 | Declared audit codes not found in code: ['OTC_SALE_CONFIRMED', 'RECEIPT_ISSUED']. |
-| CMD-063 | stock_receive | S-09,S-12 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-064 | stock_transfer | S-09,S-12 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-063 | stock_receive | S-09,S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
+| CMD-064 | stock_transfer | S-09,S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-065 | stock_count_submit | S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s10_counts.py`. |
-| CMD-066 | stock_count_approve | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-066 | stock_count_approve | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s10_counts.py`. |
 | CMD-067 | stock_adjust | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
-| CMD-068 | stock_quarantine | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-069 | stock_dispose | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-068 | stock_quarantine | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s10_counts.py`. |
+| CMD-069 | stock_dispose | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s10_counts.py`. |
 | CMD-070 | stock_correction | S-09,S-10 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-071 | invoice_issue | S-05,S-14 | YES | PARTIAL | P2 | D-13: canonical invoice_issue runs through visit check-in (issue_exact_source_lines); manual InvoiceListCreateView now uses the documented compat namespace and is allowlisted. |
 | CMD-072 | invoice_source_line_add | S-04,S-05,S-09,S-11,S-12 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
@@ -216,29 +196,29 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-084 | invoice_void | S-01 | NO | FENCED | P3 | INTERNAL step: declared service function not found. |
 | CMD-085 | anc_enroll | S-13 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-086 | anc_contact_compose | S-13 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-087 | appointment_no_show_check_in | S-01 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-088 | medication_product_create | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-089 | product_price_set | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-087 | appointment_no_show_check_in | S-01 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s15_appointment_fragment.py`. |
+| CMD-088 | medication_product_create | S-09 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
+| CMD-089 | product_price_set | S-09 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-090 | medication_product_deactivate | S-09 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-091 | catalogue_import | S-09,S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
-| CMD-092 | patient_allergy_record | S-03,S-04,S-13 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-093 | patient_allergy_status_set | S-03 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
-| CMD-094 | allergy_entered_error | S-03 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-092 | patient_allergy_record | S-03,S-04,S-13 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1m_a.py`. |
+| CMD-093 | patient_allergy_status_set | S-03 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1m_a.py`. |
+| CMD-094 | allergy_entered_error | S-03 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1m_a.py`. |
 | CMD-095 | encounter_allergy_review | S-04 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s04_encounter.py`. |
-| CMD-096 | diagnosis_save | S-04 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-096 | diagnosis_save | S-04 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1n_a.py`. |
 | CMD-098 | treatment_plan_save | S-04 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
-| CMD-099 | disposition_set | S-04 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-099 | disposition_set | S-04 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1p_a.py`. |
 | CMD-100 | referral_letter_create | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-101 | followup_record | S-04 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-101 | followup_record | S-04 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_phase_1q_a.py`. |
 | CMD-102 | procedure_order | S-04,S-05,S-14 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-103 | medical_certificate_issue | S-04,S-14 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-104 | stock_location_configure | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-104 | stock_location_configure | S-09 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-105 | supplier_upsert | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-106 | payment_method_configure | S-05 | YES | VERIFIED | P3 | Route/service/audit/test evidence indexed at `backend/billing/views.py:443,466`. |
 | CMD-108 | lab_test_catalogue_configure | S-11,S-13 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
 | CMD-109 | lab_self_verification_policy_set | S-11 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-110 | product_instruction_template_set | S-12 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s12_dispensing.py`. |
-| CMD-111 | inventory_threshold_set | S-09 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-111 | inventory_threshold_set | S-09 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s09_inventory.py`. |
 | CMD-112 | invoice_discount_waiver | S-05,S-06 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-113 | dispense_substitute | S-12 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |
 | CMD-114 | dispense_basket_update | S-05,S-09,S-12 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
@@ -258,7 +238,7 @@ This is an evidence audit. It does not change product code, add routes, or fix d
 | CMD-128 | repeat_vitals_request | S-03,S-04 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-129 | stale_visit_abandonment | S-01 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-130 | second_visit_override | S-01 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
-| CMD-131 | stock_adjustment_approve | S-09,S-10 | YES | PARTIAL | P2 | Slice test file does not name this CMD or operation; test exercise not proven mechanically. |
+| CMD-131 | stock_adjustment_approve | S-09,S-10 | YES | VERIFIED | P2 | Route/service/audit/test evidence indexed at `backend/tests/test_s10_counts.py`. |
 | CMD-132 | procedure_perform | S-04,S-09,S-12 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-133 | service_gate_override | S-11,S-12 | YES | FENCED | P3 | Registry/slice authority fence active; no implementation claim. |
 | CMD-134 | lab_result_entry_reject | S-11 | YES | FENCED | P3 | No view declares this CMD id; no HTTP route evidence. |

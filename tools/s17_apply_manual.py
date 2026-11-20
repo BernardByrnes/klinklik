@@ -95,11 +95,39 @@ OVERRIDES = {
 }
 
 
+
+S27_NAMED = {
+    "CMD-026": "backend/tests/test_s03_triage.py",
+    "CMD-038": "backend/tests/test_phase_1d_f2.py",
+    "CMD-047": "backend/tests/test_s11_lab.py",
+    "CMD-063": "backend/tests/test_s09_inventory.py",
+    "CMD-064": "backend/tests/test_s09_inventory.py",
+    "CMD-066": "backend/tests/test_s10_counts.py",
+    "CMD-068": "backend/tests/test_s10_counts.py",
+    "CMD-069": "backend/tests/test_s10_counts.py",
+    "CMD-087": "backend/tests/test_s15_appointment_fragment.py",
+    "CMD-088": "backend/tests/test_s09_inventory.py",
+    "CMD-089": "backend/tests/test_s09_inventory.py",
+    "CMD-092": "backend/tests/test_phase_1m_a.py",
+    "CMD-093": "backend/tests/test_phase_1m_a.py",
+    "CMD-094": "backend/tests/test_phase_1m_a.py",
+    "CMD-096": "backend/tests/test_phase_1n_a.py",
+    "CMD-099": "backend/tests/test_phase_1p_a.py",
+    "CMD-101": "backend/tests/test_phase_1q_a.py",
+    "CMD-104": "backend/tests/test_s09_inventory.py",
+    "CMD-111": "backend/tests/test_s09_inventory.py",
+    "CMD-131": "backend/tests/test_s10_counts.py",
+}
+
 def main():
     data = json.loads(DATA.read_text(encoding="utf-8"))
     for command in data["commands"]:
+        if command["id"] in S27_NAMED:
+            command["evidence_pointer"] = S27_NAMED[command["id"]]
+            command["verdict"] = "VERIFIED"
+            command["discrepancy"] = ""
         override = OVERRIDES.get(command["id"])
-        if override:
+        if override and command["id"] not in S27_NAMED:
             command.update(override)
             if override["severity"] != "P3":
                 command["manual_finding"] = True

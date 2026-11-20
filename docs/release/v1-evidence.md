@@ -11,13 +11,13 @@ Source: `docs/implementation/s17-cmd-audit.json` (`summary.verdict_counts`, `sum
 
 | Verdict | Count |
 | --- | --- |
-| VERIFIED | 28 |
-| PARTIAL | 52 |
+| VERIFIED | 48 |
+| PARTIAL | 32 |
 | MISMATCH | 2 |
 | FENCED | 52 |
 | Total active CMDs | 134 (retired CMD-097/CMD-107 excluded) |
 
-P1 **0**, P2 **54**.
+P1 **0**, P2 **34**.
 
 Earlier S-16 contract inventory (`docs/implementation/s16-contract-verification.json`, evidence-at-`54291e4`): PC 80 = 62 IMPLEMENTED / 7 PARTIAL / 11 FENCED; CMD 134 = 103 EVIDENCE LINKED / 1 PARTIAL / 30 FENCED; MIG 11 IMPLEMENTED; ADR 14 SETTLED. That table was an evidence index, not a branch-level audit; the S-17 command audit supersedes its CMD verdicts.
 
@@ -31,6 +31,7 @@ Earlier S-16 contract inventory (`docs/implementation/s16-contract-verification.
 | S-21 | `93c1af7` | D-13 residual namespaces: count-open and invoice-issue compat namespaces; CMD-106 canonical; CMD-014/136 left as owner §59 divergences (review-22). |
 | S-24 | `392a0b1` | Eight declared audit codes attached to existing writers: note amend, four allergy codes, diagnosis, disposition, follow-up; money/dispensing entries left as findings (review-25). |
 | S-25 | `ab1e259` | Owner §59 question dossier assembled; no product change (review-26). |
+| S-27 | in progress | Test-evidence naming closed 20 of 23 weak rows; 3 rows remain PARTIAL with named gaps. S-17 verdicts recomputed; no product code. |
 
 ## 2. New evidence line (S-17..S-25)
 

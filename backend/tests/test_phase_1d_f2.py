@@ -209,6 +209,7 @@ def test_stale_sign_does_not_mutate_and_fresh_retry_signs(tenant, authed_client)
 
 
 def test_amendment_is_etag_protected_and_preserves_versions(tenant, authed_client):
+    # CMD-038 — mechanical evidence for s17-cmd-audit.
     encounter = create_encounter(tenant, authed_client, label="Phase1DF2Amend")
     encounter_id = encounter["id"]
     saved = save_note(

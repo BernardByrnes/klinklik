@@ -152,6 +152,7 @@ def test_s10_blind_count_submits_and_posts_exact_correction(tenant, authed_clien
 
 
 def test_s10_above_threshold_count_needs_distinct_admin(tenant, authed_client):
+    # CMD-066 — mechanical evidence for s17-cmd-audit.
     _threshold(tenant, "100.00")
     location = _locations(authed_client)[0]
     product = _product(authed_client)
@@ -194,6 +195,7 @@ def test_s10_above_threshold_count_needs_distinct_admin(tenant, authed_client):
 
 
 def test_s10_standalone_adjustment_threshold_and_approval(tenant, authed_client):
+    # CMD-131 — mechanical evidence for s17-cmd-audit.
     _threshold(tenant, "1000.00")
     location = _locations(authed_client)[0]
     product = _product(authed_client)
@@ -274,6 +276,8 @@ def test_s10_adjustment_requires_configured_threshold(tenant, authed_client):
 
 
 def test_s10_quarantine_then_disposal_is_append_only(tenant, authed_client):
+    # CMD-069 — mechanical evidence for s17-cmd-audit.
+    # CMD-068 — mechanical evidence for s17-cmd-audit.
     _threshold(tenant)
     location = _locations(authed_client)[0]
     product = _product(authed_client)
