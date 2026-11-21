@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -11,11 +12,16 @@ import {
   getAuthoritySnapshot,
   isCurrentAuthority,
   protectedQueryKey,
+  useAuthoritySnapshot,
   useProtectedQueryKey,
   type AuthoritySnapshot,
 } from "../../../lib/authority";
 import { useSession } from "../../../lib/session";
 import { Invoice, Patient, Receipt, Service } from "../../../features/clinic";
+import type {
+  CreateVisitCloseResponse,
+  ListVisitClosureReadinessesResponse,
+} from "../../../generated/api-client";
 import { IconAlertTriangle, IconBilling, IconCheckCircle, IconPrinter, IconSearch } from "../../../components/icons";
 import {
   Button,
@@ -86,24 +92,12 @@ type ZReport = {
   variance_reason: string;
 };
 
-type ClosureBlocker = {
-  code: string;
-  amount?: string;
-  invoice_no?: string;
-  queue_type?: string;
-  state?: string;
-  clinician_id?: string;
-  action?: string;
-};
-
-type VisitClosureResponse = {
-  visit_id: string;
-  state: string;
-  closure_reason: string;
+type ClosureBlocker = ListVisitClosureReadinessesResponse["blockers"][number];
+type CloseVisitRequest = {
+  visitId: string;
   version: number;
-  closed: boolean;
-  already_closed: boolean;
-  blockers: ClosureBlocker[];
+  key: string;
+  origin: AuthoritySnapshot;
 };
 
 function errorMessage(error: unknown) {
@@ -111,6 +105,21 @@ function errorMessage(error: unknown) {
     return "You don't have permission to perform this action.";
   }
   return error instanceof Error ? error.message : "The request could not be completed.";
+}
+
+function closureBlockerLabel(code: string) {
+  switch (code) {
+    case "ACTIVE_QUEUE_STAGE":
+      return "Active queue stage";
+    case "UNSIGNED_ENCOUNTER":
+      return "Encounter not signed";
+    case "OUTSTANDING_BALANCE":
+      return "Outstanding balance";
+    case "EMERGENCY_FINANCIAL_SETUP_PENDING":
+      return "Emergency financial setup pending";
+    default:
+      return "Unresolved closure requirement";
+  }
 }
 
 function readVisitParam(searchParams: URLSearchParams) {
@@ -126,6 +135,7 @@ function readVisitParam(searchParams: URLSearchParams) {
 
 function BillingWorkspace() {
   const { session, can, currentFacility } = useSession();
+  const authority = useAuthoritySnapshot();
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const prefillPatient = searchParams.get("patient");
@@ -165,7 +175,8 @@ function BillingWorkspace() {
   } | null>(null);
   const [zReport, setZReport] = useState<ZReport | null>(null);
   const [closureBlockers, setClosureBlockers] = useState<ClosureBlocker[]>([]);
-  const [closureResult, setClosureResult] = useState<VisitClosureResponse | null>(null);
+  const [closureResult, setClosureResult] = useState<CreateVisitCloseResponse | null>(null);
+  const closeIntentRef = useRef<string | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
   const paymentRequestRef = useRef<PaymentRequest | null>(null);
   const reprintIntentRef = useRef<{ receiptId: string; key: string; registryId: string } | null>(null);
@@ -258,8 +269,8 @@ function BillingWorkspace() {
   const visitClosure = useQuery({
     queryKey: visitClosureKey,
     queryFn: () =>
-      apiRequest<{ visit: { id: string; state: string; version: number; closure_reason: string } }>(
-        `/api/v1/reception/visits/${activeInvoice?.visit}/context/`,
+      apiRequest<ListVisitClosureReadinessesResponse>(
+        `/api/v1/reception/visits/${activeInvoice?.visit}/closure-readiness/`,
       ),
     enabled: focused && Boolean(activeInvoice?.visit) && can("visit.close"),
     retry: false,
@@ -286,6 +297,18 @@ function BillingWorkspace() {
     receiptState && activeInvoice && receiptState.invoiceId === activeInvoice.id
       ? receiptState
       : null;
+  const closureTargetValid = focused && Boolean(activeInvoice?.visit) && activeInvoice?.visit === focusedVisitId;
+  const readiness = visitClosure.data;
+  const displayBlockers =
+    closureBlockers.length > 0 ? closureBlockers : (readiness?.blockers ?? []);
+  const closureState = readiness?.state;
+  const closedResult = closureResult?.visit_id === activeInvoice?.visit ? closureResult : null;
+  const closureTerminal =
+    Boolean(closedResult) || closureState === "CLOSED" || closureState === "CANCELLED_ERROR";
+  const closureBlocked =
+    displayBlockers.length > 0 || Boolean(readiness && !readiness.ready && readiness.blockers.length > 0);
+  const closureClear =
+    readiness?.ready === true && displayBlockers.length === 0 && closureState === "OPEN";
 
   const initializedInvoiceRef = useRef<{ id: string; balance: string } | null>(null);
   // The invoice whose posted payment is being reconciled. A receipt response is
@@ -327,8 +350,17 @@ function BillingWorkspace() {
     setPostPaymentGate(null);
     setNotice("");
     setError("");
+    setClosureBlockers([]);
+    setClosureResult(null);
+    closeIntentRef.current = null;
     initializedInvoiceRef.current = null;
-  }, [focused, focusedVisitId, currentFacility?.id]);
+  }, [
+    focused,
+    focusedVisitId,
+    currentFacility?.id,
+    authority.epoch,
+    authority.organisationId,
+  ]);
 
   useEffect(() => {
     // Prefill only from a confirmed balance, and again whenever that confirmed
@@ -429,6 +461,11 @@ function BillingWorkspace() {
         // The cashier already moved on; the committed payment stays recorded
         // but nothing from this result may render on the new context.
         return;
+      }
+      if (context.visitId) {
+        queryClient.invalidateQueries({
+          queryKey: protectedQueryKey("visit-closure", context.visitId),
+        });
       }
       if (focused) {
         // A new collection stays closed until the refresh for this payment has
@@ -652,30 +689,70 @@ function BillingWorkspace() {
     onError: (reason) => setError(errorMessage(reason)),
   });
 
+  function buildCloseRequest(): CloseVisitRequest | null {
+    const visitId = activeInvoice?.visit;
+    const version = visitClosure.data?.version;
+    if (!visitId || visitId !== focusedVisitId || !version) return null;
+    return {
+      visitId,
+      version,
+      key: newIdempotencyKey("s08-close"),
+      origin: getAuthoritySnapshot(),
+    };
+  }
+
   const closeVisit = useMutation({
-    mutationFn: () =>
-      apiRequest<VisitClosureResponse>(
-        `/api/v1/reception/visits/${activeInvoice?.visit}/close/`,
+    mutationFn: (request: CloseVisitRequest) =>
+      apiRequest<CreateVisitCloseResponse>(
+        `/api/v1/reception/visits/${request.visitId}/close/`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": newIdempotencyKey("s08-close") },
-          body: JSON.stringify({ expected_version: visitClosure.data?.visit.version }),
+          headers: { "Idempotency-Key": request.key },
+          body: JSON.stringify({ expected_version: request.version }),
         },
       ),
-    onSuccess: (result) => {
+    onSuccess: (result, request) => {
+      if (!isCurrentAuthority(request.origin) || visitContextRef.current !== request.visitId) {
+        return;
+      }
       setClosureResult(result);
       setClosureBlockers([]);
       setNotice(`Visit closed (${result.closure_reason}).`);
       setError("");
-      queryClient.invalidateQueries({ queryKey: visitClosureKey });
+      resolveIntent(closeIntentRef.current);
+      closeIntentRef.current = null;
+      queryClient.invalidateQueries({
+        queryKey: protectedQueryKey("visit-closure", request.visitId),
+      });
     },
-    onError: (reason) => {
+    onError: (reason, request) => {
+      if (!isCurrentAuthority(request.origin) || visitContextRef.current !== request.visitId) {
+        return;
+      }
       setNotice("");
       if (reason instanceof ApiRequestError) {
         const body = reason.data as { blockers?: ClosureBlocker[] };
         setClosureBlockers(body.blockers ?? []);
+        queryClient.invalidateQueries({
+          queryKey: protectedQueryKey("visit-closure", request.visitId),
+        });
       } else {
         setClosureBlockers([]);
+      }
+      if (!isIntentActive(closeIntentRef.current)) closeIntentRef.current = null;
+      if (!shouldRegisterIntent(reason)) {
+        resolveIntent(closeIntentRef.current);
+        closeIntentRef.current = null;
+      } else if (!closeIntentRef.current) {
+        closeIntentRef.current = registerIntent({
+          operation: "visit-close",
+          target: request.visitId,
+          authority: request.origin,
+          retry: async () => {
+            if (!isCurrentAuthority(request.origin)) return;
+            await closeVisit.mutateAsync(request).catch(() => undefined);
+          },
+        });
       }
       setError(errorMessage(reason));
     },
@@ -1455,42 +1532,78 @@ function BillingWorkspace() {
         </div>
       </section>
 
-      {focused && can("visit.close") && activeInvoice?.visit ? (
+      {closureTargetValid && can("visit.close") ? (
         <Card>
           <CardTitleBar title="Visit closure" />
           <div className="px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[12.5px] font-medium text-secondary">
+                Checklist for Visit {focusedVisitId?.slice(0, 8)}
+              </p>
+              <Button
+                variant="small-secondary"
+                disabled={visitClosure.isFetching}
+                onClick={() => void visitClosure.refetch()}
+              >
+                {visitClosure.isFetching ? "Refreshing…" : "Refresh checklist"}
+              </Button>
+            </div>
             {visitClosure.isLoading ? (
               <p className="text-[12.5px] font-medium text-secondary" role="status" aria-busy="true">
                 Loading the closure checklist…
               </p>
-            ) : visitClosure.isError ? (
+            ) : visitClosure.isError || !readiness ? (
               <p className="text-[12.5px] font-medium text-ink" role="alert">
-                The Visit checklist could not be loaded.
+                The Visit checklist could not be loaded. Refresh to try again.
               </p>
-            ) : visitClosure.data?.visit.state === "CLOSED" || closureResult ? (
+            ) : closureTerminal ? (
               <p className="flex items-center gap-2 rounded-[14px] bg-accent-teal-soft px-4 py-3 text-[12.5px] font-medium text-ink" role="status">
                 <IconCheckCircle className="h-4 w-4 text-accent-teal shrink-0" />
-                Visit CLOSED — {closureResult?.closure_reason ?? visitClosure.data?.visit.closure_reason}.
-                History remains readable; new ordinary records are refused.
+                {closureState === "CANCELLED_ERROR"
+                  ? "Visit CANCELLED_ERROR — this Visit cannot be closed. Its history remains readable."
+                  : `Visit CLOSED — ${closedResult?.closure_reason ?? readiness.closure_reason}. History remains readable; new ordinary records are refused.`}
+              </p>
+            ) : !closureClear && !closureBlocked ? (
+              <p className="rounded-[14px] border border-line-soft px-4 py-3 text-[12.5px] font-medium text-ink" role="alert">
+                The Visit closure state could not be confirmed. Refresh before trying again.
               </p>
             ) : (
               <>
                 <p className="text-[12.5px] font-medium text-secondary">
-                  Closure is refused until every blocker clears. The checklist names the exact
-                  queue, encounter and balance records.
+                  {closureBlocked
+                    ? "Closure is refused until every item below is resolved."
+                    : "All known closure blockers are clear. The server rechecks on confirmation."}
                 </p>
-                <Button disabled={closeVisit.isPending} onClick={() => closeVisit.mutate()}>
+                <Button
+                  disabled={closeVisit.isPending || closureBlocked}
+                  onClick={() => {
+                    const request = buildCloseRequest();
+                    if (!request) {
+                      setError("Refresh the Visit closure checklist before confirming.");
+                      return;
+                    }
+                    closeVisit.mutate(request);
+                  }}
+                >
                   {closeVisit.isPending ? "Checking…" : "Close visit"}
                 </Button>
-                {closureBlockers.length ? (
+                {displayBlockers.length ? (
                   <ul className="space-y-1.5 rounded-[14px] border border-line-soft p-3.5" role="alert">
-                    {closureBlockers.map((blocker, index) => (
+                    {displayBlockers.map((blocker, index) => (
                       <li key={`${blocker.code}-${index}`} className="text-[12.5px] font-medium text-ink">
-                        <span className="font-bold">{blocker.code}</span>
-                        {blocker.queue_type ? ` · ${blocker.queue_type} ${blocker.state ?? ""}` : ""}
-                        {blocker.invoice_no ? ` · ${blocker.invoice_no} ${blocker.amount ?? ""}` : ""}
+                        <span className="font-bold">{closureBlockerLabel(blocker.code)}</span>
+                        {blocker.queue_type ? ` · queue ${blocker.queue_type} ${blocker.state ?? ""}` : ""}
+                        {blocker.invoice_no ? ` · invoice ${blocker.invoice_no} ${blocker.amount ?? ""}` : ""}
                         {blocker.clinician_id ? ` · clinician ${blocker.clinician_id.slice(0, 8)}` : ""}
                         {blocker.action ? ` · ${blocker.action}` : ""}
+                        {blocker.code === "OUTSTANDING_BALANCE" && focusedVisitId ? (
+                          <Link
+                            href={`/billing?visit=${focusedVisitId}`}
+                            className="ml-2 font-semibold text-primary-text underline"
+                          >
+                            Review balance
+                          </Link>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

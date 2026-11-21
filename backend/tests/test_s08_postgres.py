@@ -252,3 +252,30 @@ def test_pg_s08_payment_gate_and_closure_serialize(tenant, authed_client, enable
         assert Visit.objects.get(id=checked_in["visit_id"]).state != "CLOSED"
         assert QueueEntry.objects.get(id=checked_in["queue_id"]).state == "WAITING"
         assert AuditEvent.objects.filter(event_code="PAYMENT_GATE_RELEASED").count() == 1
+
+
+def test_pg_s39_readiness_is_scoped_and_read_only(
+    tenant, authed_client, enabled_mig001_target
+):
+    """S-39 PG: the readiness projection observes without mutating under the app role."""
+
+    visit_id, version, invoice_id = _closable_visit(tenant, amount="30000.00")
+    with tenant_atomic(tenant.organisation.id):
+        audit_before = AuditEvent.objects.count()
+        balance_before = Invoice.objects.get(id=invoice_id).balance
+    response = authed_client.get(f"/api/v1/reception/visits/{visit_id}/closure-readiness/")
+    assert response.status_code == 200, response.data
+    assert response.data["visit_id"] == str(visit_id)
+    assert response.data["version"] == version
+    assert response.data["ready"] is False
+    codes = {blocker["code"] for blocker in response.data["blockers"]}
+    assert "OUTSTANDING_BALANCE" in codes
+    amount = next(
+        blocker for blocker in response.data["blockers"]
+        if blocker["code"] == "OUTSTANDING_BALANCE"
+    )["amount"]
+    assert amount == "30000.00"
+    with tenant_atomic(tenant.organisation.id):
+        assert AuditEvent.objects.count() == audit_before
+        assert Visit.objects.get(id=visit_id).version == version
+        assert Invoice.objects.get(id=invoice_id).balance == balance_before

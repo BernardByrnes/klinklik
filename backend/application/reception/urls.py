@@ -9,6 +9,7 @@ from application.reception.views import (
     VisitCancelErrorView,
     VisitCloseLwbsView,
     VisitCloseView,
+    VisitClosureReadinessView,
     VisitCheckInView,
     VisitContextView,
 )
@@ -28,6 +29,11 @@ urlpatterns = [
     path("visits/<uuid:pk>/cancel-error/", VisitCancelErrorView.as_view(), name="visit_cancel_error"),
     path("visits/<uuid:pk>/close-lwbs/", VisitCloseLwbsView.as_view(), name="visit_close_lwbs"),
     path("visits/<uuid:pk>/close/", VisitCloseView.as_view(), name="visit_close"),
+    path(
+        "visits/<uuid:pk>/closure-readiness/",
+        VisitClosureReadinessView.as_view(),
+        name="visit_closure_readiness",
+    ),
     path("arrival-enquiries/", ArrivalEnquiryView.as_view(), name="arrival_enquiry_record"),
     path(
         "visits/<uuid:pk>/referral-source/",

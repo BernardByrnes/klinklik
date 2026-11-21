@@ -27,7 +27,7 @@
           ],
           "note": "LWBS close path emits VISIT_CLOSED_LWBS and a refund-review fact, but no invoice-state event; all branches read.",
           "path_reviewed": [
-            "backend/application/reception/views.py:479",
+            "backend/application/reception/views.py:480",
             "backend/scheduling/services.py:618"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
@@ -44,7 +44,7 @@
           ],
           "note": "Declared queue outcome is emitted by the Visit close path under VISIT_CLOSED_LWBS.",
           "path_reviewed": [
-            "backend/application/reception/views.py:479",
+            "backend/application/reception/views.py:480",
             "backend/scheduling/services.py:618"
           ],
           "proposed_disposition": "accept documented mapping",

@@ -34,30 +34,9 @@ def _blocker(code, **payload):
     return {"code": code, **payload}
 
 
-def collect_visit_blockers(*, organisation, facility, visit):
-    """Return the exact blocker set; callers must already hold the Visit lock.
+def _build_blockers(*, visit, queue_entries, encounters, invoices):
+    """Pure projection of the exact S-08 blocker set from scoped records."""
 
-    Queue entries, encounters and invoices are locked in stable ID order after
-    the Visit, matching LOCK-01.
-    """
-
-    assert_transaction_active()
-    queue_entries = list(
-        QueueEntry.objects.select_for_update()
-        .filter(organisation=organisation, facility=facility, visit=visit)
-        .order_by("id")
-    )
-    encounters = list(
-        Encounter.objects.select_for_update()
-        .filter(organisation=organisation, facility=facility, visit=visit)
-        .order_by("id")
-    )
-    invoices = list(
-        Invoice.objects.select_for_update()
-        .filter(organisation=organisation, facility=facility, visit=visit)
-        .exclude(status__in=("VOID", "VOIDED"))
-        .order_by("id")
-    )
     blockers = []
     for entry in queue_entries:
         if entry.state in QueueEntry.ACTIVE_STATES:
@@ -97,6 +76,47 @@ def collect_visit_blockers(*, organisation, facility, visit):
             )
         )
     return blockers
+
+
+def collect_visit_blockers(*, organisation, facility, visit, for_update=True):
+    """Return the exact blocker set shared by the close command and readiness read.
+
+    The close command holds the Visit lock and locks children in stable ID
+    order after it (LOCK-01). The read-only projection passes ``for_update=False``
+    and takes no write locks; CMD-008 remains authoritative if a blocker changes.
+    """
+
+    assert_transaction_active()
+
+    def child_lock(queryset):
+        return queryset.select_for_update() if for_update else queryset
+
+    queue_entries = list(
+        child_lock(
+            QueueEntry.objects.filter(
+                organisation=organisation, facility=facility, visit=visit
+            ).order_by("id")
+        )
+    )
+    encounters = list(
+        child_lock(
+            Encounter.objects.filter(
+                organisation=organisation, facility=facility, visit=visit
+            ).order_by("id")
+        )
+    )
+    invoices = list(
+        child_lock(
+            Invoice.objects.filter(
+                organisation=organisation, facility=facility, visit=visit
+            )
+            .exclude(status__in=("VOID", "VOIDED"))
+            .order_by("id")
+        )
+    )
+    return _build_blockers(
+        visit=visit, queue_entries=queue_entries, encounters=encounters, invoices=invoices
+    )
 
 
 @transaction.atomic

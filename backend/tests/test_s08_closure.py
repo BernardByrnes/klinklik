@@ -13,7 +13,7 @@ from billing.models import Invoice
 from clinical.models import Encounter
 from core.services import tenant_atomic
 from scheduling.models import QueueEntry, Visit
-from tenancy.models import FacilityWorkflowPolicy
+from tenancy.models import Facility, FacilityWorkflowPolicy
 from tests.test_s05_billing import check_in, open_shift, pay, register
 
 pytestmark = pytest.mark.django_db
@@ -280,3 +280,145 @@ def _owner_client(tenant):
     client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
     client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
     return client
+
+
+def test_s39_readiness_lists_blockers_before_any_close(tenant, authed_client):
+    """S-39 red: blockers are discoverable without attempting CMD-008."""
+
+    checked_in = _check_in(tenant, authed_client, "readiness")
+    with tenant_atomic(tenant.organisation.id):
+        audit_before = AuditEvent.objects.count()
+        visit_before = Visit.objects.get(id=checked_in["visit_id"]).version
+    response = authed_client.get(
+        f"/api/v1/reception/visits/{checked_in['visit_id']}/closure-readiness/"
+    )
+    assert response.status_code == 200, response.data
+    with tenant_atomic(tenant.organisation.id):
+        assert AuditEvent.objects.count() == audit_before
+        assert Visit.objects.get(id=checked_in["visit_id"]).version == visit_before
+    assert response.data["visit_id"] == str(checked_in["visit_id"])
+    assert response.data["state"] == "OPEN"
+    assert response.data["version"] == _visit_version(tenant, checked_in["visit_id"])
+    assert response.data["ready"] is False
+    codes = {blocker["code"] for blocker in response.data["blockers"]}
+    assert {"ACTIVE_QUEUE_STAGE", "OUTSTANDING_BALANCE"} <= codes
+
+
+def test_s39_readiness_hides_payload_from_wrong_capability(tenant):
+    checked_in = _check_in(tenant, _owner_client(tenant), "readiness-permission")
+    with tenant_atomic(tenant.organisation.id):
+        user = User.objects.create_user("s39-nurse", "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=user,
+            role=Role.objects.get(
+                organisation=tenant.organisation, template_code="NURSE_TRIAGE"
+            ),
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    client = APIClient()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": "s39-nurse",
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert login.status_code == 200
+    client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    response = client.get(
+        f"/api/v1/reception/visits/{checked_in['visit_id']}/closure-readiness/"
+    )
+    assert response.status_code == 403
+    assert "visit_id" not in response.data
+    assert "blockers" not in response.data
+    with tenant_atomic(tenant.organisation.id):
+        assert not AuditEvent.objects.filter(
+            event_code="AUTHORIZATION_DENIED", actor=user
+        ).exists()
+
+
+def test_s39_readiness_is_facility_scoped(tenant):
+    checked_in = _check_in(tenant, _owner_client(tenant), "readiness-facility")
+    with tenant_atomic(tenant.organisation.id):
+        other_facility = Facility.objects.create(
+            organisation=tenant.organisation,
+            name="S39 Other Facility",
+            code="S39-OTHER",
+            mode="CLINIC",
+        )
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=tenant.user,
+            role=Role.objects.get(
+                organisation=tenant.organisation, template_code="OWNER_ADMIN"
+            ),
+            facility=other_facility,
+        )
+    client = _owner_client(tenant)
+    client.defaults["HTTP_X_FACILITY_ID"] = str(other_facility.id)
+    response = client.get(
+        f"/api/v1/reception/visits/{checked_in['visit_id']}/closure-readiness/"
+    )
+    assert response.status_code == 404, response.data
+    assert response.data["code"] == "VISIT_NOT_FOUND"
+    assert "visit_id" not in response.data
+    assert "blockers" not in response.data
+
+
+def test_s39_stale_clear_read_still_blocks_and_refresh_enables_close(
+    tenant, authed_client
+):
+    checked_in = _check_in(tenant, authed_client, "readiness-stale")
+    open_shift(authed_client)
+    paid = pay(authed_client, checked_in["invoice_id"], "30000.00", "s39-stale-pay")
+    assert paid.status_code == 201, paid.data
+    _complete_queues(tenant, checked_in["visit_id"])
+    clear = authed_client.get(
+        f"/api/v1/reception/visits/{checked_in['visit_id']}/closure-readiness/"
+    )
+    assert clear.status_code == 200, clear.data
+    assert clear.data["ready"] is True
+    assert clear.data["blockers"] == []
+
+    with tenant_atomic(tenant.organisation.id):
+        encounter_id = _encounter(tenant, checked_in["visit_id"], status="OPEN")
+    blocked = _close(
+        authed_client,
+        checked_in["visit_id"],
+        clear.data["version"],
+        "s39-stale-close",
+    )
+    assert blocked.status_code == 409, blocked.data
+    assert blocked.data["code"] == "VISIT_CLOSE_BLOCKED"
+    codes = {blocker["code"] for blocker in blocked.data["blockers"]}
+    assert "UNSIGNED_ENCOUNTER" in codes
+
+    with tenant_atomic(tenant.organisation.id):
+        encounter = Encounter.objects.get(id=encounter_id)
+        encounter.status = "SIGNED"
+        encounter.save(update_fields=["status", "updated_at"])
+    refreshed = authed_client.get(
+        f"/api/v1/reception/visits/{checked_in['visit_id']}/closure-readiness/"
+    )
+    assert refreshed.status_code == 200, refreshed.data
+    assert refreshed.data["ready"] is True
+    assert refreshed.data["blockers"] == []
+    closed = _close(
+        authed_client,
+        checked_in["visit_id"],
+        refreshed.data["version"],
+        "s39-stale-close-final",
+    )
+    assert closed.status_code == 200, closed.data
+    terminal = authed_client.get(
+        f"/api/v1/reception/visits/{checked_in['visit_id']}/closure-readiness/"
+    )
+    assert terminal.data["state"] == "CLOSED"
+    assert terminal.data["ready"] is False
+    assert terminal.data["blockers"] == []

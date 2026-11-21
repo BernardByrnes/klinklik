@@ -11,7 +11,7 @@ from application.reception.commands import (
     visit_referral_source_record,
 )
 from application.reception.audited_reads import audit_clinical_projection
-from application.reception.closure import visit_close
+from application.reception.closure import collect_visit_blockers, visit_close
 from application.reception.visit_query import (
     get_clinical_projection,
     get_patient_checkin_projection,
@@ -36,6 +36,7 @@ from application.reception.serializers import (
     VisitCloseLwbsSerializer,
     VisitCloseResponseSerializer,
     VisitCloseSerializer,
+    VisitClosureReadinessResponseSerializer,
     VisitContextResponseSerializer,
     VisitCheckInResponseSerializer,
     VisitSerializer,
@@ -571,6 +572,39 @@ class VisitCloseView(TenantAPIView):
             "entity_id": str(outcome.visit.id),
         }
         return response
+
+
+class VisitClosureReadinessView(TenantAPIView):
+    """S-39: read-only Visit closure checklist for the close actor."""
+
+    capability = "visit.close"
+    response_serializer_class = VisitClosureReadinessResponseSerializer
+    response_is_list = False
+
+    def get(self, request, pk):
+        projection = get_visit_projection(
+            organisation=request.organisation,
+            facility=request.facility,
+            visit_id=pk,
+        )
+        visit = projection.visit
+        blockers = []
+        if visit.state not in {"CLOSED", "CANCELLED_ERROR"}:
+            blockers = collect_visit_blockers(
+                organisation=request.organisation,
+                facility=request.facility,
+                visit=visit,
+                for_update=False,
+            )
+        body = {
+            "visit_id": str(visit.id),
+            "state": visit.state,
+            "version": visit.version,
+            "closure_reason": visit.closure_reason,
+            "ready": visit.state not in {"CLOSED", "CANCELLED_ERROR"} and not blockers,
+            "blockers": blockers,
+        }
+        return Response(body)
 
 
 def _strong_if_match_version(request, body_version):

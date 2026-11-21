@@ -340,6 +340,20 @@ class VisitCloseSerializer(serializers.Serializer):
     )
 
 
+class VisitClosureBlockerSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    queue_entry_id = serializers.UUIDField(required=False)
+    queue_type = serializers.CharField(required=False)
+    state = serializers.CharField(required=False)
+    encounter_id = serializers.UUIDField(required=False)
+    clinician_id = serializers.UUIDField(required=False)
+    invoice_id = serializers.UUIDField(required=False)
+    invoice_no = serializers.CharField(required=False)
+    amount = serializers.CharField(required=False)
+    currency = serializers.CharField(required=False)
+    action = serializers.CharField(required=False)
+
+
 class VisitCloseResponseSerializer(serializers.Serializer):
     visit_id = serializers.UUIDField()
     state = serializers.CharField()
@@ -347,7 +361,16 @@ class VisitCloseResponseSerializer(serializers.Serializer):
     version = serializers.IntegerField()
     closed = serializers.BooleanField()
     already_closed = serializers.BooleanField()
-    blockers = serializers.ListField(child=serializers.DictField())
+    blockers = VisitClosureBlockerSerializer(many=True)
+
+
+class VisitClosureReadinessResponseSerializer(serializers.Serializer):
+    visit_id = serializers.UUIDField()
+    state = serializers.CharField()
+    version = serializers.IntegerField()
+    closure_reason = serializers.CharField(allow_blank=True)
+    ready = serializers.BooleanField()
+    blockers = VisitClosureBlockerSerializer(many=True)
 
 
 class PatientCheckInPatientSerializer(serializers.ModelSerializer):
@@ -400,6 +423,8 @@ __all__ = [
     "VisitCloseLwbsResponseSerializer",
     "VisitCloseSerializer",
     "VisitCloseResponseSerializer",
+    "VisitClosureBlockerSerializer",
+    "VisitClosureReadinessResponseSerializer",
     "PatientCheckInSummarySerializer",
     "PatientCheckInPatientSerializer",
     "CheckInVisitSummarySerializer",
