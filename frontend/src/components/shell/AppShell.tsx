@@ -29,6 +29,7 @@ import {
   IconQueue,
   IconSearch,
   IconTriage,
+  IconUserPlus,
 } from "../icons";
 import { AvatarInitials, Button } from "../ui";
 
@@ -262,7 +263,7 @@ function FacilitySwitcher() {
 }
 
 function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
-  const { session, signOut } = useSession();
+  const { session, signOut, switchUser } = useSession();
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -369,12 +370,25 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
                 <button
                   type="button"
                   role="menuitem"
-                  onClick={async () => {
+                  onClick={() => {
                     setMenuOpen(false);
-                    await signOut();
+                    void switchUser();
                     router.replace("/login");
                   }}
-                  className={`mt-1 w-full flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[13px] font-medium text-secondary hover:bg-accent-pink-soft hover:text-accent-pink transition-colors ${FOCUS_RING}`}
+                  className={`mt-1 w-full flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[13px] font-medium text-secondary hover:bg-primary-hover transition-colors ${FOCUS_RING}`}
+                >
+                  <IconUserPlus className="h-[18px] w-[18px]" />
+                  Switch user
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void signOut();
+                    router.replace("/login");
+                  }}
+                  className={`w-full flex items-center gap-3 rounded-[10px] px-3 py-2.5 text-[13px] font-medium text-secondary hover:bg-accent-pink-soft hover:text-accent-pink transition-colors ${FOCUS_RING}`}
                 >
                   <IconLogout className="h-[18px] w-[18px]" />
                   Sign out
@@ -424,8 +438,8 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
           </div>
           <button
             type="button"
-            onClick={async () => {
-              await signOut();
+            onClick={() => {
+              void signOut();
               router.replace("/login");
             }}
             className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium text-secondary hover:bg-accent-pink-soft hover:text-accent-pink transition-colors ${FOCUS_RING}`}
@@ -458,9 +472,9 @@ export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
               <FacilitySwitcher />
               <button
                 type="button"
-                onClick={async () => {
+                onClick={() => {
                   setMobileOpen(false);
-                  await signOut();
+                  void signOut();
                   router.replace("/login");
                 }}
                 className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium text-secondary hover:bg-accent-pink-soft hover:text-accent-pink transition-colors ${FOCUS_RING}`}

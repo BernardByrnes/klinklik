@@ -9,6 +9,7 @@ import {
   type AuthoritySnapshot,
 } from "./authority";
 import { markSyncFailure, markSyncStart, markSyncSuccess, viewFromPath } from "./connectivity";
+import { explicitSignInRequired } from "./exit-marker";
 
 export type ApiSession = SessionResponse;
 export type RoleGrant = SessionResponse["roles"][number];
@@ -42,7 +43,15 @@ export class StaleAuthorityResponseError extends Error {
 
 let accessToken: string | null = null;
 let facilityId: string | null = null;
+let sessionGeneration = 0;
 const activeProtectedControllers = new Set<AbortController>();
+
+export function resetLocalAuth() {
+  sessionGeneration += 1;
+  accessToken = null;
+  facilityId = null;
+  clearAuthority();
+}
 
 export function cancelProtectedRequests() {
   for (const controller of activeProtectedControllers) controller.abort();
@@ -66,9 +75,11 @@ export function setFacilityId(id: string | null) {
 let restoreInFlight: Promise<ApiSession | null> | null = null;
 
 export function restoreSession(): Promise<ApiSession | null> {
+  if (explicitSignInRequired()) return Promise.resolve(null);
   if (!restoreInFlight) {
     restoreInFlight = (async () => {
       const origin = getAuthoritySnapshot();
+      const generation = sessionGeneration;
       const previousOrganisation = origin.organisationId;
       const previousFacility = origin.facilityId ?? facilityId;
       markSyncStart();
@@ -78,14 +89,12 @@ export function restoreSession(): Promise<ApiSession | null> {
           credentials: "include",
         });
         if (!response.ok) {
-          accessToken = null;
-          facilityId = null;
-          clearAuthority();
+          resetLocalAuth();
           markSyncFailure();
           return null;
         }
         const data = (await response.json()) as ApiSession;
-        if (!isCurrentAuthority(origin)) {
+        if (!isCurrentAuthority(origin) || generation !== sessionGeneration) {
           markSyncFailure();
           return null;
         }
@@ -98,13 +107,12 @@ export function restoreSession(): Promise<ApiSession | null> {
           : data.facilities[0]?.id || null;
         accessToken = data.access_token;
         facilityId = restoredFacility;
+        sessionGeneration += 1;
         setAuthoritySession(data.organisation.id, restoredFacility);
         markSyncSuccess("Workspace");
         return data;
       } catch (error) {
-        accessToken = null;
-        facilityId = null;
-        clearAuthority();
+        resetLocalAuth();
         markSyncFailure();
         throw error;
       } finally {
@@ -135,28 +143,41 @@ export async function login(username: string, password: string, organisationId?:
   }
   accessToken = data.access_token;
   facilityId = data.facilities[0]?.id || null;
+  sessionGeneration += 1;
   setAuthoritySession(data.organisation.id, facilityId);
   return data as ApiSession;
 }
 
-export async function logout() {
+export async function logout(): Promise<{ revoked: boolean }> {
   cancelProtectedRequests();
+  const generation = sessionGeneration;
+  const bearer = accessToken;
+  const exitFacility = facilityId;
+  let revoked = false;
   try {
-    if (accessToken) {
-      await fetch(API_URL + "/api/v1/auth/logout/", {
+    if (bearer) {
+      const response = await fetch(API_URL + "/api/v1/auth/logout/", {
         method: "POST",
         credentials: "include",
         headers: {
-          Authorization: "Bearer " + accessToken,
-          ...(facilityId ? { "X-Facility-Id": facilityId } : {}),
+          Authorization: "Bearer " + bearer,
+          ...(exitFacility ? { "X-Facility-Id": exitFacility } : {}),
         },
       });
+      revoked = response.ok;
     }
+  } catch {
+    revoked = false;
   } finally {
-    accessToken = null;
-    facilityId = null;
-    clearAuthority();
+    // A newer explicit sign-in owns the module state now; never clear it from
+    // an older exit request that completes late.
+    if (generation === sessionGeneration) {
+      accessToken = null;
+      facilityId = null;
+      clearAuthority();
+    }
   }
+  return { revoked };
 }
 
 function attachExternalAbort(signal: AbortSignal | null | undefined, controller: AbortController) {

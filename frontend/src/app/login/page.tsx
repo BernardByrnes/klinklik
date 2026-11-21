@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { BrandMark } from "../../components/icons";
 import { Button, ErrorBanner, Field, TextInput } from "../../components/ui";
 import { QueryProvider } from "../../components/QueryProvider";
+import { logoutUnconfirmed } from "../../lib/exit-marker";
 import { landingRoute } from "../../lib/roles";
 import { SessionProvider, useSession } from "../../lib/session";
 
@@ -16,11 +17,12 @@ function errorMessage(error: unknown) {
 function LoginCard() {
   const { session, signIn, restoring } = useSession();
   const router = useRouter();
-  const [username, setUsername] = useState("demo");
-  const [password, setPassword] = useState("ClinicopusDemo!2026");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [organisationId, setOrganisationId] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [revocationUnconfirmed, setRevocationUnconfirmed] = useState(false);
 
   useEffect(() => {
     if (!restoring && session) {
@@ -29,6 +31,7 @@ function LoginCard() {
   }, [restoring, session, router]);
 
   useEffect(() => {
+    setRevocationUnconfirmed(logoutUnconfirmed());
     // Marks client hydration; e2e waits for this before interacting.
     document.documentElement.dataset.appReady = "1";
   }, []);
@@ -68,6 +71,12 @@ function LoginCard() {
         <h1 className="mt-2 text-[28px] font-bold tracking-[-0.02em] text-ink">Welcome back</h1>
         <p className="mt-1 text-[13.5px] font-medium text-secondary">Sign in to your workspace.</p>
 
+        {revocationUnconfirmed ? (
+          <div className="mt-5" role="alert">
+            <ErrorBanner message="Server sign-out could not be confirmed. Sign in explicitly; any session already accepted by the server may remain valid until it expires." />
+          </div>
+        ) : null}
+
         <form className="mt-7 grid gap-4" onSubmit={submit}>
           <Field label="Username" htmlFor="username">
             <TextInput
@@ -106,9 +115,6 @@ function LoginCard() {
           </Button>
         </form>
 
-        <p className="mt-6 text-[12px] font-medium text-muted">
-          Local demo: <strong className="text-secondary">demo</strong> / <strong className="text-secondary">ClinicopusDemo!2026</strong>
-        </p>
       </section>
     </main>
   );

@@ -116,9 +116,13 @@ test("S-38 390px shell keeps status readable and recovery reachable", async ({ p
   await account.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Switch user", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
   await page.locator("main").click({ position: { x: 5, y: 5 } });
   await account.tap();
   await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Switch user", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
   await page.locator("main").click({ position: { x: 5, y: 5 } });
 
   // Facility switcher by keyboard and by tap.

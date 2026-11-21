@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 const DEMO_PASSWORD = process.env.CLINICOPUS_E2E_PASSWORD ?? "ClinicopusDemo!2026";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8100";
@@ -44,6 +46,75 @@ function headers(session: { token: string; facilityId: string }) {
     "X-Facility-Id": session.facilityId,
     "Content-Type": "application/json",
   };
+}
+
+const SWITCH_A = "s42a@clinicopus.local";
+const SWITCH_B = "s42b@clinicopus.local";
+const SWITCH_PASSWORD = "S42Synthetic123!";
+
+function ensureSwitchUsers() {
+  const script = `
+from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
+from accounts.services import ensure_default_permissions
+from tenancy.models import Department, Facility, Organisation
+org = Organisation.objects.get(slug="clinicopus-demo")
+facility = Facility.objects.get(organisation=org, code="MAIN")
+department = Department.objects.filter(organisation=org, facility=facility).first()
+ensure_default_permissions(org)
+role = Role.objects.get(organisation=org, template_code="OWNER_ADMIN")
+for username in ["${SWITCH_A}", "${SWITCH_B}"]:
+    user, _ = User.objects.get_or_create(username=username, defaults={"email": username})
+    user.set_password("${SWITCH_PASSWORD}")
+    user.save()
+    OrganisationMembership.objects.get_or_create(organisation=org, user=user)
+    UserFacilityRole.objects.get_or_create(
+        organisation=org, user=user, facility=facility,
+        defaults={"role": role, "department": department},
+    )
+`;
+  execFileSync("python", ["../backend/manage.py", "shell", "-c", script], {
+    cwd: path.resolve(__dirname, ".."),
+    encoding: "utf8",
+  });
+}
+
+async function loginAs(page: Page, username: string, password: string) {
+  await page.goto("/");
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/login$/);
+  const organisationId = process.env.CLINICOPUS_E2E_ORGANISATION_ID;
+  if (organisationId) await steadyFill(page, "Organisation ID", organisationId);
+  await steadyFill(page, "Username", username);
+  await steadyFill(page, "Password", password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+}
+
+async function apiLoginAs(page: Page, username: string, password: string) {
+  const response = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username, password },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const body = (await response.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  return { token: body.access_token, facilityId: body.facilities[0].id };
+}
+
+async function startPendingRegistration(page: Page, label: string) {
+  await page.goto("/patients");
+  await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
+  await steadyFill(page, "First name", "S42");
+  await steadyFill(page, "Last name", label);
+  await steadyFill(page, "Phone", "0751234567");
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    if (route.request().method() === "POST") await route.abort("failed");
+    else await route.continue();
+  });
+  const form = page.locator("form").filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
 }
 
 test("S-16 low-bandwidth reception journey completes under throttling", async ({
@@ -571,4 +642,161 @@ test("S-33 throttled worklist records cold and warm samples", async ({ page }) =
   }
   const sorted = [...samples].sort((a, b) => a - b);
   console.log(`S33_NFR_PROFILE=450ms,50KB/s,20KB/s samples=${samples.join(",")} p95=${sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]}`);
+});
+
+test("S-42 deliberate exit clears the old workspace before the logout response", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  ensureSwitchUsers();
+  const suffix = Date.now().toString().slice(-6);
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+  await startPendingRegistration(page, `Drop${suffix}`);
+  const root = page.locator("[data-authority-epoch]");
+  const epochBefore = await root.getAttribute("data-authority-epoch");
+  expect(epochBefore).toBeTruthy();
+
+  let logoutStarted = false;
+  let releaseLogout: (() => void) | null = null;
+  await page.route("**/api/v1/auth/logout/", async (route) => {
+    logoutStarted = true;
+    await new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    await route.abort("failed");
+  });
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect.poll(() => logoutStarted).toBe(true);
+  // The old authority must be invalidated and the subtree unmounted while the
+  // network request is still outstanding.
+  await expect(root).toHaveCount(0);
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+
+  releaseLogout?.();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.waitForTimeout(1500);
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByLabel("Username", { exact: true })).toHaveValue("");
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.reload();
+  await expect(page).toHaveURL(/\/login$/);
+});
+
+test("S-42 one tab's deliberate exit clears another open tab", async ({ page }) => {
+  test.setTimeout(120_000);
+  ensureSwitchUsers();
+  const suffix = Date.now().toString().slice(-6);
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+  await startPendingRegistration(page, `TwoTab${suffix}`);
+
+  const second = await page.context().newPage();
+  // The shared refresh cookie restores A in the second tab before any switch.
+  await second.goto("/patients");
+  await expect(second.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
+  await second.getByRole("button", { name: "Account menu" }).click();
+  await expect(second.getByRole("menu")).toContainText(SWITCH_A);
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+
+  await expect(second).toHaveURL(/\/login$/);
+  await expect(second.getByRole("menu")).toHaveCount(0);
+  await expect(second.getByTestId("pending-intent-review")).toHaveCount(0);
+  await second.close();
+});
+
+test("S-42 switch user survives a late logout and requires explicit B sign-in", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  ensureSwitchUsers();
+  const suffix = Date.now().toString().slice(-6);
+  const aLabel = `SwitchA${suffix}`;
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+  await startPendingRegistration(page, aLabel);
+
+  const targetBodies: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/reception/patients/register/")
+    ) {
+      targetBodies.push(request.postData() ?? "");
+    }
+  });
+
+  let releaseLogout: (() => void) | null = null;
+  await page.route("**/api/v1/auth/logout/", async (route) => {
+    await new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    await route.abort("failed");
+  });
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByLabel("Username", { exact: true })).toHaveValue("");
+  await expect(page.getByText(/Server sign-out could not be confirmed/)).toHaveCount(0);
+
+  await steadyFill(page, "Username", SWITCH_B);
+  await steadyFill(page, "Password", "wrong-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+
+  await loginAs(page, SWITCH_B, SWITCH_PASSWORD);
+  const epochB = await page.locator("[data-authority-epoch]").getAttribute("data-authority-epoch");
+  expect(epochB).toBeTruthy();
+
+  releaseLogout?.();
+  await page.waitForTimeout(1000);
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  expect(await page.locator("[data-authority-epoch]").getAttribute("data-authority-epoch")).toBe(epochB);
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+  await expect(page.getByText(aLabel, { exact: false })).toHaveCount(0);
+  expect(targetBodies.some((body) => body.includes(aLabel))).toBe(false);
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+});
+
+test("S-42 confirmed logout revokes the old bearer for protected requests", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+  let bearer = "";
+  let facility = "";
+  page.on("request", (request) => {
+    const authorization = request.headers()["authorization"];
+    if (authorization?.startsWith("Bearer ")) {
+      bearer = authorization;
+      facility = request.headers()["x-facility-id"] ?? "";
+    }
+  });
+  await page.goto("/patients");
+  await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
+  expect(bearer).toBeTruthy();
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+
+  const protectedRequest = await page.request.get(`${API}/api/v1/auth/me/`, {
+    headers: {
+      Authorization: bearer,
+      "X-Facility-Id": facility,
+      "Content-Type": "application/json",
+    },
+  });
+  expect(protectedRequest.status()).toBe(401);
+  await expect(page).toHaveURL(/\/login$/);
 });

@@ -289,5 +289,5 @@ jobs:
         working-directory: frontend
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
-      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts tests/s04-encounter.spec.ts tests/clinic-slice.spec.ts tests/billing-handoff-edges.spec.ts tests/s05-cashier.spec.ts tests/s06-corrections.spec.ts tests/s07-repricing.spec.ts tests/s08-closure.spec.ts tests/s09-inventory.spec.ts tests/s10-counts.spec.ts tests/s11-lab.spec.ts tests/s12-dispensing.spec.ts tests/s16-release-drills.spec.ts
+      - run: npm run test:e2e -- tests/s01-reception.spec.ts tests/s01-accessibility.spec.ts tests/s02-queue.spec.ts tests/s03-triage.spec.ts tests/s04-encounter.spec.ts tests/clinic-slice.spec.ts tests/billing-handoff-edges.spec.ts tests/s05-cashier.spec.ts tests/s06-corrections.spec.ts tests/s07-repricing.spec.ts tests/s08-closure.spec.ts tests/s09-inventory.spec.ts tests/s10-counts.spec.ts tests/s11-lab.spec.ts tests/s12-dispensing.spec.ts tests/s16-release-drills.spec.ts tests/s35-fix6-rotation.spec.ts tests/s38-mobile-header.spec.ts
         working-directory: frontend
