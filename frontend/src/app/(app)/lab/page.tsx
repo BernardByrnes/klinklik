@@ -188,7 +188,7 @@ export default function LabPage() {
       merged.pagination = page.pagination;
     }
     return merged;
-  }, [worklist.data]);
+  }, [worklist.data, worklistView]);
 
   const detailKey = useProtectedQueryKey("lab-item-detail", selected?.itemId ?? "");
   const detail = useQuery({

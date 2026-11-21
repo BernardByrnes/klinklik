@@ -48,6 +48,32 @@ function headers(session: { token: string; facilityId: string }) {
   };
 }
 
+type NfrCleanup = {
+  itemIds: string[];
+  suffix: string;
+};
+let pendingNfrCleanup: NfrCleanup | null = null;
+
+test.afterEach(async ({ page }) => {
+  if (!pendingNfrCleanup) return;
+  const cleanup = pendingNfrCleanup;
+  pendingNfrCleanup = null;
+  const session = await apiLogin(page, "demo", DEMO_PASSWORD);
+  for (let index = 0; index < cleanup.itemIds.length; index += 1) {
+    const cancelled = await page.request.post(
+      `${API}/api/v1/lab/items/${cleanup.itemIds[index]}/cancel/`,
+      {
+        headers: {
+          ...headers(session),
+          "Idempotency-Key": `s30-nfr-cleanup-${cleanup.suffix}-${index}`,
+        },
+        data: { reason: "Synthetic NFR cleanup" },
+      },
+    );
+    expect(cancelled.status(), await cancelled.text()).toBe(200);
+  }
+});
+
 test("S-11 orders from the Encounter, collects, releases and exposes the result", async ({
   page,
 }) => {
@@ -817,6 +843,11 @@ test("S-30 200-item lab worklist paginates and records p95", async ({ page }) =>
     },
   });
   expect(bulk.ok(), await bulk.text()).toBeTruthy();
+  const bulkBody = (await bulk.json()) as { items: Array<{ id: string }> };
+  pendingNfrCleanup = {
+    itemIds: bulkBody.items.map((item) => item.id),
+    suffix,
+  };
 
   const apiSamples: number[] = [];
   for (let index = 0; index < 10; index += 1) {
