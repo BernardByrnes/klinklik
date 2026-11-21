@@ -15,6 +15,9 @@ export type AppointmentNoShowCheckInResponse = { appointment_id: string; appoint
 export type ArrivalEnquiryResponse = { enquiry_id: string; };
 export type ArrivalEnquiryWrite = { reason_code: "NO_CLINICIAN" | "SERVICE_UNAVAILABLE" | "PRICE" | "REFERRED_OUT" | "OTHER"; source_event_id: string; safe_notes?: string; };
 export type CatalogueImport = { content: string; mode?: "ALL_OR_NOTHING" | "VALID_ROWS_ONLY"; template_version?: string; file_name?: string; file_hash?: string; };
+export type CatalogueImportResult = { file_hash: string; mode: string; imported: number; skipped: number; error_count: number; row_errors: Array<{ line: number; code: string; errors: Array<string>; }>; };
+export type CataloguePreview = { content: string; template_version?: string; };
+export type CataloguePreviewResponse = { file_hash: string; template_version: string; valid_rows: number; skipped: number; existing_codes: Array<string>; row_errors: Array<{ line: number; code: string; errors: Array<string>; }>; byte_count: number; row_count: number; max_bytes: number; max_rows: number; };
 export type CheckIn = { patient_id: string; department_id?: string; visit_type?: string; notes?: string; };
 export type CreditNote = { id: string; credit_no: string; invoice: string; amount: string; currency?: string; reason: string; status?: "ISSUED" | "VOIDED"; issued_at?: string; issued_by: string; voided_at?: string | null; voided_by?: string | null; version?: number; };
 export type CreditNoteIssue = { amount: string; reason: string; };
@@ -290,7 +293,9 @@ export type CreateStockAdjustmentApproveRequest = StockAdjustmentApprove;
 export type CreateStockAdjustmentApproveResponse = StockAdjustmentApprove;
 export type ListStockBatchesResponse = Array<unknown>;
 export type CreateCatalogueImportRequest = CatalogueImport;
-export type CreateCatalogueImportResponse = CatalogueImport;
+export type CreateCatalogueImportResponse = CatalogueImportResult;
+export type PreviewCatalogueImportRequest = CataloguePreview;
+export type PreviewCatalogueImportResponse = CataloguePreviewResponse;
 export type ListStockCountsResponse = StockCountList;
 export type CreateStockCountOpenRequest = StockCountOpen;
 export type CreateStockCountOpenResponse = StockCountOpen;
@@ -400,7 +405,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "fc89ad1c7df0c19d6cc510ccd7537b800e258b650ceb777ddfdc8b0aed91a3ea";
+export const GENERATED_API_CONTRACT_SHA256 = "817ee567c0d64859b07ad40e934884a30988bd27f9a21eb629c8f4fa82dd2115";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -822,6 +827,11 @@ export const GENERATED_API_OPERATIONS = [
     "method": "POST",
     "operationId": "createCatalogueImport",
     "path": "/api/v1/inventory/catalogue/import/"
+  },
+  {
+    "method": "POST",
+    "operationId": "previewCatalogueImport",
+    "path": "/api/v1/inventory/catalogue/import/preview/"
   },
   {
     "method": "GET",

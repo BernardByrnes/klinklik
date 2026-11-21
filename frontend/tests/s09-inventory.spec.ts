@@ -233,3 +233,231 @@ test("S-29-R3 uncertain receipt retry reuses one immutable intent", async ({ pag
   expect(receiptMovements[0].source_type).toBe("StockReceiptLine");
   expect(receiptMovements[0].source_id).toBeTruthy();
 });
+
+const CATALOGUE_HEADER =
+  "category,code,dispensing_unit,dosage_form,generic_name,active,brand_name,controlled,currency,effective_from,pack_description,pack_price,prescription_only,price,strength";
+
+function catalogueRow(code: string, packPrice = "") {
+  return `MEDICINE,${code},TABLET,TABLET,Synthetic Web ${code},true,,false,UGX,2026-01-01,,${packPrice},,100.00,500 mg`;
+}
+
+async function refreshSession(page: Page) {
+  const response = await page.request.post(`${API}/api/v1/auth/refresh/`);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const body = (await response.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  return {
+    Authorization: `Bearer ${body.access_token}`,
+    "X-Facility-Id": body.facilities[0].id,
+    "Content-Type": "application/json",
+  };
+}
+
+test("S-41 catalogue preview reviews errors and imports only valid rows", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const goodCode = `S41WEB${suffix}`;
+  const badCode = `S41BAD${suffix}`;
+  const content =
+    CATALOGUE_HEADER + "\n" + catalogueRow(goodCode) + "\n" + catalogueRow(badCode, "bad") + "\n";
+
+  await page.goto("/inventory");
+  await expect(page.getByRole("heading", { name: "Catalogue CSV review" })).toBeVisible();
+  const fileInput = page.getByLabel("Catalogue CSV file", { exact: true });
+  await fileInput.focus();
+  expect(await fileInput.evaluate((element) => element === document.activeElement)).toBe(true);
+  await fileInput.setInputFiles({
+    name: "s41-review.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(content, "utf-8"),
+  });
+
+  const previewPosted = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/inventory/catalogue/import/preview/") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Preview CSV", exact: true }).click();
+  expect((await previewPosted).status()).toBe(200);
+  const preview = page.locator("[data-catalogue-preview]");
+  await expect(preview).toContainText("s41-review.csv");
+  await expect(preview).toContainText("Accepted 1 · skipped 0 · errors 1");
+  await expect(preview).toContainText("Line 3: pack_price is invalid");
+  await expect(page.getByRole("button", { name: "Import catalogue", exact: true })).toBeDisabled();
+
+  // Changing the file invalidates the review rather than importing stale content.
+  await fileInput.setInputFiles({
+    name: "s41-review.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(content, "utf-8"),
+  });
+  await expect(preview).toHaveCount(0);
+
+  await page.getByLabel("Valid rows only", { exact: true }).check();
+  await page.getByRole("button", { name: "Preview CSV", exact: true }).click();
+  await expect(preview).toContainText("Accepted 1 · skipped 0 · errors 1");
+  await page.getByRole("button", { name: "Review valid rows only", exact: true }).click();
+  await expect(page.getByText(/eligible row\(s\) will be imported/)).toBeVisible();
+
+  const attempts: Array<{ key: string | undefined; body: string | null }> = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/inventory/catalogue/import/")
+    ) {
+      attempts.push({
+        key: request.headers()["idempotency-key"],
+        body: request.postData(),
+      });
+    }
+  });
+  const imported = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/inventory/catalogue/import/") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Confirm valid rows import", exact: true }).click();
+  expect((await imported).status()).toBe(201);
+  await expect(page.locator("[data-catalogue-result]")).toContainText("applied 1");
+  expect(attempts).toHaveLength(1);
+  const sent = JSON.parse(attempts[0].body ?? "{}") as {
+    file_hash: string;
+    content: string;
+    mode: string;
+  };
+  expect(sent.file_hash).toMatch(/^[0-9a-f]{64}$/);
+  expect(sent.content).toBe(content);
+  expect(sent.mode).toBe("VALID_ROWS_ONLY");
+  expect(await fileInput.inputValue()).toBe("");
+
+  const headers = await refreshSession(page);
+  const products = await page.request.get(`${API}/api/v1/inventory/products/`, { headers });
+  expect(products.ok(), await products.text()).toBeTruthy();
+  const productRows = (await products.json()) as Array<{ code: string }>;
+  expect(productRows.some((row) => row.code === goodCode)).toBe(true);
+  expect(productRows.some((row) => row.code === badCode)).toBe(false);
+});
+
+test("S-41 uncertain catalogue import retries the exact key at 390px", async ({ page }) => {
+  await login(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/inventory");
+  const suffix = Date.now().toString().slice(-6);
+  const code = `S41RETRY${suffix}`;
+  const content = CATALOGUE_HEADER + "\n" + catalogueRow(code) + "\n";
+  await page.getByLabel("Catalogue CSV file", { exact: true }).setInputFiles({
+    name: "s41-retry.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(content, "utf-8"),
+  });
+  await page.getByRole("button", { name: "Preview CSV", exact: true }).click();
+  await expect(page.locator("[data-catalogue-preview]")).toContainText("Accepted 1");
+
+  const attempts: Array<{ key: string | undefined; body: string | null }> = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/inventory/catalogue/import/")
+    ) {
+      attempts.push({
+        key: request.headers()["idempotency-key"],
+        body: request.postData(),
+      });
+    }
+  });
+  let lostResponse = false;
+  await page.route("**/api/v1/inventory/catalogue/import/", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    if (!lostResponse) {
+      lostResponse = true;
+      const committed = await route.fetch();
+      expect(committed.status()).toBe(201);
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: "Import catalogue", exact: true }).click();
+  await expect(page.locator("[data-catalogue-reconcile]")).toContainText(
+    "import response is uncertain",
+  );
+  expect(attempts).toHaveLength(1);
+
+  const retried = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/inventory/catalogue/import/") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Retry exact import", exact: true }).click();
+  expect((await retried).status()).toBe(201);
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1].key).toBe(attempts[0].key);
+  expect(attempts[1].body).toBe(attempts[0].body);
+  await expect(page.locator("[data-catalogue-result]")).toContainText("applied 1");
+});
+
+test("S-41 a duplicate conflict is reconciled from a fresh preview", async ({ page }) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6);
+  const duplicateCode = `S41DUP${suffix}`;
+  const newCode = `S41NEW${suffix}`;
+  await page.goto("/inventory");
+  const content = CATALOGUE_HEADER + "\n" + catalogueRow(duplicateCode) + "\n" + catalogueRow(newCode) + "\n";
+  await page.getByLabel("Catalogue CSV file", { exact: true }).setInputFiles({
+    name: "s41-conflict.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(content, "utf-8"),
+  });
+  await page.getByRole("button", { name: "Preview CSV", exact: true }).click();
+  const preview = page.locator("[data-catalogue-preview]");
+  await expect(preview).toContainText("Accepted 2 · skipped 0 · errors 0");
+
+  // A competing writer creates the duplicate after the review, so the server
+  // conflict is real even though the preview was clean.
+  const headers = await refreshSession(page);
+  const existing = await page.request.post(`${API}/api/v1/inventory/products/`, {
+    headers,
+    data: {
+      code: duplicateCode,
+      generic_name: `Synthetic Existing ${suffix}`,
+      dosage_form: "TABLET",
+      dispensing_unit: "TABLET",
+      category: "MEDICINE",
+    },
+  });
+  expect(existing.ok(), await existing.text()).toBeTruthy();
+
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/inventory/catalogue/import/") &&
+      response.request().method() === "POST" &&
+      response.status() === 409,
+  );
+  await page.getByRole("button", { name: "Import catalogue", exact: true }).click();
+  expect((await conflict).status()).toBe(409);
+  await expect(page.locator("[data-catalogue-reconcile]")).toContainText("reviewed file was refused");
+
+  await page.getByRole("button", { name: "Refresh preview", exact: true }).click();
+  await expect(preview).toContainText("Accepted 2 · skipped 1 · errors 0");
+  await page.getByLabel("Valid rows only", { exact: true }).check();
+  await page.getByRole("button", { name: "Preview CSV", exact: true }).click();
+  await expect(preview).toContainText("skipped 1");
+  await page.getByRole("button", { name: "Review valid rows only", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm valid rows import", exact: true }).click();
+  await expect(page.locator("[data-catalogue-result]")).toContainText("skipped 1");
+
+  const verified = await refreshSession(page);
+  const products = await page.request.get(`${API}/api/v1/inventory/products/`, {
+    headers: verified,
+  });
+  expect(products.ok(), await products.text()).toBeTruthy();
+  const rows = (await products.json()) as Array<{ code: string; generic_name: string }>;
+  expect(rows.filter((row) => row.code === duplicateCode)).toHaveLength(1);
+  expect(rows.find((row) => row.code === duplicateCode)?.generic_name).toBe(
+    `Synthetic Existing ${suffix}`,
+  );
+  expect(rows.some((row) => row.code === newCode)).toBe(true);
+});

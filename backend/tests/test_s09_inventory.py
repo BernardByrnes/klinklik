@@ -5,8 +5,18 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from rest_framework.test import APIClient
 
+from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
+from accounts.services import ensure_default_permissions
+from application.catalogue.imports import (
+    CATALOGUE_HEADER,
+    OPTIONAL_COLUMNS,
+    REQUIRED_COLUMNS,
+    validate_catalogue_csv,
+)
 from audit.models import AuditEvent
+from core.errors import CanonicalError
 from core.services import tenant_atomic
 from inventory.models import (
     BatchLocationBalance,
@@ -17,7 +27,7 @@ from inventory.models import (
 )
 from inventory.services import append_movement
 from pharmacy.models import MedicationProduct, ProductPrice
-from tenancy.models import FacilityWorkflowPolicy
+from tenancy.models import Department, Facility, FacilityWorkflowPolicy, Organisation
 
 pytestmark = pytest.mark.django_db
 
@@ -373,6 +383,403 @@ def test_s09_catalogue_import_is_atomic_and_controlled_rows_are_inactive(
         assert controlled.active is False
         assert ProductPrice.objects.filter(product__code="GOOD1").count() == 1
         assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 1
+
+
+CATALOGUE_COLUMNS = sorted(REQUIRED_COLUMNS) + sorted(OPTIONAL_COLUMNS)
+CATALOGUE_HEADER_LINE = CATALOGUE_HEADER + "\n"
+
+
+def _catalogue_csv(*rows):
+    lines = [CATALOGUE_HEADER_LINE]
+    for row in rows:
+        lines.append(",".join(str(row.get(column, "")) for column in CATALOGUE_COLUMNS) + "\n")
+    return "".join(lines)
+
+
+def _with_extra_column(content):
+    lines = content.rstrip("\n").split("\n")
+    lines[-1] += ",EXTRA"
+    return "\n".join(lines) + "\n"
+
+
+def _catalogue_row(code, **overrides):
+    row = {
+        "code": code,
+        "generic_name": f"Synthetic {code}",
+        "dosage_form": "TABLET",
+        "dispensing_unit": "TABLET",
+        "category": "MEDICINE",
+        "price": "100.00",
+        "effective_from": "2026-01-01",
+    }
+    row.update(overrides)
+    return row
+
+
+def _facility_client(tenant, facility, username, template="OWNER_ADMIN"):
+    with tenant_atomic(tenant.organisation.id):
+        user = User.objects.create_user(username, "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=user,
+            role=Role.objects.get(organisation=tenant.organisation, template_code=template),
+            facility=facility,
+        )
+    client = APIClient()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert login.status_code == 200, login.data
+    client.defaults["HTTP_X_FACILITY_ID"] = str(facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    return client
+
+
+def test_s41_ui_template_header_matches_owner_columns():
+    expected = (
+        "category,code,dispensing_unit,dosage_form,generic_name,active,brand_name,"
+        "controlled,currency,effective_from,pack_description,pack_price,"
+        "prescription_only,price,strength"
+    )
+    assert CATALOGUE_HEADER == expected
+    assert set(CATALOGUE_HEADER.split(",")) == REQUIRED_COLUMNS | OPTIONAL_COLUMNS
+
+
+def test_s41_service_parser_rejects_structural_and_value_gaps():
+    duplicate_header = CATALOGUE_HEADER.replace("code,", "code,code,", 1)
+    with pytest.raises(CanonicalError) as duplicate:
+        validate_catalogue_csv(duplicate_header)
+    assert duplicate.value.code == "INVALID_INPUT"
+    assert "duplicate_headers" in duplicate.value.metadata
+
+    wide = _with_extra_column(_catalogue_csv(_catalogue_row("WIDE1")))
+    rows, errors, _digest = validate_catalogue_csv(wide)
+    assert rows == []
+    assert any("columns" in item for item in errors[0]["errors"])
+
+    bad_values = _catalogue_csv(
+        _catalogue_row(
+            "X" * 61,
+            controlled="maybe",
+            pack_price="not-a-price",
+            price="1.234",
+            effective_from="2026-13-40",
+        )
+    )
+    rows, errors, _digest = validate_catalogue_csv(bad_values)
+    assert rows == []
+    joined = " ".join(errors[0]["errors"])
+    assert "controlled" in joined
+    assert "pack_price" in joined
+    assert "price" in joined
+    assert "effective_from" in joined
+    assert "code" in joined
+
+
+def test_s41_preview_is_side_effect_free_and_facility_scoped(tenant, authed_client):
+    _product(authed_client, code="EXIST1")
+    with tenant_atomic(tenant.organisation.id):
+        other_facility = Facility.objects.create(
+            organisation=tenant.organisation,
+            name="S41 Other Facility",
+            code="S41-OTHER",
+            mode="CLINIC",
+        )
+        MedicationProduct.objects.create(
+            organisation=tenant.organisation,
+            facility=other_facility,
+            code="OTHER1",
+            generic_name="Synthetic Other Facility",
+            dosage_form="TABLET",
+            dispensing_unit="TABLET",
+            category="MEDICINE",
+        )
+    content = _catalogue_csv(
+        _catalogue_row("EXIST1"),
+        _catalogue_row("NEW1"),
+        _catalogue_row("OTHER1"),
+    )
+    preview = authed_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content, "template_version": "1"},
+        format="json",
+    )
+    assert preview.status_code == 200, preview.data
+    assert len(preview.data["file_hash"]) == 64
+    assert preview.data["template_version"] == "1"
+    assert preview.data["valid_rows"] == 3
+    assert preview.data["skipped"] == 1
+    assert preview.data["row_errors"] == []
+    assert preview.data["max_bytes"] > 0
+    assert preview.data["max_rows"] > 0
+
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.filter(facility=tenant.facility).count() == 1
+        assert ProductPrice.objects.filter(facility=tenant.facility).count() == 0
+        assert StockMovement.objects.count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 0
+
+    wrong_role = _facility_client(
+        tenant, other_facility, "s41-preview-wrong-role", "NURSE_TRIAGE"
+    )
+    denied = wrong_role.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content},
+        format="json",
+    )
+    assert denied.status_code == 403
+    assert "file_hash" not in denied.data
+
+    other_facility_client = _facility_client(
+        tenant, other_facility, "s41-preview-other-facility"
+    )
+    facility_view = other_facility_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content},
+        format="json",
+    )
+    assert facility_view.status_code == 200, facility_view.data
+    assert facility_view.data["skipped"] == 1
+    assert facility_view.data["existing_codes"] == ["OTHER1"]
+    assert "EXIST1" not in facility_view.data["existing_codes"]
+
+    with tenant_atomic(tenant.organisation.id):
+        other_org = Organisation.objects.create(
+            name="S41 Other Clinic", slug="s41-other-clinic"
+        )
+        ensure_default_permissions(other_org)
+        other_org_facility = Facility.objects.create(
+            organisation=other_org, name="S41 Org Facility", code="S41-ORG", mode="CLINIC"
+        )
+        other_department = Department.objects.create(
+            organisation=other_org,
+            facility=other_org_facility,
+            name="Outpatient",
+            code="OPD",
+        )
+        user = User.objects.create_user("s41-preview-other-org", "test-password-123")
+        OrganisationMembership.objects.create(organisation=other_org, user=user)
+        UserFacilityRole.objects.create(
+            organisation=other_org,
+            user=user,
+            role=Role.objects.get(organisation=other_org, template_code="OWNER_ADMIN"),
+            facility=other_org_facility,
+            department=other_department,
+        )
+        other_org_id = str(other_org.id)
+        other_org_facility_id = str(other_org_facility.id)
+    foreign_client = APIClient()
+    login = foreign_client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": "s41-preview-other-org",
+            "password": "test-password-123",
+            "organisation_id": other_org_id,
+        },
+        format="json",
+    )
+    assert login.status_code == 200, login.data
+    foreign_client.defaults["HTTP_X_FACILITY_ID"] = other_org_facility_id
+    foreign_client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    foreign = foreign_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content},
+        format="json",
+    )
+    assert foreign.status_code == 200, foreign.data
+    assert foreign.data["skipped"] == 0
+    assert "EXIST1" not in foreign.data["existing_codes"]
+    assert "OTHER1" not in foreign.data["existing_codes"]
+
+
+def test_s41_preview_closes_parser_gaps_without_writing(tenant, authed_client):
+    duplicate_header = CATALOGUE_HEADER.replace("code,", "code,code,", 1)
+    structural = authed_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": duplicate_header},
+        format="json",
+    )
+    assert structural.status_code == 400
+    assert structural.data["code"] == "INVALID_INPUT"
+
+    cases = {
+        "duplicate_codes": (
+            _catalogue_csv(_catalogue_row("DUP1"), _catalogue_row("DUP1")),
+            1,
+        ),
+        "row_width": (
+            _with_extra_column(_catalogue_csv(_catalogue_row("WIDE1"))),
+            0,
+        ),
+        "classification": (
+            _catalogue_csv(_catalogue_row("FLAG1", controlled="maybe")),
+            0,
+        ),
+        "pack_price": (
+            _catalogue_csv(_catalogue_row("PACK1", pack_price="not-a-price")),
+            0,
+        ),
+        "price": (_catalogue_csv(_catalogue_row("PRICE1", price="1.234")), 0),
+        "effective_from": (
+            _catalogue_csv(_catalogue_row("DATE1", effective_from="2026-13-40")),
+            0,
+        ),
+        "field_limit": (_catalogue_csv(_catalogue_row("X" * 61)), 0),
+    }
+    for label, (content, expected_valid) in cases.items():
+        result = authed_client.post(
+            "/api/v1/inventory/catalogue/import/preview/",
+            {"content": content},
+            format="json",
+        )
+        assert result.status_code == 200, (label, result.data)
+        assert result.data["valid_rows"] == expected_valid, (label, result.data)
+        assert result.data["row_errors"], label
+        assert result.data["row_errors"][0]["line"] >= 2, label
+
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.count() == 0
+        assert ProductPrice.objects.count() == 0
+        assert StockMovement.objects.count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 0
+
+
+def test_s41_unicode_and_empty_defaults_import_without_a_price(tenant, authed_client):
+    content = _catalogue_csv(
+        _catalogue_row(
+            "UNI1",
+            generic_name="Synthétique α",
+            category="",
+            prescription_only="",
+            controlled="",
+            active="",
+            currency="",
+            price="",
+            effective_from="",
+            pack_price="",
+        )
+    )
+    preview = authed_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content},
+        format="json",
+    )
+    assert preview.status_code == 200, preview.data
+    assert preview.data["valid_rows"] == 1
+
+    imported = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {
+            "content": content,
+            "mode": "VALID_ROWS_ONLY",
+            "file_hash": preview.data["file_hash"],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s41-unicode-import",
+    )
+    assert imported.status_code == 201, imported.data
+    assert imported.data["imported"] == 1
+    with tenant_atomic(tenant.organisation.id):
+        product = MedicationProduct.objects.get(code="UNI1")
+        assert product.generic_name == "Synthétique α"
+        assert product.category == "MEDICINE"
+        assert product.prescription_only is True
+        assert product.controlled is False
+        assert product.active is True
+        assert ProductPrice.objects.filter(product=product).count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 1
+
+
+def test_s41_import_modes_hash_and_lost_response_replay(tenant, authed_client):
+    _product(authed_client, code="DUP1")
+    content = _catalogue_csv(
+        _catalogue_row("DUP1"),
+        _catalogue_row("NEW2"),
+        _catalogue_row("BAD2", pack_price="bad"),
+    )
+    preview = authed_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content},
+        format="json",
+    )
+    assert preview.status_code == 200, preview.data
+    assert preview.data["valid_rows"] == 2
+    assert preview.data["skipped"] == 1
+    assert len(preview.data["row_errors"]) == 1
+
+    strict = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {
+            "content": content,
+            "mode": "ALL_OR_NOTHING",
+            "file_hash": preview.data["file_hash"],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s41-strict-import",
+    )
+    assert strict.status_code == 400
+    assert strict.data["row_errors"][0]["line"] == 4
+
+    partial = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {
+            "content": content,
+            "mode": "VALID_ROWS_ONLY",
+            "file_hash": preview.data["file_hash"],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s41-partial-import",
+    )
+    assert partial.status_code == 201, partial.data
+    assert partial.data["imported"] == 1
+    assert partial.data["skipped"] == 1
+    assert partial.data["error_count"] == 1
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.filter(code="BAD2").count() == 0
+        assert ProductPrice.objects.filter(product__code="NEW2").count() == 1
+        assert StockMovement.objects.count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 1
+
+    mismatched = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {
+            "content": content,
+            "mode": "VALID_ROWS_ONLY",
+            "file_hash": "0" * 64,
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s41-hash-mismatch",
+    )
+    assert mismatched.status_code == 400
+    assert mismatched.data["detail"] == "The file hash does not match."
+
+    replay_content = _catalogue_csv(_catalogue_row("REPLAY1"))
+    first = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {"content": replay_content, "mode": "ALL_OR_NOTHING"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s41-lost-import",
+    )
+    assert first.status_code == 201, first.data
+    replay = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {"content": replay_content, "mode": "ALL_OR_NOTHING"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s41-lost-import",
+    )
+    assert replay.status_code == 201, replay.data
+    assert replay.headers["Idempotent-Replay"] == "true"
+    assert replay.data["file_hash"] == first.data["file_hash"]
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.filter(code="REPLAY1").count() == 1
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 2
 
 
 def test_s09_product_deactivation_requires_zero_stock(tenant, authed_client):

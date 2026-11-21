@@ -11,6 +11,7 @@ from django.db import close_old_connections, connection, transaction
 from django.db.utils import DatabaseError
 
 from accounts.models import User
+from audit.models import AuditEvent
 from core.errors import CanonicalError
 from core.rls import rls_status
 from core.services import tenant_atomic
@@ -22,6 +23,12 @@ from inventory.models import (
 )
 from inventory.services import adjust_stock, append_movement, receive_stock
 from pharmacy.models import MedicationProduct, ProductPrice
+from tenancy.models import Facility
+from tests.test_s09_inventory import (
+    _catalogue_csv,
+    _catalogue_row,
+    _facility_client,
+)
 
 pytestmark = [
     pytest.mark.django_db(transaction=True),
@@ -251,3 +258,80 @@ def test_pg_s09_multi_line_receipt_and_quarantined_availability(tenant, authed_c
     row = next(item for item in summary.data if item["product_id"] == product["id"])
     assert row["usable_quantity"] == "50.00"
     assert row["total_quantity"] == "50.00"
+
+
+def test_pg_s41_catalogue_preview_writes_nothing_and_import_stays_scoped(
+    tenant, authed_client
+):
+    status = rls_status()
+    assert status["enforced"] is True
+    assert status["role"]["bypass_rls"] is False
+
+    content = _catalogue_csv(
+        _catalogue_row("PGCAT1", pack_price="900.00"),
+        _catalogue_row("PGCTRL1", controlled="true"),
+    )
+    preview = authed_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": content},
+        format="json",
+    )
+    assert preview.status_code == 200, preview.data
+    assert preview.data["valid_rows"] == 2
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.count() == 0
+        assert ProductPrice.objects.count() == 0
+        assert StockMovement.objects.count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 0
+
+    imported = authed_client.post(
+        "/api/v1/inventory/catalogue/import/",
+        {"content": content, "mode": "ALL_OR_NOTHING"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="pg-s41-catalogue-import",
+    )
+    assert imported.status_code == 201, imported.data
+    assert imported.data["imported"] == 2
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.filter(
+            code__in=["PGCAT1", "PGCTRL1"]
+        ).count() == 2
+        assert MedicationProduct.objects.get(code="PGCTRL1").active is False
+        assert ProductPrice.objects.count() == 2
+        assert ProductPrice.objects.get(product__code="PGCAT1").pack_price == Decimal("900.00")
+        assert StockMovement.objects.count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 1
+
+    with tenant_atomic(tenant.organisation.id):
+        other_facility = Facility.objects.create(
+            organisation=tenant.organisation,
+            name="S41 PG Facility",
+            code="S41-PG",
+            mode="CLINIC",
+        )
+        MedicationProduct.objects.create(
+            organisation=tenant.organisation,
+            facility=other_facility,
+            code="PGOTHER1",
+            generic_name="Synthetic PG Other",
+            dosage_form="TABLET",
+            dispensing_unit="TABLET",
+            category="MEDICINE",
+        )
+    other_content = _catalogue_csv(_catalogue_row("PGOTHER1"))
+    current = authed_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": other_content},
+        format="json",
+    )
+    assert current.status_code == 200, current.data
+    assert current.data["skipped"] == 0
+    other_client = _facility_client(tenant, other_facility, "pg-s41-other-facility")
+    scoped = other_client.post(
+        "/api/v1/inventory/catalogue/import/preview/",
+        {"content": other_content},
+        format="json",
+    )
+    assert scoped.status_code == 200, scoped.data
+    assert scoped.data["skipped"] == 1
+    assert scoped.data["existing_codes"] == ["PGOTHER1"]

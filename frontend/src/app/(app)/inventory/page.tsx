@@ -15,6 +15,7 @@ import { isIntentActive, registerIntent, resolveIntent } from "../../../lib/inte
 import { shouldRegisterIntent } from "../../../lib/recovery";
 import { useSession } from "../../../lib/session";
 import { IconBilling, IconCheckCircle } from "../../../components/icons";
+import CatalogueImportPanel from "../../../features/inventory/CatalogueImportPanel";
 import {
   Button,
   Card,
@@ -577,6 +578,8 @@ export default function InventoryPage() {
             </ul>
           )}
         </Card>
+
+        <CatalogueImportPanel />
 
         <div className="grid gap-5 xl:grid-cols-2">
           <Card>

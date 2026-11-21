@@ -76,6 +76,39 @@ class CatalogueImportSerializer(serializers.Serializer):
     file_hash = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class CataloguePreviewSerializer(serializers.Serializer):
+    content = serializers.CharField()
+    template_version = serializers.CharField(required=False, default="1")
+
+
+class CatalogueRowErrorSerializer(serializers.Serializer):
+    line = serializers.IntegerField()
+    code = serializers.CharField()
+    errors = serializers.ListField(child=serializers.CharField())
+
+
+class CataloguePreviewResponseSerializer(serializers.Serializer):
+    file_hash = serializers.CharField()
+    template_version = serializers.CharField()
+    valid_rows = serializers.IntegerField()
+    skipped = serializers.IntegerField()
+    existing_codes = serializers.ListField(child=serializers.CharField())
+    row_errors = CatalogueRowErrorSerializer(many=True)
+    byte_count = serializers.IntegerField()
+    row_count = serializers.IntegerField()
+    max_bytes = serializers.IntegerField()
+    max_rows = serializers.IntegerField()
+
+
+class CatalogueImportResultSerializer(serializers.Serializer):
+    file_hash = serializers.CharField()
+    mode = serializers.CharField()
+    imported = serializers.IntegerField()
+    skipped = serializers.IntegerField()
+    error_count = serializers.IntegerField()
+    row_errors = CatalogueRowErrorSerializer(many=True)
+
+
 class StockLocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockLocation

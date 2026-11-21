@@ -1,6 +1,7 @@
 from django.urls import path
 
 from inventory.views import (
+    CatalogueImportPreviewView,
     CatalogueImportView,
     DisposalView,
     InventoryLedgerExportView,
@@ -33,6 +34,11 @@ urlpatterns = [
     path("products/", ProductListCreateView.as_view(), name="inventory-products"),
     path("products/<uuid:pk>/deactivate/", ProductDeactivateView.as_view(), name="inventory-product-deactivate"),
     path("prices/", ProductPriceView.as_view(), name="inventory-price-set"),
+    path(
+        "catalogue/import/preview/",
+        CatalogueImportPreviewView.as_view(),
+        name="inventory-catalogue-import-preview",
+    ),
     path("catalogue/import/", CatalogueImportView.as_view(), name="inventory-catalogue-import"),
     path("locations/", StockLocationListCreateView.as_view(), name="inventory-locations"),
     path("suppliers/", SupplierListCreateView.as_view(), name="inventory-suppliers"),

@@ -4,7 +4,7 @@ from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from application.catalogue.imports import import_catalogue
+from application.catalogue.imports import import_catalogue, preview_catalogue_import
 from core.errors import CanonicalError
 from core.tenant_api import TenantAPIView
 from inventory.models import (
@@ -18,7 +18,10 @@ from inventory.models import (
 )
 from inventory.serializers import (
     AdjustmentSerializer,
+    CatalogueImportResultSerializer,
     CatalogueImportSerializer,
+    CataloguePreviewResponseSerializer,
+    CataloguePreviewSerializer,
     DisposalSerializer,
     FefoSerializer,
     MovementSerializer,
@@ -166,9 +169,31 @@ class ProductDeactivateView(TenantAPIView):
         return Response(ProductSerializer(product).data)
 
 
+class CatalogueImportPreviewView(TenantAPIView):
+    """Validation-only projection; no catalogue record or audit is written."""
+
+    capability = "catalogue.import"
+    serializer_class = CataloguePreviewSerializer
+    response_serializer_class = CataloguePreviewResponseSerializer
+    response_is_list = False
+    operation_id = "previewCatalogueImport"
+
+    def post(self, request):
+        serializer = CataloguePreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = preview_catalogue_import(
+            organisation=request.organisation,
+            facility=request.facility,
+            **serializer.validated_data,
+        )
+        return Response(CataloguePreviewResponseSerializer(result).data)
+
+
 class CatalogueImportView(TenantAPIView):
     capability = "catalogue.import"
     serializer_class = CatalogueImportSerializer
+    response_serializer_class = CatalogueImportResultSerializer
+    response_is_list = False
     idempotency_operation = "CMD-091"
     requires_idempotency = True
 
@@ -182,7 +207,7 @@ class CatalogueImportView(TenantAPIView):
             request=request,
             **serializer.validated_data,
         )
-        return Response(result, status=status.HTTP_201_CREATED)
+        return Response(CatalogueImportResultSerializer(result).data, status=status.HTTP_201_CREATED)
 
 
 class StockLocationListCreateView(TenantAPIView):
