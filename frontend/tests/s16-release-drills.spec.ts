@@ -673,9 +673,17 @@ test("S-42 deliberate exit clears the old workspace before the logout response",
   // network request is still outstanding.
   await expect(root).toHaveCount(0);
   await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+  await expect(page.getByText(/Server sign-out could not be confirmed/)).toHaveCount(0);
 
+  // Ensure the login page is mounted before the late logout failure writes the marker.
+  await expect(page.getByLabel("Username", { exact: true })).toBeVisible();
   releaseLogout?.();
   await expect(page).toHaveURL(/\/login$/);
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("klinklik:logout-unconfirmed")))
+    .toBe("1");
+  // The already-mounted login page must report the late failure without a reload.
+  await expect(page.getByText(/Server sign-out could not be confirmed/)).toBeVisible();
   await page.waitForTimeout(1500);
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByLabel("Username", { exact: true })).toHaveValue("");
@@ -684,6 +692,30 @@ test("S-42 deliberate exit clears the old workspace before the logout response",
   await expect(page).toHaveURL(/\/login$/);
   await page.reload();
   await expect(page).toHaveURL(/\/login$/);
+});
+
+test("S-42 blocked marker storage still clears the former workspace", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => {
+      throw new Error("localStorage writes are blocked");
+    };
+  });
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+  await startPendingRegistration(page, `Blocked${Date.now().toString().slice(-6)}`);
+  const root = page.locator("[data-authority-epoch]");
+  expect(await root.getAttribute("data-authority-epoch")).toBeTruthy();
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(root).toHaveCount(0);
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByLabel("Username", { exact: true })).toHaveValue("");
+  await page.waitForTimeout(1500);
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(root).toHaveCount(0);
 });
 
 test("S-42 one tab's deliberate exit clears another open tab", async ({ page }) => {

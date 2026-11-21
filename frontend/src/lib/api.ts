@@ -148,12 +148,13 @@ export async function login(username: string, password: string, organisationId?:
   return data as ApiSession;
 }
 
-export async function logout(): Promise<{ revoked: boolean }> {
+export async function logout(): Promise<{ revoked: boolean; owned: boolean }> {
   cancelProtectedRequests();
   const generation = sessionGeneration;
   const bearer = accessToken;
   const exitFacility = facilityId;
   let revoked = false;
+  let owned = false;
   try {
     if (bearer) {
       const response = await fetch(API_URL + "/api/v1/auth/logout/", {
@@ -171,13 +172,14 @@ export async function logout(): Promise<{ revoked: boolean }> {
   } finally {
     // A newer explicit sign-in owns the module state now; never clear it from
     // an older exit request that completes late.
-    if (generation === sessionGeneration) {
+    owned = generation === sessionGeneration;
+    if (owned) {
       accessToken = null;
       facilityId = null;
       clearAuthority();
     }
   }
-  return { revoked };
+  return { revoked, owned };
 }
 
 function attachExternalAbort(signal: AbortSignal | null | undefined, controller: AbortController) {

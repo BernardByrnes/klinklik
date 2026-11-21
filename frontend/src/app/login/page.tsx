@@ -6,7 +6,11 @@ import { useRouter } from "next/navigation";
 import { BrandMark } from "../../components/icons";
 import { Button, ErrorBanner, Field, TextInput } from "../../components/ui";
 import { QueryProvider } from "../../components/QueryProvider";
-import { logoutUnconfirmed } from "../../lib/exit-marker";
+import {
+  LOGOUT_UNCONFIRMED_KEY,
+  logoutUnconfirmed,
+  subscribeExitMarker,
+} from "../../lib/exit-marker";
 import { landingRoute } from "../../lib/roles";
 import { SessionProvider, useSession } from "../../lib/session";
 
@@ -32,8 +36,12 @@ function LoginCard() {
 
   useEffect(() => {
     setRevocationUnconfirmed(logoutUnconfirmed());
+    const unsubscribe = subscribeExitMarker((key, value) => {
+      if (key === LOGOUT_UNCONFIRMED_KEY) setRevocationUnconfirmed(value);
+    });
     // Marks client hydration; e2e waits for this before interacting.
     document.documentElement.dataset.appReady = "1";
+    return unsubscribe;
   }, []);
 
   async function submit(event: FormEvent) {

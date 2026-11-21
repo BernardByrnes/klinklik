@@ -135,8 +135,8 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
     clearAuthority();
     const cleanup = clearProtectedState(queryClient);
     await cleanup;
-    const { revoked } = await apiLogout();
-    if (!revoked) markLogoutUnconfirmed();
+    const { revoked, owned } = await apiLogout();
+    if (!revoked && owned) markLogoutUnconfirmed();
   }, [queryClient]);
 
   const signOut = useCallback(() => performExit(), [performExit]);
