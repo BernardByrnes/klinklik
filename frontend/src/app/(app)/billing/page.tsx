@@ -1078,7 +1078,7 @@ function BillingWorkspace() {
                 </Button>
               </div>
             ) : activeShift ? (
-              <>
+              <div className="space-y-3" data-active-shift>
                 <p className="text-[12.5px] font-medium text-ink">
                   Shift open since {formatDate(activeShift.opened_at)} · opening float{" "}
                   {activeShift.opening_float}
@@ -1111,7 +1111,7 @@ function BillingWorkspace() {
                 <p className="text-[11.5px] font-medium text-muted">
                   Expected cash and variance are shown only after your blind count is committed.
                 </p>
-              </>
+              </div>
             ) : (
               <>
                 <p className="text-[12.5px] font-medium text-secondary">

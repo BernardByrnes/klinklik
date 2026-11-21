@@ -107,9 +107,10 @@ test("S-05 cashier opens a shift, collects exactly, reprints and reverses before
   await page.getByRole("button", { name: "Open shift", exact: true }).click();
   expect((await shiftOpened).status()).toBe(201);
   await expect(page.getByText(/Shift open since/)).toBeVisible();
-  // The blind boundary is removed from the open drawer: no tender totals are
-  // available through this card until a committed close is shown.
-  await expect(page.getByRole("button", { name: "Load Z-report", exact: true })).toHaveCount(0);
+  // The blind boundary is removed from the ACTIVE drawer. A previous closed
+  // shift may correctly expose its own report control in the same card.
+  const activeDrawer = page.locator("[data-active-shift]");
+  await expect(activeDrawer.getByRole("button", { name: "Load Z-report", exact: true })).toHaveCount(0);
 
   // First payment: shift-bound canonical command.
   await steadyFill(page, "Amount (UGX)", "10000.00");
