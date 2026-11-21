@@ -37,6 +37,9 @@ def test_s26_dossier_counts_match_s17_artifact_and_keep_owner_limits():
     ):
         assert f'`{s35_sha}`' in text
     assert 'audit-q1-q5-r1-r6-f1-f4.md' in text
+    assert 'independent audit `audit-q1-q5-r1-r6-f1-f4.md` (owner workspace; not a repository link)' in text
+    assert '[S-35 handback](../implementation/s35-audit-repairs-handback.md)' in text
+    assert '](../implementation/audit-q1-q5-r1-r6-f1-f4.md)' not in text
     assert '409 `RESULT_NOT_SUBMITTED`' in text
     assert 'HTTP 200 `CONFIRMED`' in text
     assert 'HTTP 500' in text and 'DRF 401' in text

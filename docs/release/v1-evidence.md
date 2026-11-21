@@ -71,7 +71,7 @@ Gate evidence: browser s16-release-drills.spec.ts 6 passed on a fresh seeded sta
 
 ### Independent audit repair batch (S-35) — accepted and published at `51a3e8d`
 
-Audit source: [`audit-q1-q5-r1-r6-f1-f4.md`](../implementation/audit-q1-q5-r1-r6-f1-f4.md). Each fix was supervisor-red-proven at its pre-fix commit before acceptance; the closing SHA series from `858f364` is `e84ed82`, `2295b74`, `b86a405`, `531dacf`, `f45c76f`, `56e3a59`, `a2c834a`, `0247b14`, `51a3e8d`. No S-35 commit has been amended or rewritten.
+Audit source: independent audit `audit-q1-q5-r1-r6-f1-f4.md` (owner workspace; not a repository link). Published repair record: [S-35 handback](../implementation/s35-audit-repairs-handback.md). Each fix was supervisor-red-proven at its pre-fix commit before acceptance; the closing SHA series from `858f364` is `e84ed82`, `2295b74`, `b86a405`, `531dacf`, `f45c76f`, `56e3a59`, `a2c834a`, `0247b14`, `51a3e8d`. No S-35 commit has been amended or rewritten.
 
 | Fix | SHA | One-line outcome and red proof |
 | --- | --- | --- |
