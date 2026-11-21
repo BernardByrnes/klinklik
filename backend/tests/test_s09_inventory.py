@@ -1,5 +1,6 @@
 """S-09 inventory foundations: receiving, ledger, FEFO, import and alerts."""
 
+import time
 from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -450,6 +451,63 @@ def test_s41_ui_template_header_matches_owner_columns():
     )
     assert CATALOGUE_HEADER == expected
     assert set(CATALOGUE_HEADER.split(",")) == REQUIRED_COLUMNS | OPTIONAL_COLUMNS
+
+
+def test_s41_service_oversized_csv_field_is_a_typed_input_error():
+    with pytest.raises(CanonicalError) as failure:
+        validate_catalogue_csv("a" * 200000)
+    assert failure.value.code == "INVALID_INPUT"
+    assert failure.value.status_code == 400
+    assert "a" * 200000 not in str(failure.value)
+
+
+def test_s41_large_header_validation_is_linear():
+    duplicate_header = ",".join([""] * 64000) + "\n"
+    started = time.monotonic()
+    with pytest.raises(CanonicalError) as duplicate:
+        validate_catalogue_csv(duplicate_header)
+    duplicate_elapsed = time.monotonic() - started
+    assert duplicate_elapsed < 2, duplicate_elapsed
+    assert duplicate.value.code == "INVALID_INPUT"
+    assert "duplicate_headers" in duplicate.value.metadata
+
+    unknown_header = ",".join(f"c{index}" for index in range(64000)) + "\n"
+    started = time.monotonic()
+    with pytest.raises(CanonicalError) as unknown:
+        validate_catalogue_csv(unknown_header)
+    unknown_elapsed = time.monotonic() - started
+    assert unknown_elapsed < 2, unknown_elapsed
+    assert unknown.value.code == "INVALID_INPUT"
+    assert "unknown_columns" in unknown.value.metadata
+
+
+def test_s41_preview_and_commit_oversized_field_return_400(tenant, authed_client):
+    original_raise = authed_client.raise_request_exception
+    authed_client.raise_request_exception = False
+    try:
+        preview = authed_client.post(
+            "/api/v1/inventory/catalogue/import/preview/",
+            {"content": "a" * 200000},
+            format="json",
+        )
+        assert preview.status_code == 400, preview.data
+        assert preview.data["code"] == "INVALID_INPUT"
+        assert "a" * 200000 not in str(preview.data)
+
+        commit = authed_client.post(
+            "/api/v1/inventory/catalogue/import/",
+            {"content": "a" * 200000, "mode": "ALL_OR_NOTHING"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="s41-oversized-field",
+        )
+        assert commit.status_code == 400, commit.data
+        assert commit.data["code"] == "INVALID_INPUT"
+        assert "a" * 200000 not in str(commit.data)
+    finally:
+        authed_client.raise_request_exception = original_raise
+    with tenant_atomic(tenant.organisation.id):
+        assert MedicationProduct.objects.count() == 0
+        assert AuditEvent.objects.filter(event_code="CATALOGUE_IMPORTED").count() == 0
 
 
 def test_s41_service_parser_rejects_structural_and_value_gaps():

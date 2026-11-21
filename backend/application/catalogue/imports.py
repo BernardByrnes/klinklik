@@ -3,6 +3,7 @@
 import csv
 import hashlib
 import io
+from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -65,6 +66,15 @@ def _decode_content(content):
     return raw, content
 
 
+def _iter_csv_rows(reader):
+    try:
+        yield from enumerate(reader, start=2)
+    except csv.Error as exc:
+        raise CanonicalError(
+            "INVALID_INPUT", "The CSV could not be parsed.", status_code=400
+        ) from exc
+
+
 def _parse_bool(value, field, default, row_errors):
     text = str(value or "").strip().lower()
     if not text:
@@ -122,10 +132,17 @@ def validate_catalogue_csv(content, *, template_version=CATALOGUE_TEMPLATE_VERSI
         raise CanonicalError("INVALID_INPUT", "The catalogue file is empty.", status_code=400)
 
     reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames is None:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as exc:
+        raise CanonicalError(
+            "INVALID_INPUT", "The CSV could not be parsed.", status_code=400
+        ) from exc
+    if fieldnames is None:
         raise CanonicalError("INVALID_INPUT", "The CSV header is missing.", status_code=400)
-    headers = [str(name or "").strip().lstrip("\ufeff").lower() for name in reader.fieldnames]
-    duplicates = sorted({name for name in headers if headers.count(name) > 1})
+    headers = [str(name or "").strip().lstrip("\ufeff").lower() for name in fieldnames]
+    counts = Counter(headers)
+    duplicates = sorted(name for name, count in counts.items() if count > 1)
     if duplicates:
         raise CanonicalError(
             "INVALID_INPUT",
@@ -155,7 +172,7 @@ def validate_catalogue_csv(content, *, template_version=CATALOGUE_TEMPLATE_VERSI
     errors = []
     seen_codes = set()
     row_count = 0
-    for line_no, raw_row in enumerate(reader, start=2):
+    for line_no, raw_row in _iter_csv_rows(reader):
         row_count += 1
         if row_count > MAX_CATALOGUE_ROWS:
             raise CanonicalError(
