@@ -28,11 +28,56 @@ Base: `858f364`. Branch/worktree: `codex/s35-audit-repairs` at `K:/klinklik-s35-
 - Focused SQLite lane (`s02`, `s09`, `s10`, `s11`, `s12`, `session_roles`): **135 passed**.
 - Focused PostgreSQL lane under `clinicopus_app` (`clinicopus_app_test`, non-BYPASS): **44 passed, 1 skipped** (owner-DSN guard only).
 - Owner-DSN guard proof (`S02_OWNER_DSN` configured): **3 passed**.
-- Full SQLite suite at the final code tip: **494 passed, 103 skipped in 263.43s**. Before the trailing pointer refresh it was 486 passed / 2 failed (and an intermediate run was 492 passed / 2 failed) from shifted S-22 evidence line numbers; classification signature stayed exactly `NAMING_MAPPING 20 / MISSING_EMISSION 15 / REGISTRY_SUPERSEDED 2`, and all per-entry notes/risk classes were byte-identical.
+- Full SQLite suite at the final code tip: **494 passed, 103 skipped in 220.55s**. Before the trailing pointer refresh it was 486 passed / 2 failed (and an intermediate run was 492 passed / 2 failed) from shifted S-22 evidence line numbers; classification signature stayed exactly `NAMING_MAPPING 20 / MISSING_EMISSION 15 / REGISTRY_SUPERSEDED 2`, and all per-entry notes/risk classes were byte-identical.
 - S-00 PostgreSQL proof and `check_rls --require-postgres`: **PASS** after seeding the deterministic proof organisation in `test_clinicopus`; `check_s00_migration_state.py`: **PASS**.
 - Browser lanes: s16 10 passed, s10 5 passed, s11 7 passed, s12 2 passed, billing-handoff-edges 5 passed, s09 2 passed. Fix 1 and the 200-item NFR test were proven in both orders using a temporary reversed-order spec that was removed afterwards. The 200-item fixture now has an `afterEach` teardown that cancels the synthetic lab items with fresh credentials; the full s11 file was run **twice consecutively on the same database** (`s35-s11-twice.sqlite3`) with **7 passed / 1.5m** then **7 passed / 1.7m**, proving later lab tests no longer starve on reused DB state.
 - Engineering gates: `manage.py check` clean; `makemigrations --check --dry-run` no changes; generated API client regenerated and clean; `tools/validate_s00.py` PASS; `tools/check_s00_migration_contract.py` PASS; lint/typecheck/build PASS; `git diff --check` PASS.
 - Canonical production NFR at `400 kbps / 300 ms RTT` (`frontend/scripts/measure-s35-nfr.mjs`): cold **5,440 ms**, warm p95 **92 ms**; cold shell transfer **156,428 bytes** (Script 145,570 + Stylesheet 8,057 + Document 2,801), warm route JS p95 **7,729 bytes**. All inside 8 s / 2.5 s and 180 KB / 120 KB. All-bytes cold transfer was 208,129 bytes including 48,732 font bytes and 2,969 fetch bytes; recorded separately, not included in the shell budget.
+- Rotation/sync browser coverage (`frontend/tests/s35-fix6-rotation.spec.ts`): **3 passed** at the final tip. The non-default-facility refresh test is red at `f45c76f` (epoch `2 → 3` captured via the neutral `data-authority-epoch` shell hook); the stale-refresh/logout and pending-fetch/facility-switch cases pass at `f45c76f` and are retained as regression guards.
+
+### Reproduction commands
+
+S-00 deterministic proof organisation seed (disposable PostgreSQL `test_clinicopus`):
+
+```bash
+docker exec -i klinklikpg psql -U clinicopus_owner -d test_clinicopus -v ON_ERROR_STOP=1 <<'SQL'
+SELECT set_config('app.current_org_id', '00000000-0000-7000-8000-000000000001', false);
+INSERT INTO tenancy_organisation (
+  id, name, slug, status, timezone, default_currency, privacy_notice_version, dpo_email
+) VALUES (
+  '00000000-0000-7000-8000-000000000001', 'S00 Backfill Clinic', 's00-backfill-clinic',
+  'ACTIVE', 'Africa/Kampala', 'UGX', 'v1', ''
+) ON CONFLICT (id) DO NOTHING;
+INSERT INTO core_idempotencyrecord (
+  id, created_at, updated_at, status_code, response_body, completed_at, organisation_id,
+  operation, key_hash, fingerprint, response_headers, response_schema_version
+) VALUES (
+  '00000000-0000-7000-8000-000000000002', NOW(), NOW(), 201, '{}'::jsonb, NOW(),
+  '00000000-0000-7000-8000-000000000001', 'S00_PROOF', repeat('a', 64), repeat('b', 64),
+  '{}'::jsonb, 'v1'
+) ON CONFLICT (id) DO NOTHING;
+INSERT INTO audit_auditevent (
+  id, created_at, updated_at, action, entity_type, entity_id, request_id, ip_address,
+  user_agent, reason, before, after, occurred_at, actor_id, facility_id, organisation_id,
+  event_code, source_ids, reason_code
+) VALUES (
+  '00000000-0000-7000-8000-000000000003', NOW(), NOW(), 'CREATE', 'TechnicalProbe',
+  'legacy-backfill-event', '', NULL, '', '', NULL, NULL, NOW(), NULL, NULL,
+  '00000000-0000-7000-8000-000000000001', 'S00_PROOF', '{}'::jsonb, ''
+) ON CONFLICT (id) DO NOTHING;
+SQL
+DB_ENGINE=postgresql DB_NAME=test_clinicopus DB_HOST=127.0.0.1 DB_PORT=55432 \
+  DB_USER=clinicopus_app DB_PASSWORD=clinicopus_app_test python tools/check_s00_postgres.py
+```
+
+Canonical NFR measurement:
+
+```bash
+cd /k/klinklik-s35-audit-repairs/frontend
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8100 npm run build
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8100 npm run start -- --port 3102
+node scripts/measure-s35-nfr.mjs
+```
 
 ## Decisions and architecture
 

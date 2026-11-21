@@ -6,7 +6,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiRequest } from "../../lib/api";
-import { isCurrentAuthority, useProtectedQueryKey } from "../../lib/authority";
+import {
+  isCurrentAuthority,
+  useAuthoritySnapshot,
+  useProtectedQueryKey,
+} from "../../lib/authority";
 import { formatSyncTime, useConnectivity, viewFromRoute } from "../../lib/connectivity";
 import { resolveIntent, usePendingIntents } from "../../lib/intent-registry";
 import { useSession } from "../../lib/session";
@@ -378,12 +382,13 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
 export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
   const { session, signOut } = useSession();
+  const authority = useAuthoritySnapshot();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const displayName = session?.user.full_name || session?.user.username || "";
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen" data-authority-epoch={authority.epoch}>
       {/* Sidebar: icon rail from md, full from lg */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden md:flex w-[76px] lg:w-[264px] flex-col bg-white border-r border-line">
         <div className="flex items-center gap-3 px-4 lg:px-5 h-[76px] shrink-0 justify-center lg:justify-start">
