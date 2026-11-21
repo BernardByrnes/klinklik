@@ -12,6 +12,7 @@ from application.reception.commands import visit_check_in
 from audit.models import AuditEvent
 from billing.models import Invoice
 from clinical.models import Encounter, TriageAssessment
+from core.errors import CanonicalError
 from core.rls import rls_status
 from core.migration_reconciliation import (
     backfill_mig002,
@@ -28,7 +29,9 @@ from core.services import tenant_atomic
 from core.models import MigrationCutover, MigrationReconciliation
 from patients.models import Patient
 from scheduling.models import QueueEntry, Visit
+from scheduling.queue import start_service, transfer
 from tenancy.models import Department, Facility, Organisation
+from tests.test_s02_queue import make_entry
 
 
 pytestmark = [
@@ -1013,3 +1016,65 @@ def test_pg_s02_cutover_refuses_a_disabled_state_guard(tenant, enabled_mig001_ta
         assert activated.phase == "CUTOVER"
         assert activated.target_reads_enabled is True
         assert activated.target_writes_enabled is True
+
+
+def test_pg_s35_r5_terminal_transfer_return_rejects_mismatched_work_identity(
+    tenant, authed_client, enabled_mig002_postgres
+):
+    """S-35 Fix 5 (PG): terminal replay rechecks persisted destination work type."""
+
+    with tenant_atomic(tenant.organisation.id):
+        destination_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="S-35 PG R5 destination",
+            code="S35PGR5_DEST",
+        )
+    _patient, _visit, source = make_entry(tenant, label="S35PGR5 Source")
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        start_service(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            queue_entry_id=source.id,
+        )
+        source_before = QueueEntry.objects.get(id=source.id)
+        source_after, destination = transfer(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=actor,
+            source_queue_entry_id=source.id,
+            target_department=destination_department,
+            target_queue_type="TRIAGE",
+            expected_version=source_before.version,
+        )
+        assert source_after.state == "COMPLETED"
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="S-35 PG R5 historical destination",
+            code="S35PGR5_OTHER",
+        )
+        QueueEntry.objects.filter(id=destination.id).update(
+            department_id=other_department.id, queue_type="CONSULTATION"
+        )
+        source_before_replay = QueueEntry.objects.get(id=source.id)
+    with tenant_atomic(tenant.organisation.id):
+        actor = User.objects.get(id=tenant.user.id)
+        with pytest.raises(CanonicalError) as exc:
+            transfer(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=actor,
+                source_queue_entry_id=source.id,
+                target_department=destination_department,
+                target_queue_type="TRIAGE",
+                expected_version=source_before_replay.version,
+            )
+        assert exc.value.code == "DESTINATION_CONFLICT"
+        unchanged = QueueEntry.objects.get(id=destination.id)
+        assert unchanged.department_id == other_department.id
+        assert unchanged.queue_type == "CONSULTATION"
+        assert QueueEntry.objects.get(id=source.id).state == "COMPLETED"

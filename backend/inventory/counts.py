@@ -177,11 +177,14 @@ def count_list(*, organisation, facility, state=None, limit=50, offset=0):
 def count_sheet(
     *, organisation, facility, count, reveal_expected=None, include_movements=False
 ):
+    policy = FacilityWorkflowPolicy.objects.filter(
+        organisation=organisation, facility=facility
+    ).first()
+    blind = policy.blind_stock_count if policy is not None else True
     if reveal_expected is None:
-        policy = FacilityWorkflowPolicy.objects.filter(
-            organisation=organisation, facility=facility
-        ).first()
-        reveal_expected = not (policy.blind_stock_count if policy is not None else True)
+        reveal_expected = not blind
+    if count.state == "DRAFT" and blind:
+        reveal_expected = False
     lines = count.lines.select_related("product", "batch", "location").order_by("id")
     body = []
     for line in lines:
@@ -228,8 +231,13 @@ def count_sheet(
                     organisation=organisation,
                     facility=facility,
                     location_id=count.location_id,
-                    occurred_at__gte=count.created_at,
-                ).order_by("occurred_at", "id")
+                    created_at__gte=count.created_at,
+                    **(
+                        {"created_at__lte": count.submitted_at}
+                        if count.submitted_at is not None
+                        else {}
+                    ),
+                ).order_by("created_at", "id")
             ]
             if include_movements
             else []

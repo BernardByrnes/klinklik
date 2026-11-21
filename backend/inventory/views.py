@@ -473,18 +473,23 @@ class StockCountDetailView(TenantAPIView):
         ).first()
         if count is None:
             raise CanonicalError("NOT_FOUND", "Stock count was not found.", 404)
-        reveal = request.query_params.get("reveal", "").lower() in {"1", "true", "yes"}
-        if reveal and not request.user.has_capability("inventory.approve", request.facility):
-            reveal = False
+        is_approver = request.user.has_capability(
+            "inventory.approve", request.facility
+        )
+        reveal_requested = request.query_params.get("reveal", "").lower() in {
+            "1", "true", "yes"
+        }
+        if reveal_requested and not is_approver:
+            reveal_expected = False
+        else:
+            reveal_expected = True if reveal_requested else None
         return Response(
             count_sheet(
                 organisation=request.organisation,
                 facility=request.facility,
                 count=count,
-                reveal_expected=reveal or None,
-                include_movements=request.user.has_capability(
-                    "inventory.approve", request.facility
-                ),
+                reveal_expected=reveal_expected,
+                include_movements=is_approver and count.state != "DRAFT",
             )
         )
 

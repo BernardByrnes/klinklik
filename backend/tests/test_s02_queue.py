@@ -2865,3 +2865,64 @@ def test_s29_r5_transfer_rejects_mismatched_department_work_reuse(
             organisation=tenant.organisation,
             key_hash=key_hash("s29-r5-transfer-mismatch"),
         ).exists()
+
+
+def test_s35_r5_terminal_transfer_return_rejects_mismatched_work_identity(
+    tenant, enabled_mig002_target
+):
+    """S-35 Fix 5: canonical terminal replay must recheck destination work type."""
+
+    with tenant_atomic(tenant.organisation.id):
+        destination_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="S-35 R5 destination",
+            code="S35R5_DEST",
+        )
+    _patient, _visit, source = make_entry(tenant, label="S35R5 Source")
+    with tenant_atomic(tenant.organisation.id):
+        start_service(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            queue_entry_id=source.id,
+        )
+        source_before = QueueEntry.objects.get(id=source.id)
+        source_after, destination = transfer(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            actor=tenant.user,
+            source_queue_entry_id=source.id,
+            target_department=destination_department,
+            target_queue_type="TRIAGE",
+            expected_version=source_before.version,
+        )
+        assert source_after.state == "COMPLETED"
+    with tenant_atomic(tenant.organisation.id):
+        other_department = Department.objects.create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            name="S-35 R5 historical destination",
+            code="S35R5_OTHER",
+        )
+        QueueEntry.objects.filter(id=destination.id).update(
+            department_id=other_department.id, queue_type="CONSULTATION"
+        )
+        source_before_replay = QueueEntry.objects.get(id=source.id)
+    with tenant_atomic(tenant.organisation.id):
+        with pytest.raises(CanonicalError) as exc:
+            transfer(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                actor=tenant.user,
+                source_queue_entry_id=source.id,
+                target_department=destination_department,
+                target_queue_type="TRIAGE",
+                expected_version=source_before_replay.version,
+            )
+        assert exc.value.code == "DESTINATION_CONFLICT"
+    with tenant_atomic(tenant.organisation.id):
+        unchanged = QueueEntry.objects.get(id=destination.id)
+        assert unchanged.department_id == other_department.id
+        assert unchanged.queue_type == "CONSULTATION"
+        assert QueueEntry.objects.get(id=source.id).state == "COMPLETED"

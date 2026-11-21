@@ -1098,6 +1098,16 @@ def transfer(
                 "The source stage is already terminal and has no matching handoff to replay.",
                 metadata={"state": source.state},
             )
+        if (
+            str(existing.department_id) != str(department.id)
+            or str(existing.queue_type).upper() != normalized_target_type
+        ):
+            raise _error(
+                "DESTINATION_CONFLICT",
+                "The destination queue is already occupied and could not be reconciled safely.",
+                status_code=409,
+                metadata={"department_id": str(department.id)},
+            )
         return source, existing
 
     source_terminal_state = "TRANSFERRED" if redirect else "COMPLETED"

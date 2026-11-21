@@ -312,6 +312,22 @@ test("S-32 independent approver discovers a submitted count from their own sessi
   });
   expect(opened.ok(), await opened.text()).toBeTruthy();
   const countId = ((await opened.json()) as { id: string }).id;
+  const duringCount = await page.request.post(`${API}/api/v1/inventory/receipts/`, {
+    headers: { ...headers, "Idempotency-Key": `s32ap-during-${suffix}` },
+    data: {
+      receipt_no: `GRN-S32AP-DURING-${suffix}`,
+      lines: [
+        {
+          product_id: product.id,
+          location_id: location.id,
+          batch_no: `B-S32AP-DURING-${suffix}`,
+          expiry_date: new Date(Date.now() + 365 * 864e5).toISOString().slice(0, 10),
+          quantity: "5.00",
+        },
+      ],
+    },
+  });
+  expect(duringCount.ok(), await duringCount.text()).toBeTruthy();
   const sheet = (await (
     await page.request.get(`${API}/api/v1/inventory/counts/${countId}/`, { headers })
   ).json()) as { version: number; lines: Array<{ id: string }> };
@@ -338,6 +354,15 @@ test("S-32 independent approver discovers a submitted count from their own sessi
   await countRow.getByRole("button", { name: "Review count", exact: true }).click();
   await expect(page.getByText(/variance -5\.00/)).toBeVisible();
   await expect(page.getByRole("heading", { name: /Movements during count/ })).toBeVisible();
+  const detail = (await (
+    await page.request.get(`${API}/api/v1/inventory/counts/${countId}/?reveal=1`, { headers })
+  ).json()) as {
+    movements_during_count: Array<{ id: string; movement_type: string }>;
+  };
+  expect(detail.movements_during_count.length).toBeGreaterThan(0);
+  expect(
+    detail.movements_during_count.some((movement) => movement.movement_type === "ADJUSTMENT")
+  ).toBe(false);
 });
 
 test("S-35 Fix 4 a changed selected location cannot alter a pending count open", async ({

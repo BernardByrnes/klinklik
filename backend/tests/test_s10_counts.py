@@ -114,8 +114,8 @@ def test_s10_blind_count_submits_and_posts_exact_correction(tenant, authed_clien
     assert blind.data["blind"] is True
     assert "expected_qty" not in blind.data["lines"][0]
     revealed = authed_client.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
-    assert revealed.data["blind"] is False
-    assert revealed.data["lines"][0]["expected_qty"] == "100.00"
+    assert revealed.data["blind"] is True
+    assert "expected_qty" not in revealed.data["lines"][0]
     line_id = blind.data["lines"][0]["id"]
 
     submitted = authed_client.post(
@@ -544,3 +544,162 @@ def test_s32_approver_lists_submitted_counts_and_opens_blind_sheet(tenant, authe
     assert "expected_qty" not in reader_detail.data["lines"][0]
     assert "variance_qty" not in reader_detail.data["lines"][0]
     assert reader_detail.data["movements_during_count"] == []
+
+
+def test_s35_r6_count_evidence_uses_posting_window_not_business_timestamp(
+    tenant, authed_client
+):
+    """S-35 Fix 5: count evidence must exclude post-submission ledger writes."""
+
+    _threshold(tenant, "1000000.00")
+    location = _locations(authed_client)[0]
+    product = _product(authed_client)
+    _price(authed_client, product["id"])
+    assert _receive(authed_client, product["id"], location["id"], quantity="100.00").status_code == 201
+    opened = authed_client.post(
+        "/api/v1/inventory/counts/open/",
+        {"location_id": location["id"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-count-open",
+    )
+    assert opened.status_code == 201, opened.data
+    count_id = opened.data["id"]
+    assert _receive(authed_client, product["id"], location["id"], quantity="5.00").status_code == 201
+    with tenant_atomic(tenant.organisation.id):
+        count_created = StockCount.objects.get(id=count_id).created_at
+        in_window_ids = {
+            str(movement.id)
+            for movement in StockMovement.objects.filter(quantity=Decimal("5.00"))
+        }
+        assert in_window_ids
+        StockMovement.objects.filter(id__in=in_window_ids).update(
+            occurred_at=count_created - timedelta(days=1)
+        )
+    sheet = authed_client.get(f"/api/v1/inventory/counts/{count_id}/")
+    submitted = authed_client.post(
+        f"/api/v1/inventory/counts/{count_id}/submit/",
+        {
+            "expected_version": sheet.data["version"],
+            "lines": [
+                {"line_id": row["id"], "counted_qty": "95.00"}
+                for row in sheet.data["lines"]
+            ],
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-count-submit",
+    )
+    assert submitted.status_code == 200, submitted.data
+    approved = authed_client.post(
+        f"/api/v1/inventory/counts/{count_id}/approve/",
+        {"expected_version": submitted.data["version"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-count-approve",
+    )
+    assert approved.status_code == 200, approved.data
+    with tenant_atomic(tenant.organisation.id):
+        adjustment_ids = {
+            str(movement.id)
+            for movement in StockMovement.objects.filter(movement_type="ADJUSTMENT")
+        }
+        assert adjustment_ids
+    detail = authed_client.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
+    assert detail.status_code == 200, detail.data
+    evidence_ids = {row["id"] for row in detail.data["movements_during_count"]}
+    assert evidence_ids == in_window_ids
+    assert evidence_ids.isdisjoint(adjustment_ids)
+
+
+def test_s35_r6_blind_count_reveal_is_gated_by_stage(tenant, authed_client):
+    """S-35 Fix 5: an approver cannot reveal a blind draft sheet."""
+
+    location = _locations(authed_client)[0]
+    product = _product(authed_client)
+    _price(authed_client, product["id"])
+    assert _receive(authed_client, product["id"], location["id"], quantity="10.00").status_code == 201
+    opened = authed_client.post(
+        "/api/v1/inventory/counts/open/",
+        {"location_id": location["id"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-stage-open",
+    )
+    assert opened.status_code == 201, opened.data
+    count_id = opened.data["id"]
+    detail = authed_client.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
+    assert detail.status_code == 200, detail.data
+    assert detail.data["state"] == "DRAFT"
+    assert detail.data["blind"] is True
+    assert "expected_qty" not in detail.data["lines"][0]
+    assert "variance_qty" not in detail.data["lines"][0]
+    assert detail.data["movements_during_count"] == []
+
+
+def test_s35_r6_explicit_reveal_denial_survives_nonblind_policy(tenant, authed_client):
+    """S-35 Fix 5: explicit denial must not fall back to a non-blind facility."""
+
+    with tenant_atomic(tenant.organisation.id):
+        FacilityWorkflowPolicy.objects.update_or_create(
+            organisation=tenant.organisation,
+            facility=tenant.facility,
+            defaults={"blind_stock_count": False, "updated_by": tenant.user},
+        )
+    location = _locations(authed_client)[0]
+    product = _product(authed_client)
+    _price(authed_client, product["id"])
+    assert _receive(authed_client, product["id"], location["id"], quantity="10.00").status_code == 201
+    opened = authed_client.post(
+        "/api/v1/inventory/counts/open/",
+        {"location_id": location["id"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-nonblind-open",
+    )
+    assert opened.status_code == 201, opened.data
+    count_id = opened.data["id"]
+
+    with tenant_atomic(tenant.organisation.id):
+        reader = User.objects.create_user(
+            f"s35-reader-{uuid4().hex[:6]}", "test-password-123"
+        )
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=reader)
+        role = Role.objects.create(
+            organisation=tenant.organisation,
+            name=f"S35 reader {uuid4().hex[:6]}",
+            template_code="S35_COUNT_READER",
+        )
+        permission, _ = Permission.objects.get_or_create(code="inventory.read")
+        RolePermission.objects.create(
+            organisation=tenant.organisation, role=role, permission=permission
+        )
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=reader,
+            role=role,
+            facility=tenant.facility,
+            department=tenant.department,
+        )
+    from rest_framework.test import APIClient
+
+    reader_client = APIClient()
+    login = reader_client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": reader.username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    reader_client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    reader_client.defaults["HTTP_X_FACILITY_ID"] = str(tenant.facility.id)
+
+    default_detail = reader_client.get(f"/api/v1/inventory/counts/{count_id}/")
+    assert default_detail.data["blind"] is False
+    assert "expected_qty" in default_detail.data["lines"][0]
+    denied = reader_client.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
+    assert denied.status_code == 200, denied.data
+    assert denied.data["blind"] is True
+    assert "expected_qty" not in denied.data["lines"][0]
+    assert "variance_qty" not in denied.data["lines"][0]
+    assert denied.data["movements_during_count"] == []
+    approver_detail = authed_client.get(f"/api/v1/inventory/counts/{count_id}/?reveal=1")
+    assert approver_detail.data["blind"] is False
+    assert "expected_qty" in approver_detail.data["lines"][0]
