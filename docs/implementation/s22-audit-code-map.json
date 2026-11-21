@@ -39,7 +39,7 @@
           "emitted_codes": [
             {
               "code": "VISIT_CLOSED_LWBS",
-              "evidence": "backend/scheduling/queue.py:1791"
+              "evidence": "backend/scheduling/queue.py:1801"
             }
           ],
           "note": "Declared queue outcome is emitted by the Visit close path under VISIT_CLOSED_LWBS.",
@@ -214,7 +214,7 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:603"
+              "evidence": "backend/laboratory/services.py:615"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
@@ -231,7 +231,7 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:603"
+              "evidence": "backend/laboratory/services.py:615"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
@@ -257,7 +257,7 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:603"
+              "evidence": "backend/laboratory/services.py:615"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
@@ -283,7 +283,7 @@
           "emitted_codes": [
             {
               "code": "LAB_RESULT_SAVED",
-              "evidence": "backend/laboratory/services.py:603"
+              "evidence": "backend/laboratory/services.py:615"
             }
           ],
           "note": "Registry code maps to emitted LAB_RESULT_SAVED.",
@@ -310,13 +310,13 @@
           "emitted_codes": [
             {
               "code": "DISPENSE_PREPARED",
-              "evidence": "backend/pharmacy/dispensing.py:689"
+              "evidence": "backend/pharmacy/dispensing.py:758"
             }
           ],
           "note": "Provisional dispense creation emits DISPENSE_PREPARED at the prepare service.",
           "path_reviewed": [
             "backend/pharmacy/views.py:183",
-            "backend/pharmacy/dispensing.py:535"
+            "backend/pharmacy/dispensing.py:604"
           ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null
@@ -354,13 +354,13 @@
           "emitted_codes": [
             {
               "code": "CREATE",
-              "evidence": "backend/pharmacy/dispensing.py:232"
+              "evidence": "backend/pharmacy/dispensing.py:754"
             }
           ],
           "note": "Handover confirms the dispense but no claim-release event is emitted; the active claim becomes implicit via dispense state. All branches read.",
           "path_reviewed": [
             "backend/pharmacy/views.py:203",
-            "backend/pharmacy/dispensing.py:695"
+            "backend/pharmacy/dispensing.py:764"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
           "risk_class": "dispensing"
@@ -371,13 +371,13 @@
           "emitted_codes": [
             {
               "code": "CREATE",
-              "evidence": "backend/pharmacy/dispensing.py:232"
+              "evidence": "backend/pharmacy/dispensing.py:754"
             }
           ],
           "note": "Item state is versioned on confirmation, but no PRESCRIPTION_OUTCOME audit event is emitted. All branches read.",
           "path_reviewed": [
             "backend/pharmacy/views.py:203",
-            "backend/pharmacy/dispensing.py:695"
+            "backend/pharmacy/dispensing.py:764"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
           "risk_class": "dispensing"
@@ -398,7 +398,7 @@
           "emitted_codes": [
             {
               "code": "OTC_SALE_COMPLETED",
-              "evidence": "backend/pharmacy/dispensing.py:1073"
+              "evidence": "backend/pharmacy/dispensing.py:1237"
             }
           ],
           "note": "Registry code maps to emitted OTC_SALE_COMPLETED.",
@@ -415,13 +415,13 @@
           "emitted_codes": [
             {
               "code": "CREATE",
-              "evidence": "backend/pharmacy/dispensing.py:232"
+              "evidence": "backend/pharmacy/dispensing.py:1233"
             }
           ],
           "note": "OTC sale emits OTC_SALE_COMPLETED and a stock movement but no receipt event; no receipt is created on this path. All branches read.",
           "path_reviewed": [
             "backend/pharmacy/views.py:309",
-            "backend/pharmacy/dispensing.py:947"
+            "backend/pharmacy/dispensing.py:1111"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
           "risk_class": "money"
@@ -834,7 +834,7 @@
           "emitted_codes": [
             {
               "code": "PRESCRIPTION_ITEM_NOT_DISPENSED",
-              "evidence": "backend/pharmacy/dispensing.py:941"
+              "evidence": "backend/pharmacy/dispensing.py:1105"
             }
           ],
           "note": "Registry code maps to emitted PRESCRIPTION_ITEM_NOT_DISPENSED.",
@@ -851,7 +851,7 @@
           "emitted_codes": [
             {
               "code": "INVOICE_VOIDED",
-              "evidence": "backend/scheduling/queue.py:1727"
+              "evidence": "backend/scheduling/queue.py:1737"
             }
           ],
           "note": "Registry code maps to emitted INVOICE_VOIDED.",
@@ -877,13 +877,13 @@
           "emitted_codes": [
             {
               "code": "PRESCRIPTION_CLAIMED",
-              "evidence": "backend/pharmacy/dispensing.py:511"
+              "evidence": "backend/pharmacy/dispensing.py:580"
             }
           ],
           "note": "Claim access is emitted as PRESCRIPTION_CLAIMED by the claim service.",
           "path_reviewed": [
             "backend/pharmacy/views.py:159",
-            "backend/pharmacy/dispensing.py:463"
+            "backend/pharmacy/dispensing.py:532"
           ],
           "proposed_disposition": "accept documented mapping",
           "risk_class": null

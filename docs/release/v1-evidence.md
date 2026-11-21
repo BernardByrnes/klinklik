@@ -35,7 +35,7 @@ Gate evidence: focused repairs red→green through real entry points; batch full
 | `02de49f` | S-11 backend/PG/browser proofs including draft-absent-until-release, stale review, duplicate-version replay, rejection and NFR samples. |
 | `21225e8` | Shifted lab audit evidence pointers refreshed. Review-30 accepted. |
 
-Gate evidence: focused S-11 module 11 passed; PG S-11 3 passed under `clinicopus_app`; browser s11-lab.spec.ts 6 passed on a fresh seeded stack with MIG cutovers; full SQLite 472/95 at F1 tip. NFR with 200 items: API p95 110 ms, SPA render p95 146 ms on a declared synthetic 3G-equivalent profile; exact site profile remained owner-open.
+Gate evidence: focused S-11 module 12 passed; PG S-11 3 passed under `clinicopus_app`; browser s11-lab.spec.ts 6 passed on a fresh seeded stack with MIG cutovers; full SQLite 472/95 at F1 tip. NFR with 200 items: API p95 110 ms, SPA render p95 146 ms on a declared synthetic 3G-equivalent profile; exact site profile remained owner-open.
 
 ### Feature 2 — Pharmacy preparation, pickup and resume — `771e2f5` (review-31)
 
