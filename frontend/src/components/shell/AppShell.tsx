@@ -84,6 +84,7 @@ function ConnectivityStatus() {
   const status = connectivity.online
     ? `Online · ${view} last synced ${formatSyncTime(viewSync)}`
     : `Offline · ${view} last synced ${formatSyncTime(viewSync)}. Completion is unavailable.`;
+  const compactStatus = connectivity.online ? `Online · ${view}` : `Offline · ${view}`;
 
   const runRetry = async (intent: (typeof pending)[number]) => {
     if (!isCurrentAuthority(intent.authority)) {
@@ -104,13 +105,19 @@ function ConnectivityStatus() {
   };
 
   return (
-    <div className="flex flex-col items-end gap-1" aria-live="polite" role="status">
-      <p data-testid="connectivity-status" className="text-[11px] font-medium text-secondary">
+    <div className="flex min-w-0 max-w-full flex-col items-end gap-1" aria-live="polite" role="status">
+      <p
+        data-testid="connectivity-status"
+        title={status}
+        aria-label={status}
+        className="max-w-full truncate text-[11px] font-medium text-secondary"
+      >
         <span
           aria-hidden="true"
           className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${connectivity.online ? "bg-accent-teal" : "bg-accent-pink"}`}
         />
-        {status}
+        <span className="sm:hidden">{compactStatus}</span>
+        <span className="hidden sm:inline">{status}</span>
       </p>
       {pending.length ? (
         <>
@@ -119,7 +126,7 @@ function ConnectivityStatus() {
             data-testid="pending-intent-review"
             onClick={() => setOpen((value) => !value)}
             aria-expanded={open}
-            className={`text-[11px] font-semibold text-primary-text underline ${FOCUS_RING}`}
+            className={`max-w-full truncate text-[11px] font-semibold text-primary-text underline ${FOCUS_RING}`}
           >
             {pending.length} unresolved action{pending.length === 1 ? "" : "s"} · review
           </button>
@@ -287,7 +294,7 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 
   return (
     <header className="sticky top-0 z-30 h-[72px] bg-canvas/95 backdrop-blur border-b border-line">
-      <div className="flex h-full items-center gap-4 px-5 lg:px-7">
+      <div className="flex h-full min-w-0 items-center gap-2 px-3 sm:gap-4 sm:px-5 lg:px-7">
         <button
           type="button"
           aria-label="Open navigation"
@@ -298,9 +305,9 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
         </button>
 
         {can("patient.view") ? (
-          <div className="flex-1 flex justify-center px-2">
+          <div className="flex min-w-0 flex-1 justify-center px-1 sm:px-2">
             <form
-              className="relative flex items-center w-full max-w-[600px]"
+              className="relative flex min-w-0 w-full max-w-[600px] items-center"
               onSubmit={(event) => {
                 event.preventDefault();
                 const term = search.trim();
@@ -315,7 +322,7 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search patients…"
                 aria-label="Search patients"
-                className={`h-11 w-full rounded-[14px] border border-line bg-white pl-11 pr-16 text-[13px] font-medium text-ink placeholder-muted shadow-card focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-shadow ${FOCUS_RING}`}
+                className={`h-11 w-full min-w-0 rounded-[14px] border border-line bg-white pl-11 pr-16 text-[13px] font-medium text-ink placeholder-muted shadow-card focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-shadow ${FOCUS_RING}`}
               />
               <span className="absolute right-3 flex items-center gap-1" aria-hidden="true">
                 <kbd className="hidden sm:inline-flex rounded-md border border-line bg-canvas px-1.5 py-0.5 text-[11px] font-semibold text-muted">
@@ -331,15 +338,16 @@ function TopBar({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           <div className="flex-1" />
         )}
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex min-w-0 items-center gap-1 sm:gap-2">
           <ConnectivityStatus />
           <div className="relative" ref={menuRef}>
             <button
               type="button"
               onClick={() => setMenuOpen((value) => !value)}
+              aria-label="Account menu"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
-              className={`ml-1 flex items-center gap-2.5 rounded-full py-1 pl-1 pr-2 hover:bg-white transition-colors ${FOCUS_RING}`}
+              className={`ml-1 flex shrink-0 items-center gap-2.5 rounded-full py-1 pl-1 pr-2 hover:bg-white transition-colors ${FOCUS_RING}`}
             >
               <span className="h-9 w-9 rounded-full bg-gradient-to-br from-[#8B6DFF] to-primary grid place-items-center text-white text-[12px] font-semibold ring-2 ring-white">
                 {initials}
