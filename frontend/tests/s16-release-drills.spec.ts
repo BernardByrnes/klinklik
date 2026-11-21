@@ -929,7 +929,26 @@ test("S-42 a late logout request cannot delete the new user's cookie", async ({
   await expect(menu).not.toContainText(SWITCH_A);
 });
 
-test("S-42 a late refresh request cannot overwrite the new user's cookie", async ({
+type RefreshTag = string;
+
+async function refreshTag(page: Page): Promise<RefreshTag> {
+  const cookies = await page.context().cookies([`${API}/api/v1/auth/`]);
+  const value = cookies.find((cookie) => cookie.name === "clinicopus_refresh")?.value;
+  if (!value) return "absent";
+  const payload = JSON.parse(Buffer.from(value.split(".")[0], "base64url").toString()) as {
+    sub?: string;
+  };
+  return String(payload.sub ?? "unknown").slice(0, 8);
+}
+
+type FetchPaused = {
+  requestId: string;
+  url: string;
+  responseStatusCode?: number;
+  responseHeaders?: Array<{ name: string; value: string }>;
+};
+
+test("S-42 a late refresh response cannot overwrite the new user's cookie", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -939,42 +958,88 @@ test("S-42 a late refresh request cannot overwrite the new user's cookie", async
   await page.goto("/patients");
   await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
-  const aCookies = await page.context().cookies([`${API}/api/v1/auth/`]);
-  const aRefreshCookie = aCookies.find((cookie) => cookie.name === "clinicopus_refresh")?.value;
-  expect(aRefreshCookie).toBeTruthy();
+  const aTag = await refreshTag(page);
+  expect(aTag).not.toBe("absent");
 
-  const refreshCookieOptions = (value: string) => [
-    {
-      name: "clinicopus_refresh",
-      value,
-      domain: "127.0.0.1",
-      path: "/api/v1/auth/",
-      httpOnly: true,
-      secure: false,
-      sameSite: "Lax" as const,
-    },
-  ];
-  let bRefreshCookie: string | undefined;
-  let refreshHeld = false;
-  let heldRefresh = false;
-  let releaseRefresh: (() => void) | null = null;
-  await page.route("**/api/v1/auth/refresh/", async (route) => {
-    if (!heldRefresh) {
-      heldRefresh = true;
-      refreshHeld = true;
-      await new Promise<void>((resolve) => {
-        releaseRefresh = resolve;
-      });
-    }
-    try {
-      await route.continue();
-    } catch {
-      // The fixed app aborted the stale request; keep B's cookie intact.
-      if (bRefreshCookie) {
-        await page.context().addCookies(refreshCookieOptions(bRefreshCookie));
-      }
-    }
+  // Hold the refresh RESPONSE after the server produced A's rotated cookie.
+  // CDP Fetch exposes response headers but hides Set-Cookie, so capture the
+  // real Set-Cookie from Network.responseReceivedExtraInfo and replay it with
+  // Fetch.continueRequest. route.fulfill() is not used because it cannot apply
+  // cookies to the browser jar.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.enable");
+  await cdp.send("Fetch.enable", {
+    patterns: [{ urlPattern: "*api/v1/auth/refresh/*", requestStage: "Response" }],
   });
+  type ExtraInfo = { requestId: string; headers: Record<string, string> };
+  let responseReady = false;
+  let heldRequestId: string | null = null;
+  let heldResponseHeaders: Array<{ name: string; value: string }> = [];
+  let rotatedSetCookie = "";
+  let captureRotatedCookie = true;
+  let releaseResponse: (() => void) | null = null;
+  const markReady = () => {
+    if (heldRequestId && rotatedSetCookie) responseReady = true;
+  };
+  cdp.on("Network.responseReceivedExtraInfo", (event: ExtraInfo) => {
+    const cookie = Object.entries(event.headers).find(
+      ([name]) => name.toLowerCase() === "set-cookie",
+    )?.[1];
+    if (captureRotatedCookie && cookie?.includes("clinicopus_refresh=")) {
+      rotatedSetCookie = cookie;
+      const token = /clinicopus_refresh="?([^;"]+)"?/.exec(cookie)?.[1] ?? "";
+      console.log("ROTATED_TAG", token ? JSON.parse(Buffer.from(token.split(".")[0], "base64url").toString()).sub.slice(0, 8) : "none");
+    }
+    markReady();
+  });
+  cdp.on("Fetch.requestPaused", (event: FetchPaused) => {
+    void (async () => {
+      try {
+        if (!event.responseStatusCode) {
+          await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
+          return;
+        }
+        if (heldRequestId) {
+          await cdp.send("Fetch.continueRequest", { requestId: event.requestId });
+          return;
+        }
+        heldRequestId = event.requestId;
+        heldResponseHeaders = event.responseHeaders ?? [];
+        markReady();
+        await new Promise<void>((resolve) => {
+          releaseResponse = resolve;
+        });
+        const responseHeaders = heldResponseHeaders.filter(
+          (header) => header.name.toLowerCase() !== "set-cookie",
+        );
+        if (rotatedSetCookie) {
+          responseHeaders.push({ name: "set-cookie", value: rotatedSetCookie });
+        }
+        await cdp.send("Fetch.continueRequest", {
+          requestId: event.requestId,
+          responseCode: event.responseStatusCode,
+          responseHeaders,
+        });
+        // This harness's Fetch.continueRequest does not re-apply Set-Cookie, so
+        // replay the exact server-produced cookie into the browser's jar. No
+        // pre-release cookie is changed and the value comes only from the real
+        // 200 refresh response captured above.
+        const rotatedValue = /clinicopus_refresh="?([^;"]+)"?/.exec(rotatedSetCookie)?.[1];
+        if (rotatedValue) {
+          await cdp.send("Network.setCookie", {
+            name: "clinicopus_refresh",
+            value: rotatedValue,
+            url: `${API}/api/v1/auth/`,
+            httpOnly: true,
+            sameSite: "Lax",
+          });
+        }
+      } catch {
+        // The fixed app aborted the stale request, so no response is delivered.
+      }
+    })();
+  });
+
   let forced = false;
   await page.route("**/api/v1/patients/?q=*", async (route) => {
     if (!forced) {
@@ -992,24 +1057,29 @@ test("S-42 a late refresh request cannot overwrite the new user's cookie", async
   // Trigger a real 401 through the app's own query so api.ts starts a refresh
   // while A's workspace is still mounted.
   await steadyFill(page, "Search by name, phone, or patient number", "S42");
-  await expect.poll(() => refreshHeld).toBe(true);
+  await expect.poll(() => responseReady).toBe(true);
   await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
 
   await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
+  captureRotatedCookie = false;
   await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
-  const bCookies = await page.context().cookies([`${API}/api/v1/auth/`]);
-  bRefreshCookie = bCookies.find((cookie) => cookie.name === "clinicopus_refresh")?.value;
-  expect(bRefreshCookie).toBeTruthy();
+  const beforeTag = await refreshTag(page);
+  console.log("BEFORE_TAG", aTag, beforeTag);
+  expect(beforeTag).not.toBe(aTag);
 
-  // The held request was created by A; ensure it still carries A's refresh
-  // cookie when released. The server then writes A's rotated cookie for real.
-  await page.context().addCookies(refreshCookieOptions(aRefreshCookie!));
-  expect(releaseRefresh).not.toBeNull();
-  releaseRefresh?.();
+  // Release the server-produced A refresh response; the browser applies its
+  // real Set-Cookie if the app failed to abort the stale request.
+  expect(releaseResponse).not.toBeNull();
+  releaseResponse?.();
   await page.waitForTimeout(750);
+  await cdp.send("Fetch.disable").catch(() => undefined);
+  await cdp.send("Network.disable").catch(() => undefined);
 
+  const afterTag = await refreshTag(page);
+  console.log("AFTER_TAG", beforeTag, afterTag);
+  expect(afterTag).toBe(beforeTag);
   await expect(page).toHaveURL(/\/(overview|patients)$/);
   await page.reload();
   await expect(page).not.toHaveURL(/\/login$/);
