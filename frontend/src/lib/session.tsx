@@ -19,7 +19,6 @@ import { resetConnectivity } from "./connectivity";
 import {
   EXPLICIT_SIGNIN_KEY,
   automaticRefreshAllowed,
-  clearAuthReorderMarker,
   clearExitMarkers,
   explicitSignInRequired,
   markExplicitSignInRequired,
@@ -128,7 +127,6 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
 
   const performExit = useCallback(async () => {
     // All local invalidation starts before the network request is awaited.
-    clearAuthReorderMarker();
     markExplicitSignInRequired();
     cancelProtectedRequests();
     clearIntents();

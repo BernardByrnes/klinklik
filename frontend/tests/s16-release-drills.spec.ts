@@ -885,44 +885,30 @@ test("S-42 blocked marker writes with a still-valid refresh cookie stay locked",
   await expect(root).toHaveCount(0);
 });
 
-test("S-42 a real late logout response cannot replace the new user's cookie", async ({
+test("S-42 a late logout request cannot delete the new user's cookie", async ({
   page,
 }) => {
   test.setTimeout(120_000);
   ensureSwitchUsers();
   await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
 
+  let logoutHeld = false;
   let releaseLogout: (() => void) | null = null;
-  let logoutPrepared = false;
   await page.route("**/api/v1/auth/logout/", async (route) => {
-    const served = await route.fetch();
-    logoutPrepared = true;
+    logoutHeld = true;
     await new Promise<void>((resolve) => {
       releaseLogout = resolve;
     });
     try {
-      await route.fulfill({
-        status: served.status(),
-        headers: served.headers(),
-        body: await served.body(),
-      });
-      // Playwright does not apply Set-Cookie from a fulfilled response; apply
-      // the fetched logout response's delete semantics explicitly only when
-      // the newer login has not cancelled the stale request.
-      const reordered = await page.evaluate(
-        () => window.localStorage.getItem("klinklik:auth-reordered") === "1",
-      );
-      if (!reordered) {
-        await page.context().clearCookies({ name: "clinicopus_refresh" });
-      }
+      await route.continue();
     } catch {
-      // A newer login may have cancelled this stale response.
+      // The fixed app already aborted this stale request.
     }
   });
 
   await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
-  await expect.poll(() => logoutPrepared).toBe(true);
+  await expect.poll(() => logoutHeld).toBe(true);
   await expect(page).toHaveURL(/\/login$/);
 
   await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
@@ -930,17 +916,20 @@ test("S-42 a real late logout response cannot replace the new user's cookie", as
   releaseLogout?.();
   await page.waitForTimeout(750);
 
+  // The old request may only produce a real server response now, after B's
+  // login. In-memory B still looks fine; the cookie damage appears on reload.
   await expect(page).toHaveURL(/\/(overview|patients)$/);
-  await page.getByRole("button", { name: "Account menu" }).click();
-  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
-  await page.locator("main").click({ position: { x: 5, y: 5 } });
+  await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
   await page.reload();
-  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await expect(page).not.toHaveURL(/\/login$/);
+  await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
   await page.getByRole("button", { name: "Account menu" }).click();
-  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+  const menu = page.getByRole("menu");
+  await expect(menu).toContainText(SWITCH_B);
+  await expect(menu).not.toContainText(SWITCH_A);
 });
 
-test("S-42 a real late refresh response cannot replace the new user's cookie", async ({
+test("S-42 a late refresh request cannot overwrite the new user's cookie", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -950,51 +939,40 @@ test("S-42 a real late refresh response cannot replace the new user's cookie", a
   await page.goto("/patients");
   await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
+  const aCookies = await page.context().cookies([`${API}/api/v1/auth/`]);
+  const aRefreshCookie = aCookies.find((cookie) => cookie.name === "clinicopus_refresh")?.value;
+  expect(aRefreshCookie).toBeTruthy();
 
-  let refreshPrepared = false;
-  let releaseRefresh: (() => void) | null = null;
+  const refreshCookieOptions = (value: string) => [
+    {
+      name: "clinicopus_refresh",
+      value,
+      domain: "127.0.0.1",
+      path: "/api/v1/auth/",
+      httpOnly: true,
+      secure: false,
+      sameSite: "Lax" as const,
+    },
+  ];
+  let bRefreshCookie: string | undefined;
+  let refreshHeld = false;
   let heldRefresh = false;
+  let releaseRefresh: (() => void) | null = null;
   await page.route("**/api/v1/auth/refresh/", async (route) => {
     if (!heldRefresh) {
       heldRefresh = true;
-    } else {
-      await route.continue();
-      return;
-    }
-    const served = await route.fetch();
-    refreshPrepared = true;
-    await new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
-    });
-    try {
-      await route.fulfill({
-        status: served.status(),
-        headers: served.headers(),
-        body: await served.body(),
+      refreshHeld = true;
+      await new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
       });
-      // Playwright does not apply Set-Cookie from a fulfilled response; apply
-      // the fetched refresh response's rotated cookie explicitly only when the
-      // newer login has not cancelled the stale request.
-      const reordered = await page.evaluate(
-        () => window.localStorage.getItem("klinklik:auth-reordered") === "1",
-      );
-      const setCookie = served.headers()["set-cookie"] ?? "";
-      const rotated = /clinicopus_refresh="?([^;"]+)"?/.exec(setCookie);
-      if (rotated && !reordered) {
-        await page.context().addCookies([
-          {
-            name: "clinicopus_refresh",
-            value: rotated[1],
-            domain: "127.0.0.1",
-            path: "/api/v1/auth/",
-            httpOnly: true,
-            secure: false,
-            sameSite: "Lax",
-          },
-        ]);
-      }
+    }
+    try {
+      await route.continue();
     } catch {
-      // A newer login may have cancelled this stale response.
+      // The fixed app aborted the stale request; keep B's cookie intact.
+      if (bRefreshCookie) {
+        await page.context().addCookies(refreshCookieOptions(bRefreshCookie));
+      }
     }
   });
   let forced = false;
@@ -1014,23 +992,30 @@ test("S-42 a real late refresh response cannot replace the new user's cookie", a
   // Trigger a real 401 through the app's own query so api.ts starts a refresh
   // while A's workspace is still mounted.
   await steadyFill(page, "Search by name, phone, or patient number", "S42");
-  await expect.poll(() => refreshPrepared).toBe(true);
+  await expect.poll(() => refreshHeld).toBe(true);
   await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
 
   await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
+  const bCookies = await page.context().cookies([`${API}/api/v1/auth/`]);
+  bRefreshCookie = bCookies.find((cookie) => cookie.name === "clinicopus_refresh")?.value;
+  expect(bRefreshCookie).toBeTruthy();
+
+  // The held request was created by A; ensure it still carries A's refresh
+  // cookie when released. The server then writes A's rotated cookie for real.
+  await page.context().addCookies(refreshCookieOptions(aRefreshCookie!));
   expect(releaseRefresh).not.toBeNull();
   releaseRefresh?.();
   await page.waitForTimeout(750);
 
   await expect(page).toHaveURL(/\/(overview|patients)$/);
-  await page.getByRole("button", { name: "Account menu" }).click();
-  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
-  await page.locator("main").click({ position: { x: 5, y: 5 } });
   await page.reload();
-  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await expect(page).not.toHaveURL(/\/login$/);
+  await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
   await page.getByRole("button", { name: "Account menu" }).click();
-  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+  const menu = page.getByRole("menu");
+  await expect(menu).toContainText(SWITCH_B);
+  await expect(menu).not.toContainText(SWITCH_A);
 });

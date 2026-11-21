@@ -4,7 +4,6 @@
 // No identity, token, facility, pending work or clinical data is stored here.
 export const EXPLICIT_SIGNIN_KEY = "klinklik:explicit-signin-required";
 export const LOGOUT_UNCONFIRMED_KEY = "klinklik:logout-unconfirmed";
-export const AUTH_REORDER_KEY = "klinklik:auth-reordered";
 export const EXIT_MARKER_EVENT = "klinklik:exit-marker-changed";
 
 type MarkerChange = Readonly<{ key: string; value: boolean }>;
@@ -41,9 +40,9 @@ function writeLocal(key: string, value: boolean): boolean {
 }
 
 function cookieName(key: string): string {
-  if (key === EXPLICIT_SIGNIN_KEY) return "klinklik_explicit_signin";
-  if (key === LOGOUT_UNCONFIRMED_KEY) return "klinklik_logout_unconfirmed";
-  return "klinklik_auth_reordered";
+  return key === EXPLICIT_SIGNIN_KEY
+    ? "klinklik_explicit_signin"
+    : "klinklik_logout_unconfirmed";
 }
 
 function readCookie(name: string): string | undefined {
@@ -55,7 +54,8 @@ function readCookie(name: string): string | undefined {
 
 function writeCookie(name: string, value: boolean): boolean {
   if (typeof document === "undefined") return false;
-  document.cookie = `${name}=${value ? "1" : ""}; path=/; SameSite=Lax; Max-Age=${value ? 86400 : 0}`;
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${name}=${value ? "1" : ""}; path=/; SameSite=Lax${secure}; Max-Age=${value ? 86400 : 0}`;
   return value ? readCookie(name) === "1" : readCookie(name) === undefined;
 }
 
@@ -125,18 +125,6 @@ export function logoutUnconfirmed() {
   return readMarker(LOGOUT_UNCONFIRMED_KEY);
 }
 
-export function markAuthReordered() {
-  writeMarker(AUTH_REORDER_KEY, true);
-}
-
-export function clearAuthReorderMarker() {
-  writeMarker(AUTH_REORDER_KEY, false);
-}
-
-export function authReordered() {
-  return readMarker(AUTH_REORDER_KEY);
-}
-
 export function automaticRefreshAllowed() {
   if (!explicitSignInRequired()) {
     probeStores();
@@ -152,11 +140,7 @@ export function subscribeExitMarker(listener: (key: string, value: boolean) => v
     if (detail) listener(detail.key, detail.value);
   }
   function onStorage(event: StorageEvent) {
-    if (
-      event.key !== EXPLICIT_SIGNIN_KEY &&
-      event.key !== LOGOUT_UNCONFIRMED_KEY &&
-      event.key !== AUTH_REORDER_KEY
-    ) return;
+    if (event.key !== EXPLICIT_SIGNIN_KEY && event.key !== LOGOUT_UNCONFIRMED_KEY) return;
     listener(event.key, event.newValue === "1");
   }
   window.addEventListener(EXIT_MARKER_EVENT, onMarker);

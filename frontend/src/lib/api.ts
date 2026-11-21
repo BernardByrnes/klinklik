@@ -9,7 +9,7 @@ import {
   type AuthoritySnapshot,
 } from "./authority";
 import { markSyncFailure, markSyncStart, markSyncSuccess, viewFromPath } from "./connectivity";
-import { automaticRefreshAllowed, markAuthReordered } from "./exit-marker";
+import { automaticRefreshAllowed } from "./exit-marker";
 
 export type ApiSession = SessionResponse;
 export type RoleGrant = SessionResponse["roles"][number];
@@ -62,7 +62,6 @@ export function cancelProtectedRequests() {
 }
 
 function abortRestoreRequest() {
-  if (restoreController || restoreInFlight) markAuthReordered();
   restoreController?.abort();
   restoreController = null;
   restoreInFlight = null;
@@ -73,7 +72,6 @@ function abortRestoreRequest() {
 // login must cancel older refresh/logout requests BEFORE it sends its own
 // request. State generation guards alone cannot protect the cookie jar.
 export function prepareAuthForNewLogin() {
-  if (restoreController || logoutController || restoreInFlight) markAuthReordered();
   abortRestoreRequest();
   logoutController?.abort();
   logoutController = null;
@@ -138,8 +136,10 @@ export function restoreSession(): Promise<ApiSession | null> {
         markSyncFailure();
         throw error;
       } finally {
-        if (restoreController === controller) restoreController = null;
-        restoreInFlight = null;
+        if (restoreController === controller) {
+          restoreController = null;
+          restoreInFlight = null;
+        }
       }
     })();
   }
