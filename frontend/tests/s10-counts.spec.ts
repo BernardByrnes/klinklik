@@ -339,3 +339,127 @@ test("S-32 independent approver discovers a submitted count from their own sessi
   await expect(page.getByText(/variance -5\.00/)).toBeVisible();
   await expect(page.getByRole("heading", { name: /Movements during count/ })).toBeVisible();
 });
+
+test("S-35 Fix 4 a changed selected location cannot alter a pending count open", async ({
+  page,
+}) => {
+  await login(page);
+  const sessionResponse = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "demo", password: DEMO_PASSWORD },
+  });
+  expect(sessionResponse.ok()).toBeTruthy();
+  const session = (await sessionResponse.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  const headers = {
+    Authorization: `Bearer ${session.access_token}`,
+    "X-Facility-Id": session.facilities[0].id,
+    "Content-Type": "application/json",
+  };
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const firstLocation = await page.request.post(`${API}/api/v1/inventory/locations/`, {
+    headers,
+    data: { code: `S35-L1-${suffix}`, name: `S35 location A ${suffix}`, location_type: "STORE" },
+  });
+  expect(firstLocation.ok(), await firstLocation.text()).toBeTruthy();
+  const secondLocation = await page.request.post(`${API}/api/v1/inventory/locations/`, {
+    headers,
+    data: { code: `S35-L2-${suffix}`, name: `S35 location B ${suffix}`, location_type: "STORE" },
+  });
+  expect(secondLocation.ok(), await secondLocation.text()).toBeTruthy();
+  const firstId = ((await firstLocation.json()) as { id: string }).id;
+  const secondId = ((await secondLocation.json()) as { id: string }).id;
+  await page.goto("/inventory");
+  const location = page.getByLabel("Location", { exact: true });
+  await expect.poll(async () => location.locator("option").count(), { timeout: 15_000 }).toBeGreaterThan(1);
+  await location.selectOption(firstId);
+
+  const bodies: Array<string | null> = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/inventory/counts/open/")
+    ) {
+      bodies.push(request.postData());
+    }
+  });
+  let lost = false;
+  await page.route("**/api/v1/inventory/counts/open/", async (route) => {
+    if (!lost) {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: "Open count", exact: true }).click();
+  const review = page.getByTestId("pending-intent-review");
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  const retry = page.getByRole("button", { name: "Retry", exact: true });
+  if ((await review.getAttribute("aria-expanded")) === "false") await review.click();
+  await location.selectOption(secondId);
+  await retry.click();
+  await expect(page.getByText(/blind sheet|Count [0-9a-f-]+/).first()).toBeVisible();
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toBe(bodies[0]);
+  expect(bodies[0]).toContain(firstId);
+});
+
+test("S-35 Fix 4 a count POST success with a failed read refreshes only the read", async ({
+  page,
+}) => {
+  await login(page);
+  const sessionResponse = await page.request.post(`${API}/api/v1/auth/login/`, {
+    data: { username: "demo", password: DEMO_PASSWORD },
+  });
+  expect(sessionResponse.ok()).toBeTruthy();
+  const session = (await sessionResponse.json()) as {
+    access_token: string;
+    facilities: Array<{ id: string }>;
+  };
+  const headers = {
+    Authorization: `Bearer ${session.access_token}`,
+    "X-Facility-Id": session.facilities[0].id,
+    "Content-Type": "application/json",
+  };
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const locationResponse = await page.request.post(`${API}/api/v1/inventory/locations/`, {
+    headers,
+    data: { code: `S35-READ-${suffix}`, name: `S35 read location ${suffix}`, location_type: "STORE" },
+  });
+  expect(locationResponse.ok(), await locationResponse.text()).toBeTruthy();
+  const locationId = ((await locationResponse.json()) as { id: string }).id;
+  await page.goto("/inventory");
+  await page.getByLabel("Location", { exact: true }).selectOption(locationId);
+
+  let posts = 0;
+  let failedRead = false;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/inventory/counts/open/")
+    ) {
+      posts += 1;
+    }
+  });
+  await page.route("**/api/v1/inventory/counts/open/", async (route) => route.continue());
+  await page.route(/\/api\/v1\/inventory\/counts\/[0-9a-f-]+\/$/, async (route) => {
+    if (!failedRead && route.request().method() === "GET") {
+      failedRead = true;
+      await route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: "Open count", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Retry sheet refresh", exact: true })).toBeVisible({ timeout: 15_000 });
+  expect(posts).toBe(1);
+  await expect(page.getByTestId("pending-intent-review")).toHaveCount(0);
+  await page.getByRole("button", { name: "Retry sheet refresh", exact: true }).click();
+  await expect(page.getByText(/blind sheet|Count [0-9a-f-]+/).first()).toBeVisible();
+  expect(posts).toBe(1);
+});

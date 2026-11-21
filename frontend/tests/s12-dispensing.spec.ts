@@ -122,14 +122,19 @@ test("S-12 prescribes, signs, dispenses and charges one exact handover", async (
   };
   expect(checkedIn.invoice_id).toBeTruthy();
 
-  const triageWorklist = await page.request.get(
-    `${API}/api/v1/clinic/queue/operational/?queue_type=TRIAGE&state=WAITING,CALLED`,
-    { headers: headers(session) }
-  );
-  const triageRows = (await triageWorklist.json()) as {
-    entries: Array<{ id: string; visit_id: string | null; version: number }>;
-  };
-  const triageRow = triageRows.entries.find((row) => row.id === checkedIn.queue_id);
+  let triageRow: { id: string; visit_id: string | null; version: number } | undefined;
+  for (let pageNo = 1; pageNo <= 20 && !triageRow; pageNo += 1) {
+    const triageWorklist = await page.request.get(
+      `${API}/api/v1/clinic/queue/operational/?queue_type=TRIAGE&state=WAITING,CALLED&page_size=100&page=${pageNo}`,
+      { headers: headers(session) }
+    );
+    const triageRows = (await triageWorklist.json()) as {
+      entries: Array<{ id: string; visit_id: string | null; version: number }>;
+      has_next: boolean;
+    };
+    triageRow = triageRows.entries.find((row) => row.id === checkedIn.queue_id);
+    if (!triageRows.has_next) break;
+  }
   expect(triageRow).toBeTruthy();
   const triage = await page.request.post(
     `${API}/api/v1/clinic/triage/${triageRow!.id}/`,
@@ -430,14 +435,19 @@ test("S-29-R6 lost prepare response resumes the original provisional identity", 
   expect(checkIn.ok(), await checkIn.text()).toBeTruthy();
   const checkedIn = (await checkIn.json()) as { visit_id: string; queue_id: string };
 
-  const triageWorklist = await page.request.get(
-    `${API}/api/v1/clinic/queue/operational/?queue_type=TRIAGE&state=WAITING,CALLED`,
-    { headers: headers(session) }
-  );
-  const triageRows = (await triageWorklist.json()) as {
-    entries: Array<{ id: string; version: number }>;
-  };
-  const triageRow = triageRows.entries.find((row) => row.id === checkedIn.queue_id);
+  let triageRow: { id: string; version: number } | undefined;
+  for (let pageNo = 1; pageNo <= 20 && !triageRow; pageNo += 1) {
+    const triageWorklist = await page.request.get(
+      `${API}/api/v1/clinic/queue/operational/?queue_type=TRIAGE&state=WAITING,CALLED&page_size=100&page=${pageNo}`,
+      { headers: headers(session) }
+    );
+    const triageRows = (await triageWorklist.json()) as {
+      entries: Array<{ id: string; version: number }>;
+      has_next: boolean;
+    };
+    triageRow = triageRows.entries.find((row) => row.id === checkedIn.queue_id);
+    if (!triageRows.has_next) break;
+  }
   expect(triageRow).toBeTruthy();
   const triage = await page.request.post(
     `${API}/api/v1/clinic/triage/${triageRow!.id}/`,

@@ -107,6 +107,8 @@ const ENQUIRY_REASON_OPTIONS = [
 ];
 
 type FailedAction = "register" | "check-in" | "enquiry" | "cancel" | null;
+type RegisterRequest = { path: string; body: Record<string, unknown>; key: string };
+type CheckInRequest = { path: string; body: Record<string, unknown>; key: string };
 
 function RadioGroup({
   legend,
@@ -187,6 +189,8 @@ function PatientsWorkspace() {
   const [clockMs, setClockMs] = useState<number | null>(null);
   const registerIdempotencyKey = useRef<string | null>(null);
   const checkInIdempotencyKey = useRef<string | null>(null);
+  const registrationRequestRef = useRef<RegisterRequest | null>(null);
+  const checkInRequestRef = useRef<CheckInRequest | null>(null);
   const registerIntentRef = useRef<string | null>(null);
   const checkInIntentRef = useRef<string | null>(null);
   const enquiryIdempotencyKey = useRef<string | null>(null);
@@ -254,31 +258,13 @@ function PatientsWorkspace() {
   const currency = session?.organisation.default_currency ?? "UGX";
 
   const createPatient = useMutation({
-    mutationFn: (resolution?: Record<string, unknown>) =>
-      post<CreatePatientRegisterResponse>(
-        "/api/v1/reception/patients/register/",
-        {
-          first_name: firstName,
-          last_name: lastName,
-          phone,
-          sex,
-          date_of_birth: dateOfBirth || null,
-          estimated_age_years: estimatedAgeYears ? Number(estimatedAgeYears) : null,
-          dob_estimated: !dateOfBirth && Boolean(estimatedAgeYears),
-          village,
-          parish,
-          sub_county: subCounty,
-          district,
-          next_of_kin_name: nextOfKinName,
-          next_of_kin_phone: nextOfKinPhone,
-          ...(resolution ? { duplicate_resolution: resolution } : {}),
-        },
-        registerIdempotencyKey.current ?? (registerIdempotencyKey.current = newIdempotencyKey("patient-register")),
-      ),
+    mutationFn: (request: RegisterRequest) =>
+      post<CreatePatientRegisterResponse>(request.path, request.body, request.key),
     onMutate: () => getAuthoritySnapshot(),
     onSuccess: async (result) => {
       if (result.next_action === "RESOLVE_DUPLICATE") {
         registerIdempotencyKey.current = null;
+        registrationRequestRef.current = null;
         resolveIntent(registerIntentRef.current);
         registerIntentRef.current = null;
         setFailedAction(null);
@@ -321,9 +307,10 @@ function PatientsWorkspace() {
       setNextOfKinPhone("");
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patients") });
     },
-    onError: (reason, _variables, authority) => {
+    onError: (reason, request, authority) => {
       if (!shouldRegisterIntent(reason)) {
         registerIdempotencyKey.current = null;
+        registrationRequestRef.current = null;
         resolveIntent(registerIntentRef.current);
         registerIntentRef.current = null;
       } else {
@@ -334,7 +321,7 @@ function PatientsWorkspace() {
           authority,
           retry: async () => {
             if (!authority || !isCurrentAuthority(authority)) return;
-            await createPatient.mutateAsync(undefined).catch(() => undefined);
+            await createPatient.mutateAsync(request).catch(() => undefined);
           },
         });
       }
@@ -345,22 +332,12 @@ function PatientsWorkspace() {
   });
 
   const checkIn = useMutation({
-    mutationFn: () =>
-      post<VisitCheckInResponse>("/api/v1/reception/visits/check-in/", {
-        patient_id: selected?.id,
-        department_id: departmentId || defaultDepartment?.id,
-        visit_type: visitType,
-        payer_type: payerType,
-        ...(arrivalEnquiryId
-          ? {
-              arrival_enquiry_id: arrivalEnquiryId,
-              ...(arrivalEnquiryVersion ? { arrival_enquiry_version: arrivalEnquiryVersion } : {}),
-            }
-          : {}),
-      }, checkInIdempotencyKey.current ?? (checkInIdempotencyKey.current = newIdempotencyKey("visit-check-in"))),
+    mutationFn: (request: CheckInRequest) =>
+      post<VisitCheckInResponse>(request.path, request.body, request.key),
     onMutate: () => getAuthoritySnapshot(),
     onSuccess: (result) => {
       checkInIdempotencyKey.current = null;
+      checkInRequestRef.current = null;
       resolveIntent(checkInIntentRef.current);
       checkInIntentRef.current = null;
       setFailedAction(null);
@@ -378,9 +355,10 @@ function PatientsWorkspace() {
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("patient-check-in-summary", selected?.id) });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("visit-context", result.visit_id) });
     },
-    onError: (reason, _variables, authority) => {
+    onError: (reason, request, authority) => {
       if (!shouldRegisterIntent(reason)) {
         checkInIdempotencyKey.current = null;
+        checkInRequestRef.current = null;
         resolveIntent(checkInIntentRef.current);
         checkInIntentRef.current = null;
       } else {
@@ -391,7 +369,7 @@ function PatientsWorkspace() {
           authority,
           retry: async () => {
             if (!authority || !isCurrentAuthority(authority)) return;
-            await checkIn.mutateAsync().catch(() => undefined);
+            await checkIn.mutateAsync(request).catch(() => undefined);
           },
         });
       }
@@ -475,14 +453,56 @@ function PatientsWorkspace() {
   });
 
   const submitRegistration = (resolution?: Record<string, unknown>) => {
+    const key = registerIdempotencyKey.current ?? newIdempotencyKey("patient-register");
+    registerIdempotencyKey.current = key;
+    const request: RegisterRequest = {
+      path: "/api/v1/reception/patients/register/",
+      key,
+      body: {
+        first_name: firstName,
+        last_name: lastName,
+        phone,
+        sex,
+        date_of_birth: dateOfBirth || null,
+        estimated_age_years: estimatedAgeYears ? Number(estimatedAgeYears) : null,
+        dob_estimated: !dateOfBirth && Boolean(estimatedAgeYears),
+        village,
+        parish,
+        sub_county: subCounty,
+        district,
+        next_of_kin_name: nextOfKinName,
+        next_of_kin_phone: nextOfKinPhone,
+        ...(resolution ? { duplicate_resolution: resolution } : {}),
+      },
+    };
+    registrationRequestRef.current = request;
     setFailedAction(null);
-    retryActions.current.register = () => createPatient.mutate(resolution);
-    createPatient.mutate(resolution);
+    retryActions.current.register = () => createPatient.mutate(request);
+    createPatient.mutate(request);
   };
   const submitCheckIn = () => {
+    const key = checkInIdempotencyKey.current ?? newIdempotencyKey("visit-check-in");
+    checkInIdempotencyKey.current = key;
+    const request: CheckInRequest = {
+      path: "/api/v1/reception/visits/check-in/",
+      key,
+      body: {
+        patient_id: selected?.id,
+        department_id: departmentId || defaultDepartment?.id,
+        visit_type: visitType,
+        payer_type: payerType,
+        ...(arrivalEnquiryId
+          ? {
+              arrival_enquiry_id: arrivalEnquiryId,
+              ...(arrivalEnquiryVersion ? { arrival_enquiry_version: arrivalEnquiryVersion } : {}),
+            }
+          : {}),
+      },
+    };
+    checkInRequestRef.current = request;
     setFailedAction(null);
-    retryActions.current["check-in"] = () => checkIn.mutate();
-    checkIn.mutate();
+    retryActions.current["check-in"] = () => checkIn.mutate(request);
+    checkIn.mutate(request);
   };
   const submitEnquiry = () => {
     setFailedAction(null);

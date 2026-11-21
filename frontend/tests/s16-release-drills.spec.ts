@@ -425,6 +425,119 @@ test("S-35 Fix 3 retry waits for reconnect and stays mobile-accessible", async (
   await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
 });
 
+test("S-35 Fix 4 a changed form cannot alter a pending registration", async ({
+  page,
+}) => {
+  await login(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  await page.goto("/patients");
+  await steadyFill(page, "First name", "S35");
+  await steadyFill(page, "Last name", `Snapshot${suffix}`);
+  await steadyFill(page, "Phone", `075${suffix.slice(-6).padStart(6, "0")}`);
+
+  const bodies: Array<string | null> = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/reception/patients/register/")
+    ) {
+      bodies.push(request.postData());
+    }
+  });
+  let lost = false;
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    if (!lost) {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  const form = page
+    .locator("form")
+    .filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByTestId("pending-intent-review")).toBeVisible({ timeout: 15_000 });
+  await steadyFill(page, "Last name", `Changed${suffix}`);
+
+  await page.getByTestId("pending-intent-review").click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]).toBe(bodies[0]);
+  expect(bodies[0]).toContain(`Snapshot${suffix}`);
+  expect(bodies[1]).not.toContain(`Changed${suffix}`);
+});
+
+test("S-35 Fix 4 duplicate resolution survives a changed reason on retry", async ({
+  page,
+}) => {
+  await login(page);
+  const session = await apiLogin(page);
+  const suffix = Date.now().toString().slice(-6) + Math.trunc(Math.random() * 1000);
+  const phone = `076${suffix.slice(-6).padStart(6, "0")}`;
+  const existing = await page.request.post(`${API}/api/v1/patients/`, {
+    headers: headers(session),
+    data: {
+      first_name: "S35",
+      last_name: `Duplicate${suffix}`,
+      sex: "FEMALE",
+      date_of_birth: "1990-05-14",
+      phone,
+    },
+  });
+  expect(existing.ok(), await existing.text()).toBeTruthy();
+
+  await page.goto("/patients");
+  await steadyFill(page, "First name", "S35");
+  await steadyFill(page, "Last name", `Duplicate${suffix}`);
+  await steadyFill(page, "Phone", phone);
+  await page.getByLabel("Sex", { exact: true }).selectOption("FEMALE");
+  await steadyFill(page, "Date of birth", "1990-05-14");
+
+  const bodies: Array<string | null> = [];
+  let attempt = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/reception/patients/register/")
+    ) {
+      bodies.push(request.postData());
+    }
+  });
+  await page.route("**/api/v1/reception/patients/register/", async (route) => {
+    attempt += 1;
+    if (attempt === 2) {
+      await route.fetch();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  const form = page
+    .locator("form")
+    .filter({ has: page.getByLabel("First name", { exact: true }) });
+  await form.getByRole("button", { name: "Register patient", exact: true }).click();
+  await expect(page.getByText("Possible duplicate", { exact: true })).toBeVisible({ timeout: 15_000 });
+  const reason = page.getByLabel("Reason this is not the same patient", { exact: true });
+  await reason.fill(`Original reason ${suffix}`);
+  await page.getByRole("button", { name: "Not the same — create new", exact: true }).click();
+  const review = page.getByTestId("pending-intent-review");
+  await expect(review).toBeVisible({ timeout: 15_000 });
+  await reason.fill(`Changed reason ${suffix}`);
+  if ((await review.getAttribute("aria-expanded")) === "false") await review.click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByText(new RegExp("registered as P-"))).toBeVisible({ timeout: 15_000 });
+  expect(bodies).toHaveLength(3);
+  expect(bodies[2]).toBe(bodies[1]);
+  expect(bodies[1]).toContain(`Original reason ${suffix}`);
+  expect(bodies[2]).not.toContain(`Changed reason ${suffix}`);
+  await expect(review).toHaveCount(0);
+});
+
 test("S-33 throttled worklist records cold and warm samples", async ({ page }) => {
   test.setTimeout(180_000);
   await login(page);

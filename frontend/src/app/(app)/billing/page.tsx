@@ -56,6 +56,7 @@ type PaymentContext = {
   visitId: string | null;
   paymentCount: number;
 };
+type PaymentRequest = { invoiceId: string; path: string; key: string; body: Record<string, unknown> };
 
 type CashierShift = {
   id: string;
@@ -166,6 +167,7 @@ function BillingWorkspace() {
   const [closureBlockers, setClosureBlockers] = useState<ClosureBlocker[]>([]);
   const [closureResult, setClosureResult] = useState<VisitClosureResponse | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
+  const paymentRequestRef = useRef<PaymentRequest | null>(null);
   const reprintIntentRef = useRef<{ receiptId: string; key: string; registryId: string } | null>(null);
 
   const [patientSearch, setPatientSearch] = useState("");
@@ -405,30 +407,25 @@ function BillingWorkspace() {
   });
 
   const pay = useMutation({
-    mutationFn: (invoiceId: string) => {
-      const key = paymentKeyRef.current ?? newIdempotencyKey("s05-payment");
-      paymentKeyRef.current = key;
-      const path = activeShift
-        ? `/api/v1/billing/invoices/${invoiceId}/payments/`
-        : `/api/v1/billing/invoices/${invoiceId}/pay/`;
-      return apiRequest<{ id: string; receipt_id: string | null }>(path, {
+    mutationFn: (request: PaymentRequest) =>
+      apiRequest<{ id: string; receipt_id: string | null }>(request.path, {
         method: "POST",
-        headers: { "Idempotency-Key": key },
-        body: JSON.stringify({ amount: paymentAmount, method, ...(reference.trim() ? { reference: reference.trim() } : {}) }),
-      });
-    },
+        headers: { "Idempotency-Key": request.key },
+        body: JSON.stringify(request.body),
+      }),
     onMutate: (): PaymentContext => ({
       origin: getAuthoritySnapshot(),
       visitId: visitContextRef.current,
       paymentCount: activeInvoice?.payments?.length ?? 0,
     }),
-    onSuccess: (result, invoiceId, context) => {
+    onSuccess: (result, request, context) => {
       // The POST committed the payment. Everything below is reconciliation:
       // a failed receipt read must never read back as a failed payment.
       paymentKeyRef.current = null;
+      paymentRequestRef.current = null;
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoices") });
       queryClient.invalidateQueries({ queryKey: protectedQueryKey("invoice-by-visit") });
-      if (!isCurrentPaymentContext(context, invoiceId)) {
+      if (!isCurrentPaymentContext(context, request.invoiceId)) {
         // The cashier already moved on; the committed payment stays recorded
         // but nothing from this result may render on the new context.
         return;
@@ -436,11 +433,11 @@ function BillingWorkspace() {
       if (focused) {
         // A new collection stays closed until the refresh for this payment has
         // returned, so a stale balance can never reopen the old form.
-        setPostPaymentGate({ invoiceId, paidAt: Date.now() });
+        setPostPaymentGate({ invoiceId: request.invoiceId, paidAt: Date.now() });
       }
-      receiptTargetRef.current = invoiceId;
+      receiptTargetRef.current = request.invoiceId;
       setReceiptState({
-        invoiceId,
+        invoiceId: request.invoiceId,
         receiptId: result.receipt_id ?? null,
         exact: context.paymentCount > 0,
         data: null,
@@ -451,14 +448,14 @@ function BillingWorkspace() {
       setError("");
       setReference("");
       void loadReceipt(
-        invoiceId,
+        request.invoiceId,
         context.origin,
         result.receipt_id ?? null,
         context.paymentCount > 0,
       );
     },
-    onError: (reason, invoiceId, context) => {
-      if (!isCurrentPaymentContext(context, invoiceId)) return;
+    onError: (reason, request, context) => {
+      if (!isCurrentPaymentContext(context, request.invoiceId)) return;
       setNotice("");
       setError(errorMessage(reason));
     },
@@ -569,6 +566,27 @@ function BillingWorkspace() {
     const input = { receiptId, key: newIdempotencyKey("s05-reprint") };
     setError("");
     reprintReceipt.mutate(input);
+  };
+
+  const submitPayment = () => {
+    if (!activeInvoice) return;
+    const key = paymentKeyRef.current ?? newIdempotencyKey("s05-payment");
+    paymentKeyRef.current = key;
+    const request: PaymentRequest = {
+      invoiceId: activeInvoice.id,
+      key,
+      path: activeShift
+        ? `/api/v1/billing/invoices/${activeInvoice.id}/payments/`
+        : `/api/v1/billing/invoices/${activeInvoice.id}/pay/`,
+      body: {
+        amount: paymentAmount,
+        method,
+        ...(reference.trim() ? { reference: reference.trim() } : {}),
+      },
+    };
+    paymentRequestRef.current = request;
+    setError("");
+    pay.mutate(request);
   };
 
   const repriceInvoice = useMutation({
@@ -1346,7 +1364,7 @@ function BillingWorkspace() {
                         </Field>
                       </div>
                       <div className="sm:col-span-2">
-                        <Button disabled={pay.isPending} onClick={() => pay.mutate(activeInvoice.id)}>
+                        <Button disabled={pay.isPending} onClick={submitPayment}>
                           {pay.isPending ? "Posting…" : "Post payment"}
                         </Button>
                       </div>

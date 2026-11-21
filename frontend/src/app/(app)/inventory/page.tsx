@@ -29,6 +29,14 @@ import {
   formatDate,
 } from "../../../components/ui";
 
+type CountOpenRequest = { key: string; locationId: string };
+type CountSubmitRequest = {
+  key: string;
+  sheetId: string;
+  expectedVersion: number;
+  lines: Array<{ line_id: string; counted_qty: string }>;
+};
+type CountApproveRequest = { key: string; sheetId: string; expectedVersion: number };
 type Location = { id: string; code: string; name: string; is_default: boolean; active: boolean };
 type Product = { id: string; code: string; generic_name: string; brand_name: string; strength: string };
 
@@ -155,6 +163,9 @@ export default function InventoryPage() {
   const [countValues, setCountValues] = useState<Record<string, string>>({});
   const [countValidationFailed, setCountValidationFailed] = useState(false);
   const [reviewCountId, setReviewCountId] = useState<string | null>(null);
+  const [countRefreshFailed, setCountRefreshFailed] = useState(false);
+  const openedCountIdRef = useRef<string | null>(null);
+  const approvedCountIdRef = useRef<string | null>(null);
 
   const stockKey = useProtectedQueryKey("inventory-stock", search, locationId);
   const stock = useQuery({
@@ -310,19 +321,67 @@ export default function InventoryPage() {
     receive.mutate(intent);
   };
 
+  const startCountOpen = () => {
+    const request: CountOpenRequest = {
+      key: newIdempotencyKey("inventory-count-open"),
+      locationId: locationId || defaultLocation,
+    };
+    setError("");
+    openCount.mutate(request);
+  };
+
+  const submitCountSheet = () => {
+    if (!countSheet) {
+      setError("Open a count first.");
+      return;
+    }
+    const lines = countSheet.lines.map((line) => ({
+      line_id: line.id,
+      counted_qty: (countValues[line.id] ?? "").trim(),
+    }));
+    if (lines.some((line) => !/^\d+(\.\d{1,2})?$/.test(line.counted_qty))) {
+      setCountValidationFailed(true);
+      setError("Enter a counted quantity for every line before submitting.");
+      return;
+    }
+    setCountValidationFailed(false);
+    setError("");
+    submitCount.mutate({
+      key: newIdempotencyKey("inventory-count-submit"),
+      sheetId: countSheet.id,
+      expectedVersion: countSheet.version,
+      lines,
+    });
+  };
+
+  const approveCountSheet = () => {
+    if (!countSheet) {
+      setError("Submit a count first.");
+      return;
+    }
+    setError("");
+    approveCount.mutate({
+      key: newIdempotencyKey("inventory-count-approve"),
+      sheetId: countSheet.id,
+      expectedVersion: countSheet.version,
+    });
+  };
+
   const openCount = useMutation({
-    mutationFn: async (key: string) => {
-      const resolvedLocation = locationId || defaultLocation;
+    mutationFn: async (request: CountOpenRequest) => {
       const opened = await apiRequest<{ id: string }>("/api/v1/inventory/counts/open/", {
         method: "POST",
-        headers: { "Idempotency-Key": key },
-        body: JSON.stringify({ location_id: resolvedLocation }),
+        headers: { "Idempotency-Key": request.key },
+        body: JSON.stringify({ location_id: request.locationId }),
       });
+      openedCountIdRef.current = opened.id;
       return apiRequest<CountSheet>(`/api/v1/inventory/counts/${opened.id}/`);
     },
     onMutate: () => getAuthoritySnapshot(),
     onSuccess: (sheet) => {
       resolveInventoryIntent("inventory-count-open");
+      openedCountIdRef.current = null;
+      setCountRefreshFailed(false);
       setCountSheet(sheet);
       setCountValues(Object.fromEntries(sheet.lines.map((line) => [line.id, line.counted_qty ?? ""])));
       setCountValidationFailed(false);
@@ -330,13 +389,19 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason, key, authority) => {
+    onError: (reason, request, authority) => {
       setNotice("");
+      if (openedCountIdRef.current) {
+        resolveInventoryIntent("inventory-count-open");
+        setCountRefreshFailed(true);
+        setError("The count opened but its sheet could not be refreshed. Retry the refresh only.");
+        return;
+      }
       if (!shouldRegisterIntent(reason)) resolveInventoryIntent("inventory-count-open");
       else {
         registerInventoryIntent("inventory-count-open", authority, async () => {
           if (!authority || !isCurrentAuthority(authority)) return;
-          await openCount.mutateAsync(key).catch(() => undefined);
+          await openCount.mutateAsync(request).catch(() => undefined);
         });
       }
       setError(errorMessage(reason));
@@ -344,29 +409,18 @@ export default function InventoryPage() {
   });
 
   const submitCount = useMutation({
-    mutationFn: (key: string) => {
-      if (!countSheet) throw new Error("Open a count first.");
-      const observed = countSheet.lines.map((line) => ({
-        line_id: line.id,
-        value: (countValues[line.id] ?? "").trim(),
-      }));
-      if (observed.some(({ value }) => !/^\d+(\.\d{1,2})?$/.test(value))) {
-        setCountValidationFailed(true);
-        throw new Error("Enter a counted quantity for every line before submitting.");
-      }
-      setCountValidationFailed(false);
-      return apiRequest<{ id: string; state: string; version: number }>(
-        `/api/v1/inventory/counts/${countSheet.id}/submit/`,
+    mutationFn: (request: CountSubmitRequest) =>
+      apiRequest<{ id: string; state: string; version: number }>(
+        `/api/v1/inventory/counts/${request.sheetId}/submit/`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": key },
+          headers: { "Idempotency-Key": request.key },
           body: JSON.stringify({
-            expected_version: countSheet.version,
-            lines: observed.map(({ line_id, value }) => ({ line_id, counted_qty: value })),
+            expected_version: request.expectedVersion,
+            lines: request.lines,
           }),
         },
-      );
-    },
+      ),
     onMutate: () => getAuthoritySnapshot(),
     onSuccess: (result) => {
       resolveInventoryIntent("inventory-count-submit");
@@ -378,13 +432,13 @@ export default function InventoryPage() {
       setError("");
       refreshInventory();
     },
-    onError: (reason, key, authority) => {
+    onError: (reason, request, authority) => {
       setNotice("");
       if (!shouldRegisterIntent(reason)) resolveInventoryIntent("inventory-count-submit");
       else {
         registerInventoryIntent("inventory-count-submit", authority, async () => {
           if (!authority || !isCurrentAuthority(authority)) return;
-          await submitCount.mutateAsync(key).catch(() => undefined);
+          await submitCount.mutateAsync(request).catch(() => undefined);
         });
       }
       setError(errorMessage(reason));
@@ -392,37 +446,62 @@ export default function InventoryPage() {
   });
 
   const approveCount = useMutation({
-    mutationFn: async (key: string) => {
-      if (!countSheet) throw new Error("Submit a count first.");
+    mutationFn: async (request: CountApproveRequest) => {
       const approved = await apiRequest<{ id: string; state: string; version: number }>(
-        `/api/v1/inventory/counts/${countSheet.id}/approve/`,
+        `/api/v1/inventory/counts/${request.sheetId}/approve/`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": key },
-          body: JSON.stringify({ expected_version: countSheet.version }),
+          headers: { "Idempotency-Key": request.key },
+          body: JSON.stringify({ expected_version: request.expectedVersion }),
         },
       );
+      approvedCountIdRef.current = approved.id;
       return apiRequest<CountSheet>(`/api/v1/inventory/counts/${approved.id}/?reveal=1`);
     },
     onMutate: () => getAuthoritySnapshot(),
     onSuccess: (sheet) => {
       resolveInventoryIntent("inventory-count-approve");
+      approvedCountIdRef.current = null;
+      setCountRefreshFailed(false);
       setCountSheet(sheet);
       setNotice("Stock count approved. Counter-movements were posted.");
       setError("");
       refreshInventory();
     },
-    onError: (reason, key, authority) => {
+    onError: (reason, request, authority) => {
       setNotice("");
+      if (approvedCountIdRef.current) {
+        resolveInventoryIntent("inventory-count-approve");
+        setCountRefreshFailed(true);
+        setError("The count was approved but its sheet could not be refreshed. Retry the refresh only.");
+        return;
+      }
       if (!shouldRegisterIntent(reason)) resolveInventoryIntent("inventory-count-approve");
       else {
         registerInventoryIntent("inventory-count-approve", authority, async () => {
           if (!authority || !isCurrentAuthority(authority)) return;
-          await approveCount.mutateAsync(key).catch(() => undefined);
+          await approveCount.mutateAsync(request).catch(() => undefined);
         });
       }
       setError(errorMessage(reason));
     },
+  });
+
+  const refreshCountSheet = useMutation({
+    mutationFn: (id: string) =>
+      apiRequest<CountSheet>(
+        `/api/v1/inventory/counts/${id}/${approvedCountIdRef.current === id ? "?reveal=1" : ""}`,
+      ),
+    onSuccess: (sheet) => {
+      setCountSheet(sheet);
+      setCountValues(
+        Object.fromEntries(sheet.lines.map((line) => [line.id, line.counted_qty ?? ""])),
+      );
+      setCountRefreshFailed(false);
+      setError("");
+      setNotice("Count sheet refreshed.");
+    },
+    onError: (reason) => setError(errorMessage(reason)),
   });
 
   if (!can("inventory.read")) {
@@ -541,9 +620,21 @@ export default function InventoryPage() {
               <Select aria-label="Location" value={locationId || defaultLocation} onChange={(event) => setLocationId(event.target.value)}>
                 {(locations.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
               </Select>
-              <Button variant="secondary" disabled={openCount.isPending} onClick={() => void openCount.mutate(newIdempotencyKey("inventory-count-open"))}>
+              <Button variant="secondary" disabled={openCount.isPending || !online} onClick={startCountOpen}>
                 {openCount.isPending ? "Opening…" : "Open count"}
               </Button>
+              {countRefreshFailed ? (
+                <Button
+                  variant="secondary"
+                  disabled={refreshCountSheet.isPending || !online}
+                  onClick={() => {
+                    const id = openedCountIdRef.current ?? approvedCountIdRef.current;
+                    if (id) refreshCountSheet.mutate(id);
+                  }}
+                >
+                  {refreshCountSheet.isPending ? "Refreshing…" : "Retry sheet refresh"}
+                </Button>
+              ) : null}
               {countSheet ? (
                 <>
                   <p className="text-[12.5px] text-secondary">Count {countSheet.id} · {countSheet.state} · version {countSheet.version}</p>
@@ -569,9 +660,9 @@ export default function InventoryPage() {
                       );
                     })}
                   </ul>
-                  <Button disabled={submitCount.isPending} onClick={() => submitCount.mutate(newIdempotencyKey("inventory-count-submit"))}>Submit count</Button>
+                  <Button disabled={submitCount.isPending || !online} onClick={submitCountSheet}>Submit count</Button>
                   {countSheet.state === "SUBMITTED" && can("inventory.approve") ? (
-                    <Button disabled={approveCount.isPending || !online} onClick={() => approveCount.mutate(newIdempotencyKey("inventory-count-approve"))}>
+                    <Button disabled={approveCount.isPending || !online} onClick={approveCountSheet}>
                       Approve count
                     </Button>
                   ) : null}

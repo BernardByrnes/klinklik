@@ -85,7 +85,10 @@ async function readInvoice(page: Page, invoiceId: string) {
 function countPaymentPosts(page: Page) {
   const posts: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().includes("/pay/")) {
+    if (
+      request.method() === "POST" &&
+      (request.url().includes("/pay/") || request.url().includes("/payments/"))
+    ) {
       posts.push(request.url());
     }
   });
@@ -312,7 +315,7 @@ test("a payment result stays out of the ordinary list after a selection change",
   const processed = new Promise<void>((resolve) => {
     paymentProcessed = resolve;
   });
-  await page.route(/\/api\/v1\/billing\/invoices\/[^/]+\/pay\/$/, async (route) => {
+  await page.route(/\/api\/v1\/billing\/invoices\/[^/]+\/(?:pay|payments)\/$/, async (route) => {
     const response = await route.fetch();
     paymentProcessed?.();
     await new Promise<void>((resolve) => {
