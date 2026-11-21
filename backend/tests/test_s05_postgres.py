@@ -16,7 +16,7 @@ from billing.models import (
     PaymentAllocation,
     PaymentReceipt,
 )
-from billing.services import confirm_payment, create_invoice
+from billing.services import confirm_payment, create_invoice, shift_z_report
 from core.errors import CanonicalError
 from core.rls import rls_status
 from core.services import tenant_atomic
@@ -80,6 +80,59 @@ def test_pg_s05_force_rls_receipt_guards_and_money_constraints(tenant):
             """
         )
         assert cursor.fetchone() is not None
+
+
+def test_pg_s40_z_report_guard_and_last_closed_projection(
+    tenant, authed_client, enabled_mig001_target
+):
+    status = rls_status()
+    assert status["enforced"] is True
+    assert status["role"]["bypass_rls"] is False
+
+    patient_id = register(authed_client, "s40-pg-register-z")
+    checked_in = check_in(authed_client, patient_id, tenant, "s40-pg-checkin-z")
+    shift = api_open_shift(authed_client, "5000.00")
+    paid = pay(authed_client, checked_in["invoice_id"], "10000.00", "s40-pg-pay-z")
+    assert paid.status_code == 201
+
+    blind = authed_client.get(f"/api/v1/billing/shifts/{shift['id']}/z-report/")
+    assert blind.status_code == 409
+    assert blind.data["code"] == "SHIFT_NOT_CLOSED"
+    assert "tenders" not in blind.data
+    assert "10000.00" not in str(blind.data)
+    with tenant_atomic(tenant.organisation.id):
+        stored_open = CashierShift.objects.get(id=shift["id"])
+        with pytest.raises(CanonicalError) as guarded:
+            shift_z_report(
+                organisation=tenant.organisation,
+                facility=tenant.facility,
+                shift=stored_open,
+            )
+        assert guarded.value.code == "SHIFT_NOT_CLOSED"
+
+    closed = authed_client.post(
+        f"/api/v1/billing/shifts/{shift['id']}/close/",
+        {"declared_cash": "16000.00", "reason": "Synthetic PostgreSQL blind close"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-pg-close-z",
+    )
+    assert closed.status_code == 200, closed.data
+    report = authed_client.get(f"/api/v1/billing/shifts/{shift['id']}/z-report/")
+    assert report.status_code == 200, report.data
+    assert report.data["expected_cash"] == "15000.00"
+    assert report.data["variance"] == "1000.00"
+    assert report.data["variance_reason"] == "Synthetic PostgreSQL blind close"
+    current = authed_client.get("/api/v1/billing/shifts/current/")
+    assert current.status_code == 200, current.data
+    assert current.data["shift"] is None
+    assert current.data["last_closed_shift"]["id"] == shift["id"]
+    with tenant_atomic(tenant.organisation.id):
+        stored = CashierShift.objects.get(id=shift["id"])
+        assert stored.status == "CLOSED"
+        assert stored.expected_cash == Decimal("15000.00")
+        assert CashierShift.objects.count() == 1
+        assert AuditEvent.objects.filter(event_code="SHIFT_OPENED").count() == 1
+        assert AuditEvent.objects.filter(event_code="SHIFT_CLOSED").count() == 1
 
 
 def test_pg_s05_competing_final_payments_have_one_winner(tenant):

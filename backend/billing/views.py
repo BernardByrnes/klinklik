@@ -27,7 +27,9 @@ from billing.serializers import (
     ReceiptReprintSerializer,
     ReceiptSerializer,
     ServiceCatalogSerializer,
+    ClosedShiftSummarySerializer,
     ShiftCloseSerializer,
+    ShiftCurrentResponseSerializer,
     ShiftOpenSerializer,
     ShiftSerializer,
     ZReportSerializer,
@@ -40,6 +42,7 @@ from billing.services import (
     create_invoice,
     current_shift,
     issue_credit_note,
+    last_closed_shift,
     open_shift,
     payment_method_options,
     post_payment,
@@ -407,7 +410,9 @@ class ShiftOpenView(TenantAPIView):
 
 class ShiftCurrentView(TenantAPIView):
     capability = "billing.payment.record"
-    response_serializer_class = ShiftSerializer
+    response_serializer_class = ShiftCurrentResponseSerializer
+    response_is_list = False
+    operation_id = "retrieveCurrentShift"
 
     def get(self, request):
         shift = current_shift(
@@ -415,9 +420,19 @@ class ShiftCurrentView(TenantAPIView):
             facility=request.facility,
             actor=request.user,
         )
-        if shift is None:
-            return Response({"shift": None})
-        return Response({"shift": ShiftSerializer(shift).data})
+        closed = last_closed_shift(
+            organisation=request.organisation,
+            facility=request.facility,
+            actor=request.user,
+        )
+        return Response(
+            {
+                "shift": ShiftSerializer(shift).data if shift is not None else None,
+                "last_closed_shift": (
+                    ClosedShiftSummarySerializer(closed).data if closed is not None else None
+                ),
+            }
+        )
 
 
 class ShiftCloseView(TenantAPIView):
@@ -625,6 +640,7 @@ class RefundRejectFencedView(RefundFencedView):
 class ShiftZReportView(TenantAPIView):
     capability = "billing.receipt.print"
     response_serializer_class = ZReportSerializer
+    response_is_list = False
     operation_id = "retrieveShiftZReport"
 
     def get(self, request, pk):

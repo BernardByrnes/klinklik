@@ -29,6 +29,62 @@ function apiHeaders(session: ApiSession) {
   };
 }
 
+async function steadyFill(page: Page, label: string, value: string) {
+  const locator = page.getByLabel(label, { exact: true });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await locator.fill(value);
+    if ((await locator.inputValue()) === value) {
+      await page.waitForTimeout(150);
+      if ((await locator.inputValue()) === value) return;
+    }
+  }
+  throw new Error(`Input "${label}" did not hold its value`);
+}
+
+async function refreshedSession(page: Page): Promise<ApiSession> {
+  const response = await page.request.post(`${API}/api/v1/auth/refresh/`);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as ApiSession;
+}
+
+async function readCurrentShift(page: Page, session: ApiSession) {
+  const response = await page.request.get(`${API}/api/v1/billing/shifts/current/`, {
+    headers: apiHeaders(session),
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as {
+    shift: { id: string; status: string } | null;
+    last_closed_shift: { id: string; status: string; expected_cash: string } | null;
+  };
+}
+
+async function closeAnyOpenShift(page: Page, session: ApiSession, suffix: string) {
+  const current = await readCurrentShift(page, session);
+  if (!current.shift) return null;
+  const response = await page.request.post(
+    `${API}/api/v1/billing/shifts/${current.shift.id}/close/`,
+    {
+      headers: { ...apiHeaders(session), "Idempotency-Key": `s40-cleanup-${suffix}` },
+      data: { declared_cash: "0.00", reason: "Synthetic browser setup cleanup" },
+    },
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return current.shift.id;
+}
+
+async function openShiftFromUi(page: Page) {
+  const opened = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/billing/shifts/open/") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Open shift", exact: true }).click();
+  const response = await opened;
+  expect(response.status()).toBe(201);
+  await expect(page.getByText(/Shift open since/)).toBeVisible();
+  return ((await response.json()) as { id: string }).id;
+}
+
 async function newChargeableVisit(page: Page, session: ApiSession, label: string) {
   const suffix = `${Date.now().toString().slice(-6)}${Math.trunc(Math.random() * 1000)}`;
   const displayName = `${label} Edge${suffix}`;
@@ -358,4 +414,132 @@ test("a payment result stays out of the ordinary list after a selection change",
   const settled = await readInvoice(page, first.invoiceId);
   expect(settled.payments).toHaveLength(1);
   expect(settled.status).toBe("PAID");
+});
+
+test("a lost close response retries the exact key and never starts a second close", async ({
+  page,
+}) => {
+  const session = await signIn(page);
+  const { visitId } = await newChargeableVisit(page, session, "CloseKey");
+  const suffix = `${Date.now()}`;
+  await closeAnyOpenShift(page, session, suffix);
+  await page.goto(`/billing?visit=${visitId}`);
+  const shiftId = await openShiftFromUi(page);
+
+  const keys: string[] = [];
+  let first = true;
+  await page.route(/\/api\/v1\/billing\/shifts\/[^/]+\/close\/$/, async (route) => {
+    keys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (first) {
+      first = false;
+      const committed = await route.fetch();
+      expect(committed.status()).toBe(200);
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await steadyFill(page, "Declared cash", "0.00");
+  await page.getByRole("button", { name: "Review close", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm close", exact: true }).click();
+  await expect(page.locator("[data-shift-reconciliation]")).toContainText(
+    "close command is not confirmed",
+  );
+  expect(keys).toHaveLength(1);
+
+  const retry = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/close/") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Retry exact close", exact: true }).click();
+  expect((await retry).status()).toBe(200);
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+
+  await expect(page.locator("[data-shift-reconciliation]")).toHaveCount(0);
+  await expect(page.getByText(/Closed shift/)).toBeVisible();
+  const current = await readCurrentShift(page, await refreshedSession(page));
+  expect(current.shift).toBeNull();
+  expect(current.last_closed_shift?.id).toBe(shiftId);
+});
+
+test("a lost open response is reconciled by a read instead of a second open", async ({ page }) => {
+  const session = await signIn(page);
+  const { visitId } = await newChargeableVisit(page, session, "OpenKey");
+  await closeAnyOpenShift(page, session, `${Date.now()}`);
+
+  const keys: string[] = [];
+  let first = true;
+  await page.route(/\/api\/v1\/billing\/shifts\/open\/$/, async (route) => {
+    keys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (first) {
+      first = false;
+      const committed = await route.fetch();
+      expect(committed.status()).toBe(201);
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/billing?visit=${visitId}`);
+  await page.getByRole("button", { name: "Open shift", exact: true }).click();
+  await expect(page.locator("[data-shift-reconciliation]")).toContainText(
+    "open command is not confirmed",
+  );
+  expect(keys).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Refresh shift state", exact: true }).click();
+  await expect(page.getByText(/Shift open since/)).toBeVisible();
+  await expect(page.locator("[data-shift-reconciliation]")).toHaveCount(0);
+  expect(keys).toHaveLength(1);
+  const current = await readCurrentShift(page, await refreshedSession(page));
+  expect(current.shift?.status).toBe("OPEN");
+});
+
+test("cash and non-cash tenders hand a receipt into the next shift", async ({ page }) => {
+  const session = await signIn(page);
+  const { visitId } = await newChargeableVisit(page, session, "Tender");
+  await closeAnyOpenShift(page, session, `${Date.now()}`);
+  await page.goto(`/billing?visit=${visitId}`);
+  const firstShift = await openShiftFromUi(page);
+
+  await steadyFill(page, "Amount (UGX)", "10000.00");
+  await page.getByLabel("Method", { exact: true }).selectOption("MOBILE_MONEY");
+  await steadyFill(page, "Reference (optional)", "S40-BROWSER-MM");
+  const mobile = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/v1/billing/invoices/`) === false &&
+      /\/payments\/$/.test(response.url()) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Post payment", exact: true }).click();
+  expect((await mobile).status()).toBe(201);
+  await expect(page.locator("[data-print-sheet]")).toContainText("10000.00");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+
+  await steadyFill(page, "Declared cash", "0.00");
+  await page.getByRole("button", { name: "Review close", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm close", exact: true }).click();
+  await expect(page.getByText(/Expected 0\.00/)).toBeVisible();
+  const previous = page.locator("[data-last-closed-shift]");
+  await expect(previous).toContainText(firstShift.slice(0, 8));
+
+  const nextOpen = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/billing/shifts/open/") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Open next shift", exact: true }).click();
+  expect((await nextOpen).status()).toBe(201);
+  await expect(page.getByText(/Shift open since/)).toBeVisible();
+
+  await steadyFill(page, "Amount (UGX)", "20000.00");
+  await page.getByLabel("Method", { exact: true }).selectOption("CASH");
+  await page.getByRole("button", { name: "Post payment", exact: true }).click();
+  await expect(page.locator("[data-print-sheet]")).toContainText("20000.00");
+  const current = await readCurrentShift(page, await refreshedSession(page));
+  expect(current.shift?.status).toBe("OPEN");
+  expect(current.shift?.id).not.toBe(firstShift);
 });

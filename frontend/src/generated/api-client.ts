@@ -101,6 +101,7 @@ export type ServiceCatalog = { id: string; code: string; name: string; category?
 export type SessionResponse = { access_token: string; access_expires_at: string; user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Shift = { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; };
 export type ShiftClose = { declared_cash: string; reason?: string; };
+export type ShiftCurrentResponse = { shift: { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; } | null; last_closed_shift: { id: string; status: string; opened_at: string; closed_at: string | null; declared_cash: string | null; expected_cash: string | null; variance: string | null; close_reason: string; } | null; };
 export type ShiftOpen = { opening_float?: string; };
 export type StockAdjustmentApprove = { expected_version?: number; };
 export type StockAdjustmentCreate = { batch_id: string; location_id: string; quantity: string; reason_code: string; note?: string; reference?: string; };
@@ -192,12 +193,12 @@ export type RetrieveReceiptByNumberResponse = Receipt;
 export type RetrieveReceiptDetailResponse = Receipt;
 export type CreateReceiptReprintResponse = ReceiptReprint;
 export type ListServiceCatalogsResponse = Array<ServiceCatalog>;
-export type ListShiftCurrentsResponse = Array<Shift>;
+export type RetrieveCurrentShiftResponse = ShiftCurrentResponse;
 export type CreateShiftOpenRequest = ShiftOpen;
 export type CreateShiftOpenResponse = Shift;
 export type CreateShiftCloseRequest = ShiftClose;
 export type CreateShiftCloseResponse = Shift;
-export type RetrieveShiftZReportResponse = Array<ZReport>;
+export type RetrieveShiftZReportResponse = ZReport;
 export type CreateCheckInRequest = CheckIn;
 export type CreateCheckInResponse = QueueEntry;
 export type CreateEncounterCreateRequest = EncounterCreate;
@@ -399,7 +400,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "c28768a152029d51316bf83442ece594d5a022b4f5c8e8be09f284b752d1d3a9";
+export const GENERATED_API_CONTRACT_SHA256 = "fc89ad1c7df0c19d6cc510ccd7537b800e258b650ceb777ddfdc8b0aed91a3ea";
 
 export const GENERATED_API_OPERATIONS = [
   {
@@ -534,7 +535,7 @@ export const GENERATED_API_OPERATIONS = [
   },
   {
     "method": "GET",
-    "operationId": "listShiftCurrents",
+    "operationId": "retrieveCurrentShift",
     "path": "/api/v1/billing/shifts/current/"
   },
   {

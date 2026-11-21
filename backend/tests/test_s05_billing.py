@@ -7,6 +7,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from accounts.models import OrganisationMembership, Role, User, UserFacilityRole
+from accounts.services import ensure_default_permissions
 from audit.models import AuditEvent
 from billing.models import (
     CashierShift,
@@ -322,6 +323,12 @@ def test_s05_blind_shift_close_and_serialized_close(tenant, authed_client):
     assert closed.data["expected_cash"] == "15000.00"
     assert closed.data["variance"] == "-1000.00"
     assert closed.data["declared_cash"] == "14000.00"
+    after_close = authed_client.get("/api/v1/billing/shifts/current/")
+    assert after_close.status_code == 200, after_close.data
+    assert after_close.data["shift"] is None
+    assert after_close.data["last_closed_shift"]["id"] == shift["id"]
+    assert after_close.data["last_closed_shift"]["expected_cash"] == "15000.00"
+    assert after_close.data["last_closed_shift"]["variance"] == "-1000.00"
 
     again = authed_client.post(
         f"/api/v1/billing/shifts/{shift['id']}/close/",
@@ -338,6 +345,25 @@ def test_s05_blind_shift_close_and_serialized_close(tenant, authed_client):
     with tenant_atomic(tenant.organisation.id):
         assert CashierShift.objects.filter(status="OPEN").count() == 0
         assert AuditEvent.objects.filter(event_code="SHIFT_CLOSED").count() == 1
+
+
+def test_s40_z_report_refuses_open_shift_before_any_projection(tenant, authed_client):
+    """S-40 red: a blind close must not disclose Z-report totals."""
+
+    patient_id = register(authed_client, "s40-register-blind")
+    checked_in = check_in(authed_client, patient_id, tenant, "s40-checkin-blind")
+    shift = open_shift(authed_client, "5000.00")
+    paid = pay(authed_client, checked_in["invoice_id"], "10000.00", "s40-pay-blind")
+    assert paid.status_code == 201
+
+    report = authed_client.get(
+        f"/api/v1/billing/shifts/{shift['id']}/z-report/"
+    )
+    assert report.status_code == 409, report.data
+    assert report.data["code"] == "SHIFT_NOT_CLOSED"
+    assert "tenders" not in report.data
+    assert "expected_cash" not in report.data
+    assert "10000.00" not in str(report.data)
 
 
 def test_s05_payment_method_configuration_and_manual_reference(tenant, authed_client):
@@ -581,3 +607,185 @@ def test_s05_receipts_are_facility_scoped(tenant, authed_client):
     other_client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
     hidden = other_client.get(f"/api/v1/billing/receipts/{paid.data['receipt_id']}/")
     assert hidden.status_code in {403, 404}
+
+
+def _cashier_client(tenant, username, template, facility=None):
+    facility = facility or tenant.facility
+    with tenant_atomic(tenant.organisation.id):
+        user = User.objects.create_user(username, "test-password-123")
+        OrganisationMembership.objects.create(organisation=tenant.organisation, user=user)
+        UserFacilityRole.objects.create(
+            organisation=tenant.organisation,
+            user=user,
+            role=Role.objects.get(
+                organisation=tenant.organisation, template_code=template
+            ),
+            facility=facility,
+            department=tenant.department if facility == tenant.facility else None,
+        )
+    client = APIClient()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": username,
+            "password": "test-password-123",
+            "organisation_id": str(tenant.organisation.id),
+        },
+        format="json",
+    )
+    assert login.status_code == 200
+    client.defaults["HTTP_X_FACILITY_ID"] = str(facility.id)
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    return client
+
+
+def test_s40_last_closed_shift_is_cashier_and_facility_scoped(tenant, authed_client):
+    shift = open_shift(authed_client, "0.00")
+    closed = authed_client.post(
+        f"/api/v1/billing/shifts/{shift['id']}/close/",
+        {"declared_cash": "0.00", "reason": "Synthetic scoped close"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-scoped-close",
+    )
+    assert closed.status_code == 200, closed.data
+
+    other_cashier = _cashier_client(
+        tenant, "s40-other-cashier", "OWNER_ADMIN", tenant.facility
+    )
+    other_view = other_cashier.get("/api/v1/billing/shifts/current/")
+    assert other_view.status_code == 200, other_view.data
+    assert other_view.data["shift"] is None
+    assert other_view.data["last_closed_shift"] is None
+
+    with tenant_atomic(tenant.organisation.id):
+        other_facility = Facility.objects.create(
+            organisation=tenant.organisation,
+            name="S40 Other Facility",
+            code="S40-OTHER",
+            mode="CLINIC",
+        )
+    facility_cashier = _cashier_client(
+        tenant, "s40-facility-cashier", "OWNER_ADMIN", other_facility
+    )
+    facility_view = facility_cashier.get("/api/v1/billing/shifts/current/")
+    assert facility_view.status_code == 200, facility_view.data
+    assert facility_view.data["shift"] is None
+    assert facility_view.data["last_closed_shift"] is None
+
+    wrong_role = _cashier_client(tenant, "s40-nurse", "NURSE_TRIAGE", tenant.facility)
+    denied = wrong_role.get("/api/v1/billing/shifts/current/")
+    assert denied.status_code == 403
+    assert "last_closed_shift" not in denied.data
+
+
+def test_s40_last_closed_shift_does_not_cross_tenant(tenant, authed_client):
+    shift = open_shift(authed_client, "0.00")
+    closed = authed_client.post(
+        f"/api/v1/billing/shifts/{shift['id']}/close/",
+        {"declared_cash": "0.00"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-tenant-close",
+    )
+    assert closed.status_code == 200, closed.data
+
+    with tenant_atomic(tenant.organisation.id):
+        other_org = Organisation.objects.create(
+            name="S40 Other Clinic", slug="s40-other-clinic"
+        )
+        ensure_default_permissions(other_org)
+        other_facility = Facility.objects.create(
+            organisation=other_org, name="Other Org Facility", code="S40-ORG", mode="CLINIC"
+        )
+        other_department = Department.objects.create(
+            organisation=other_org, facility=other_facility, name="Outpatient", code="OPD"
+        )
+        user = User.objects.create_user("s40-other-org", "test-password-123")
+        OrganisationMembership.objects.create(organisation=other_org, user=user)
+        UserFacilityRole.objects.create(
+            organisation=other_org,
+            user=user,
+            role=Role.objects.get(organisation=other_org, template_code="OWNER_ADMIN"),
+            facility=other_facility,
+            department=other_department,
+        )
+        other_org_id = str(other_org.id)
+        other_facility_id = str(other_facility.id)
+
+    client = APIClient()
+    login = client.post(
+        "/api/v1/auth/login/",
+        {
+            "username": "s40-other-org",
+            "password": "test-password-123",
+            "organisation_id": other_org_id,
+        },
+        format="json",
+    )
+    assert login.status_code == 200
+    client.defaults["HTTP_X_FACILITY_ID"] = other_facility_id
+    client.credentials(HTTP_AUTHORIZATION="Bearer " + login.data["access_token"])
+    foreign = client.get("/api/v1/billing/shifts/current/")
+    assert foreign.status_code == 200, foreign.data
+    assert foreign.data["shift"] is None
+    assert foreign.data["last_closed_shift"] is None
+    assert shift["id"] not in str(foreign.data)
+
+
+def test_s40_open_and_close_survive_lost_responses_without_duplicate_commands(
+    tenant, authed_client
+):
+    first_open = authed_client.post(
+        "/api/v1/billing/shifts/open/",
+        {"opening_float": "1000.00"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-lost-open",
+    )
+    assert first_open.status_code == 201, first_open.data
+    shift_id = first_open.data["id"]
+
+    current = authed_client.get("/api/v1/billing/shifts/current/")
+    assert current.status_code == 200, current.data
+    assert current.data["shift"]["id"] == shift_id
+
+    replayed_open = authed_client.post(
+        "/api/v1/billing/shifts/open/",
+        {"opening_float": "1000.00"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-lost-open",
+    )
+    assert replayed_open.status_code == 201, replayed_open.data
+    assert replayed_open.headers["Idempotent-Replay"] == "true"
+    assert replayed_open.data["id"] == shift_id
+
+    first_close = authed_client.post(
+        f"/api/v1/billing/shifts/{shift_id}/close/",
+        {"declared_cash": "1000.00", "reason": "Synthetic lost-response close"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-lost-close",
+    )
+    assert first_close.status_code == 200, first_close.data
+    expected = first_close.data["expected_cash"]
+
+    replayed_close = authed_client.post(
+        f"/api/v1/billing/shifts/{shift_id}/close/",
+        {"declared_cash": "1000.00", "reason": "Synthetic lost-response close"},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s40-lost-close",
+    )
+    assert replayed_close.status_code == 200, replayed_close.data
+    assert replayed_close.headers["Idempotent-Replay"] == "true"
+    assert replayed_close.data["id"] == shift_id
+    assert replayed_close.data["expected_cash"] == expected
+
+    refreshed = authed_client.get("/api/v1/billing/shifts/current/")
+    assert refreshed.status_code == 200, refreshed.data
+    assert refreshed.data["shift"] is None
+    assert refreshed.data["last_closed_shift"]["id"] == shift_id
+    with tenant_atomic(tenant.organisation.id):
+        assert CashierShift.objects.count() == 1
+        stored = CashierShift.objects.get(id=shift_id)
+        assert stored.status == "CLOSED"
+        assert stored.declared_cash == Decimal("1000.00")
+        assert stored.expected_cash == Decimal(expected)
+        assert AuditEvent.objects.filter(event_code="SHIFT_OPENED").count() == 1
+        assert AuditEvent.objects.filter(event_code="SHIFT_CLOSED").count() == 1

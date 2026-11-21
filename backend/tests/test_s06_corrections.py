@@ -230,13 +230,11 @@ def test_s06_z_report_uses_committed_shift_evidence(tenant, authed_client):
     )
     assert reversed_response.status_code == 200
 
-    report = authed_client.get(f"/api/v1/billing/shifts/{shift['id']}/z-report/")
-    assert report.status_code == 200, report.data
-    assert report.data["payment_count"] == 1
-    assert report.data["reversed_count"] == 1
-    assert {tender["method"] for tender in report.data["tenders"]} == {"MOBILE_MONEY_MANUAL"}
-    assert report.data["tenders"][0]["amount"] == "5000.00"
-    assert report.data["opening_float"] == "5000.00"
+    blind_report = authed_client.get(f"/api/v1/billing/shifts/{shift['id']}/z-report/")
+    assert blind_report.status_code == 409, blind_report.data
+    assert blind_report.data["code"] == "SHIFT_NOT_CLOSED"
+    assert "tenders" not in blind_report.data
+    assert "opening_float" not in blind_report.data
 
     closed = authed_client.post(
         f"/api/v1/billing/shifts/{shift['id']}/close/",
@@ -246,6 +244,12 @@ def test_s06_z_report_uses_committed_shift_evidence(tenant, authed_client):
     )
     assert closed.status_code == 200
     report = authed_client.get(f"/api/v1/billing/shifts/{shift['id']}/z-report/")
+    assert report.status_code == 200, report.data
+    assert report.data["payment_count"] == 1
+    assert report.data["reversed_count"] == 1
+    assert {tender["method"] for tender in report.data["tenders"]} == {"MOBILE_MONEY_MANUAL"}
+    assert report.data["tenders"][0]["amount"] == "5000.00"
+    assert report.data["opening_float"] == "5000.00"
     assert report.data["expected_cash"] == "5000.00"
     assert report.data["variance"] == "-1000.00"
     assert report.data["variance_reason"] == "Synthetic Z close"

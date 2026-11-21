@@ -107,6 +107,9 @@ test("S-05 cashier opens a shift, collects exactly, reprints and reverses before
   await page.getByRole("button", { name: "Open shift", exact: true }).click();
   expect((await shiftOpened).status()).toBe(201);
   await expect(page.getByText(/Shift open since/)).toBeVisible();
+  // The blind boundary is removed from the open drawer: no tender totals are
+  // available through this card until a committed close is shown.
+  await expect(page.getByRole("button", { name: "Load Z-report", exact: true })).toHaveCount(0);
 
   // First payment: shift-bound canonical command.
   await steadyFill(page, "Amount (UGX)", "10000.00");
@@ -156,14 +159,34 @@ test("S-05 cashier opens a shift, collects exactly, reprints and reverses before
   await expect(page.getByText(/Payment reversed\./)).toBeVisible();
   await expect(page.getByText("CASH · REVERSED")).toBeVisible();
 
-  // Blind close: the declaration is entered before the expected cash appears.
+  // Blind close: the declaration is reviewed before the expected cash appears.
   await steadyFill(page, "Declared cash", "9000.00");
+  await page.getByRole("button", { name: "Review close", exact: true }).click();
+  const confirmation = page.locator("[data-confirm-close]");
+  await expect(confirmation).toContainText("9000.00");
+  await expect(confirmation).not.toContainText("Expected 20000.00");
   const closed = page.waitForResponse(
     (response) =>
       response.url().endsWith("/close/") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Close shift", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm close", exact: true }).click();
   expect((await closed).status()).toBe(200);
   await expect(page.getByText(/Expected 20000\.00/)).toBeVisible();
   await expect(page.getByText(/variance -11000\.00/).first()).toBeVisible();
+
+  // The committed close is a distinct previous-shift summary and survives reload.
+  const previous = page.locator("[data-last-closed-shift]");
+  await expect(previous).toContainText("Previous shift (closed)");
+  await expect(previous).toContainText("20000.00");
+  await page.reload();
+  await expect(page).toHaveURL(/\/billing\?visit=/);
+  const reloaded = page.locator("[data-last-closed-shift]");
+  await expect(reloaded).toContainText("Previous shift (closed)");
+  await expect(reloaded).toContainText("20000.00");
+  await expect(page.getByRole("button", { name: "Open shift", exact: true })).toBeVisible();
+
+  // A Z-report is available only from the committed closed summary.
+  await page.getByRole("button", { name: "Load Z-report", exact: true }).click();
+  await expect(page.locator("[data-z-report]")).toContainText("Shift Z-report");
+  await expect(page.locator("[data-z-report]")).toContainText("20000.00");
 });

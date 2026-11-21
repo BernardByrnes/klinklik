@@ -187,6 +187,28 @@ class ShiftSerializer(serializers.ModelSerializer):
         ]
 
 
+class ClosedShiftSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    status = serializers.CharField()
+    opened_at = serializers.DateTimeField()
+    closed_at = serializers.DateTimeField(allow_null=True)
+    declared_cash = serializers.DecimalField(
+        max_digits=14, decimal_places=2, allow_null=True
+    )
+    expected_cash = serializers.DecimalField(
+        max_digits=14, decimal_places=2, allow_null=True
+    )
+    variance = serializers.DecimalField(
+        max_digits=14, decimal_places=2, allow_null=True
+    )
+    close_reason = serializers.CharField(allow_blank=True)
+
+
+class ShiftCurrentResponseSerializer(serializers.Serializer):
+    shift = ShiftSerializer(allow_null=True)
+    last_closed_shift = ClosedShiftSummarySerializer(allow_null=True)
+
+
 class ShiftOpenSerializer(serializers.Serializer):
     opening_float = serializers.DecimalField(
         max_digits=14, decimal_places=2, required=False, default="0.00"

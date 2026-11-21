@@ -19,8 +19,12 @@ import {
 import { useSession } from "../../../lib/session";
 import { Invoice, Patient, Receipt, Service } from "../../../features/clinic";
 import type {
+  CreateShiftCloseResponse,
+  CreateShiftOpenResponse,
   CreateVisitCloseResponse,
   ListVisitClosureReadinessesResponse,
+  RetrieveCurrentShiftResponse,
+  RetrieveShiftZReportResponse,
 } from "../../../generated/api-client";
 import { IconAlertTriangle, IconBilling, IconCheckCircle, IconPrinter, IconSearch } from "../../../components/icons";
 import {
@@ -64,33 +68,28 @@ type PaymentContext = {
 };
 type PaymentRequest = { invoiceId: string; path: string; key: string; body: Record<string, unknown> };
 
-type CashierShift = {
-  id: string;
-  status: "OPEN" | "CLOSED";
-  opened_at: string;
-  closed_at?: string | null;
-  opening_float: string;
-  declared_cash: string | null;
-  expected_cash: string | null;
-  variance: string | null;
-  version: number;
+type CashierShift = CreateShiftOpenResponse;
+type ClosedShiftSummary = NonNullable<RetrieveCurrentShiftResponse["last_closed_shift"]>;
+type ShiftZReport = Omit<RetrieveShiftZReportResponse, "tenders"> & {
+  tenders: Array<{ method: string; count: number; amount: string }>;
 };
 
-type ZReport = {
-  shift_id: string;
-  status: string;
-  tenders: Array<{ method: string; count: number; amount: string }>;
-  payment_count: number;
-  reversed_count: number;
-  refund_count: number;
-  refund_total: string;
-  discount_total: string;
-  opening_float: string;
-  declared_cash: string | null;
-  expected_cash: string | null;
-  variance: string | null;
-  variance_reason: string;
-};
+type ShiftCommand = "open" | "close";
+type ShiftIntent = Readonly<{
+  command: ShiftCommand;
+  key: string;
+  endpoint: string;
+  target: string;
+  body: Record<string, unknown>;
+  authority: AuthoritySnapshot;
+  registryId?: string;
+}>;
+type ShiftReconciliation = Readonly<{
+  command: ShiftCommand;
+  title: string;
+  detail: string;
+  intent: ShiftIntent;
+}>;
 
 type ClosureBlocker = ListVisitClosureReadinessesResponse["blockers"][number];
 type CloseVisitRequest = {
@@ -162,7 +161,11 @@ function BillingWorkspace() {
   const [openingFloat, setOpeningFloat] = useState("0.00");
   const [declaredCash, setDeclaredCash] = useState("");
   const [closeReason, setCloseReason] = useState("");
+  // The close result is kept only when the server confirms this exact shift; a
+  // failed refresh never turns it back into an unknown outcome.
   const [closeResult, setCloseResult] = useState<CashierShift | null>(null);
+  const [closeConfirmation, setCloseConfirmation] = useState<ShiftIntent | null>(null);
+  const [shiftReconciliation, setShiftReconciliation] = useState<ShiftReconciliation | null>(null);
   const [reversingPaymentId, setReversingPaymentId] = useState<string | null>(null);
   const [reversalReason, setReversalReason] = useState("");
   const [creditAmount, setCreditAmount] = useState("");
@@ -173,10 +176,14 @@ function BillingWorkspace() {
     after_total: string;
     line_set_version: number;
   } | null>(null);
-  const [zReport, setZReport] = useState<ZReport | null>(null);
+  const [zReport, setZReport] = useState<ShiftZReport | null>(null);
   const [closureBlockers, setClosureBlockers] = useState<ClosureBlocker[]>([]);
   const [closureResult, setClosureResult] = useState<CreateVisitCloseResponse | null>(null);
-  const closeIntentRef = useRef<string | null>(null);
+  const visitCloseIntentRef = useRef<string | null>(null);
+  const shiftOpenIntentRef = useRef<ShiftIntent | null>(null);
+  const shiftCloseIntentRef = useRef<ShiftIntent | null>(null);
+  const openPromiseRef = useRef<Promise<void> | null>(null);
+  const closePromiseRef = useRef<Promise<void> | null>(null);
   const paymentKeyRef = useRef<string | null>(null);
   const paymentRequestRef = useRef<PaymentRequest | null>(null);
   const reprintIntentRef = useRef<{ receiptId: string; key: string; registryId: string } | null>(null);
@@ -232,10 +239,11 @@ function BillingWorkspace() {
   const shiftKey = useProtectedQueryKey("cashier-shift");
   const shiftQuery = useQuery({
     queryKey: shiftKey,
-    queryFn: () => apiRequest<{ shift: CashierShift | null }>("/api/v1/billing/shifts/current/"),
+    queryFn: () => apiRequest<RetrieveCurrentShiftResponse>("/api/v1/billing/shifts/current/"),
     enabled: can("billing.payment.record"),
   });
   const activeShift = shiftQuery.data?.shift ?? null;
+  const lastClosedShift: ClosedShiftSummary | null = shiftQuery.data?.last_closed_shift ?? null;
 
   const patientResults = useQuery({
     queryKey: patientsKey,
@@ -352,7 +360,12 @@ function BillingWorkspace() {
     setError("");
     setClosureBlockers([]);
     setClosureResult(null);
-    closeIntentRef.current = null;
+    visitCloseIntentRef.current = null;
+    setCloseConfirmation(null);
+    setShiftReconciliation(null);
+    setZReport(null);
+    shiftOpenIntentRef.current = null;
+    shiftCloseIntentRef.current = null;
     initializedInvoiceRef.current = null;
   }, [
     focused,
@@ -498,35 +511,161 @@ function BillingWorkspace() {
     },
   });
 
+  function parseShiftAmount(value: string): string | null {
+    const trimmed = value.trim();
+    if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return null;
+    return trimmed.includes(".") ? trimmed : `${trimmed}.00`;
+  }
+
+  function reconciliationFor(
+    command: ShiftCommand,
+    intent: ShiftIntent,
+    detail: string,
+  ): ShiftReconciliation {
+    return {
+      command,
+      title:
+        command === "open"
+          ? "The open command is not confirmed."
+          : "The close command is not confirmed.",
+      detail,
+      intent,
+    };
+  }
+
+  function resolveShiftIntent(intent: ShiftIntent) {
+    resolveIntent(intent.registryId);
+    if (intent.command === "open") shiftOpenIntentRef.current = null;
+    else shiftCloseIntentRef.current = null;
+  }
+
+  function keepShiftIntent(intent: ShiftIntent): ShiftIntent {
+    if (isIntentActive(intent.registryId)) return intent;
+    const registryId = registerIntent({
+      operation: `cashier-shift-${intent.command}`,
+      target: intent.target,
+      authority: intent.authority,
+      retry: async () => {
+        if (!isCurrentAuthority(intent.authority)) return;
+        if (intent.command === "open") await runShiftOpen(intent);
+        else await runShiftClose(intent);
+      },
+    });
+    return { ...intent, registryId };
+  }
+
+  function isShiftAlreadyClosed(reason: unknown): boolean {
+    return (
+      reason instanceof ApiRequestError &&
+      reason.status === 409 &&
+      (reason.data as { code?: unknown } | null)?.code === "SHIFT_ALREADY_CLOSED"
+    );
+  }
+
+  async function runShiftOpen(intent: ShiftIntent) {
+    if (openPromiseRef.current) return openPromiseRef.current;
+    const promise = openShift
+      .mutateAsync(intent)
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        if (openPromiseRef.current === promise) openPromiseRef.current = null;
+      });
+    openPromiseRef.current = promise;
+    return promise;
+  }
+
+  async function runShiftClose(intent: ShiftIntent) {
+    if (closePromiseRef.current) return closePromiseRef.current;
+    const promise = closeShift
+      .mutateAsync(intent)
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        if (closePromiseRef.current === promise) closePromiseRef.current = null;
+      });
+    closePromiseRef.current = promise;
+    return promise;
+  }
+
   const openShift = useMutation({
-    mutationFn: () =>
-      apiRequest<CashierShift>("/api/v1/billing/shifts/open/", {
+    mutationFn: (intent: ShiftIntent) =>
+      apiRequest<CreateShiftOpenResponse>(intent.endpoint, {
         method: "POST",
-        body: JSON.stringify({ opening_float: openingFloat || "0.00" }),
+        headers: { "Idempotency-Key": intent.key },
+        body: JSON.stringify(intent.body),
       }),
-    onSuccess: (shift) => {
+    onMutate: (intent) => ({ origin: intent.authority }),
+    onSuccess: (shift, intent, context) => {
+      if (!context || !isCurrentAuthority(context.origin)) {
+        setShiftReconciliation(
+          reconciliationFor(
+            "open",
+            intent,
+            "The authority changed before the open was confirmed. Refresh the current shift; do not open another.",
+          ),
+        );
+        return;
+      }
+      resolveShiftIntent(intent);
+      setShiftReconciliation(null);
+      setCloseResult(null);
       setNotice(`Shift opened with ${shift.opening_float} opening float.`);
       setError("");
-      setCloseResult(null);
-      queryClient.invalidateQueries({ queryKey: shiftKey });
+      void shiftQuery.refetch();
     },
-    onError: (reason) => {
+    onError: (reason, intent, context) => {
+      if (!context || !isCurrentAuthority(context.origin)) {
+        setShiftReconciliation(
+          reconciliationFor(
+            "open",
+            intent,
+            "The authority changed during the open. Refresh the current shift; do not open another.",
+          ),
+        );
+      } else {
+        const alreadyOpen =
+          reason instanceof ApiRequestError &&
+          reason.status === 409 &&
+          (reason.data as { code?: unknown } | null)?.code === "SHIFT_ALREADY_OPEN";
+        const kept = shouldRegisterIntent(reason) || alreadyOpen ? keepShiftIntent(intent) : intent;
+        shiftOpenIntentRef.current = kept;
+        setShiftReconciliation(
+          reconciliationFor(
+            "open",
+            kept,
+            alreadyOpen
+              ? "The server reports an open shift. Refresh to confirm it before trying again."
+              : "The open response was not confirmed. Retry this exact key or refresh the current shift; do not open another shift.",
+          ),
+        );
+      }
       setNotice("");
       setError(errorMessage(reason));
     },
   });
 
   const closeShift = useMutation({
-    mutationFn: (shiftId: string) =>
-      apiRequest<CashierShift>(`/api/v1/billing/shifts/${shiftId}/close/`, {
+    mutationFn: (intent: ShiftIntent) =>
+      apiRequest<CreateShiftCloseResponse>(intent.endpoint, {
         method: "POST",
-        headers: { "Idempotency-Key": newIdempotencyKey("s05-shift-close") },
-        body: JSON.stringify({
-          declared_cash: declaredCash,
-          ...(closeReason.trim() ? { reason: closeReason.trim() } : {}),
-        }),
+        headers: { "Idempotency-Key": intent.key },
+        body: JSON.stringify(intent.body),
       }),
-    onSuccess: (shift) => {
+    onMutate: (intent) => ({ origin: intent.authority }),
+    onSuccess: (shift, intent, context) => {
+      if (!context || !isCurrentAuthority(context.origin) || shift.id !== intent.target) {
+        setShiftReconciliation(
+          reconciliationFor(
+            "close",
+            intent,
+            "The returned shift does not match the confirmed close target. Refresh and reconcile before counting again.",
+          ),
+        );
+        return;
+      }
+      resolveShiftIntent(intent);
+      setShiftReconciliation(null);
       setCloseResult(shift);
       setNotice(
         `Shift closed. Expected ${shift.expected_cash}, counted ${shift.declared_cash}, variance ${shift.variance}.`,
@@ -534,13 +673,145 @@ function BillingWorkspace() {
       setDeclaredCash("");
       setCloseReason("");
       setError("");
-      queryClient.invalidateQueries({ queryKey: shiftKey });
+      void shiftQuery.refetch();
     },
-    onError: (reason) => {
+    onError: (reason, intent, context) => {
+      if (!context || !isCurrentAuthority(context.origin)) {
+        setShiftReconciliation(
+          reconciliationFor(
+            "close",
+            intent,
+            "The authority changed during the close. Refresh the current and last closed shifts before counting again.",
+          ),
+        );
+      } else if (isShiftAlreadyClosed(reason)) {
+        setShiftReconciliation(
+          reconciliationFor(
+            "close",
+            intent,
+            "The server reports this exact shift is already closed. Refresh to confirm; no second close was sent.",
+          ),
+        );
+      } else {
+        const kept = shouldRegisterIntent(reason) ? keepShiftIntent(intent) : intent;
+        shiftCloseIntentRef.current = kept;
+        setShiftReconciliation(
+          reconciliationFor(
+            "close",
+            kept,
+            shouldRegisterIntent(reason)
+              ? "The close response was not confirmed. Retry this exact key or refresh; the declared amount is retained."
+              : `The close was refused: ${errorMessage(reason)}`,
+          ),
+        );
+      }
       setNotice("");
       setError(errorMessage(reason));
     },
   });
+
+  function startOpen(amountOverride?: string) {
+    if (!currentFacility?.id) {
+      setError("Select a facility before opening a shift.");
+      return;
+    }
+    const amount = parseShiftAmount(amountOverride ?? openingFloat ?? "0.00");
+    if (!amount) {
+      setError("Enter a non-negative opening float with at most two decimals.");
+      return;
+    }
+    if (openPromiseRef.current || shiftOpenIntentRef.current || activeShift) return;
+    const intent: ShiftIntent = {
+      command: "open",
+      key: newIdempotencyKey("s40-shift-open"),
+      endpoint: "/api/v1/billing/shifts/open/",
+      target: currentFacility.id,
+      body: { opening_float: amount },
+      authority: getAuthoritySnapshot(),
+    };
+    shiftOpenIntentRef.current = intent;
+    setNotice("");
+    setError("");
+    setShiftReconciliation(null);
+    void runShiftOpen(intent);
+  }
+
+  function reviewClose() {
+    if (!activeShift || closePromiseRef.current || shiftCloseIntentRef.current) return;
+    const amount = parseShiftAmount(declaredCash);
+    if (!amount) {
+      setError("Enter the counted cash before reviewing the close.");
+      return;
+    }
+    const intent: ShiftIntent = {
+      command: "close",
+      key: newIdempotencyKey("s40-shift-close"),
+      endpoint: `/api/v1/billing/shifts/${activeShift.id}/close/`,
+      target: activeShift.id,
+      body: {
+        declared_cash: amount,
+        ...(closeReason.trim() ? { reason: closeReason.trim() } : {}),
+      },
+      authority: getAuthoritySnapshot(),
+    };
+    setNotice("");
+    setError("");
+    setCloseConfirmation(intent);
+  }
+
+  function confirmClose() {
+    if (!closeConfirmation || closePromiseRef.current || shiftCloseIntentRef.current) return;
+    const intent = closeConfirmation;
+    shiftCloseIntentRef.current = intent;
+    setCloseConfirmation(null);
+    void runShiftClose(intent);
+  }
+
+  async function reconcileShiftFromRead() {
+    const intent =
+      shiftReconciliation?.intent ??
+      shiftCloseIntentRef.current ??
+      shiftOpenIntentRef.current;
+    if (!intent) {
+      void shiftQuery.refetch();
+      return;
+    }
+    const result = await shiftQuery.refetch();
+    const data = result.data;
+    if (!data) return;
+    if (intent.command === "open" && data.shift) {
+      resolveShiftIntent(intent);
+      setShiftReconciliation(null);
+      setNotice("The server confirmed the open shift. No second open was sent.");
+      setError("");
+      return;
+    }
+    if (
+      intent.command === "close" &&
+      data.shift === null &&
+      data.last_closed_shift?.id === intent.target
+    ) {
+      resolveShiftIntent(intent);
+      setShiftReconciliation(null);
+      setNotice("The server confirmed this exact closed shift. No second close was sent.");
+      setError("");
+      return;
+    }
+    setShiftReconciliation(
+      reconciliationFor(
+        intent.command,
+        intent,
+        "The exact command is still unconfirmed. Retry it with the same key or refresh again.",
+      ),
+    );
+  }
+
+  function retryShiftIntent() {
+    const intent = shiftReconciliation?.intent;
+    if (!intent || !isCurrentAuthority(intent.authority)) return;
+    if (intent.command === "open") void runShiftOpen(intent);
+    else void runShiftClose(intent);
+  }
 
   const reversePayment = useMutation({
     mutationFn: (paymentId: string) =>
@@ -681,7 +952,7 @@ function BillingWorkspace() {
 
   const loadZReport = useMutation({
     mutationFn: (shiftId: string) =>
-      apiRequest<ZReport>(`/api/v1/billing/shifts/${shiftId}/z-report/`),
+      apiRequest<ShiftZReport>(`/api/v1/billing/shifts/${shiftId}/z-report/`),
     onSuccess: (report) => {
       setZReport(report);
       setError("");
@@ -719,8 +990,8 @@ function BillingWorkspace() {
       setClosureBlockers([]);
       setNotice(`Visit closed (${result.closure_reason}).`);
       setError("");
-      resolveIntent(closeIntentRef.current);
-      closeIntentRef.current = null;
+      resolveIntent(visitCloseIntentRef.current);
+      visitCloseIntentRef.current = null;
       queryClient.invalidateQueries({
         queryKey: protectedQueryKey("visit-closure", request.visitId),
       });
@@ -739,12 +1010,12 @@ function BillingWorkspace() {
       } else {
         setClosureBlockers([]);
       }
-      if (!isIntentActive(closeIntentRef.current)) closeIntentRef.current = null;
+      if (!isIntentActive(visitCloseIntentRef.current)) visitCloseIntentRef.current = null;
       if (!shouldRegisterIntent(reason)) {
-        resolveIntent(closeIntentRef.current);
-        closeIntentRef.current = null;
-      } else if (!closeIntentRef.current) {
-        closeIntentRef.current = registerIntent({
+        resolveIntent(visitCloseIntentRef.current);
+        visitCloseIntentRef.current = null;
+      } else if (!visitCloseIntentRef.current) {
+        visitCloseIntentRef.current = registerIntent({
           operation: "visit-close",
           target: request.visitId,
           authority: request.origin,
@@ -787,12 +1058,25 @@ function BillingWorkspace() {
           <div className="px-5 py-4 space-y-3">
             {shiftQuery.isLoading ? (
               <p className="text-[12.5px] font-medium text-secondary" role="status" aria-busy="true">
-                Loading the current shift…
+                Loading the current and last closed shifts…
               </p>
             ) : shiftQuery.isError ? (
-              <p className="text-[12.5px] font-medium text-ink" role="alert">
-                The current shift could not be loaded. Payments remain unavailable until it is.
-              </p>
+              <div className="rounded-[12px] border border-accent-orange/30 bg-accent-orange-soft px-3.5 py-3" role="alert">
+                <p className="text-[12.5px] font-semibold text-ink">
+                  The current and last closed shifts could not be loaded.
+                </p>
+                <p className="mt-1 text-[12px] font-medium text-secondary">
+                  No new shift command has been sent. Payments stay unavailable until this read succeeds.
+                </p>
+                <Button
+                  variant="secondary"
+                  className="mt-2"
+                  disabled={shiftQuery.isFetching}
+                  onClick={() => void shiftQuery.refetch()}
+                >
+                  {shiftQuery.isFetching ? "Refreshing…" : "Retry shift read"}
+                </Button>
+              </div>
             ) : activeShift ? (
               <>
                 <p className="text-[12.5px] font-medium text-ink">
@@ -819,21 +1103,14 @@ function BillingWorkspace() {
                 </div>
                 <Button
                   variant="secondary"
-                  disabled={closeShift.isPending || !declaredCash.trim()}
-                  onClick={() => closeShift.mutate(activeShift.id)}
+                  disabled={closeShift.isPending || Boolean(closePromiseRef.current) || !declaredCash.trim()}
+                  onClick={reviewClose}
                 >
-                  {closeShift.isPending ? "Closing…" : "Close shift"}
+                  Review close
                 </Button>
                 <p className="text-[11.5px] font-medium text-muted">
-                  Expected cash and variance are shown only after your blind count is recorded.
+                  Expected cash and variance are shown only after your blind count is committed.
                 </p>
-                <Button
-                  variant="link"
-                  disabled={loadZReport.isPending}
-                  onClick={() => loadZReport.mutate(activeShift.id)}
-                >
-                  {loadZReport.isPending ? "Loading Z-report…" : "Load Z-report"}
-                </Button>
               </>
             ) : (
               <>
@@ -849,25 +1126,152 @@ function BillingWorkspace() {
                       onChange={(event) => setOpeningFloat(event.target.value)}
                     />
                   </Field>
-                  <Button disabled={openShift.isPending} onClick={() => openShift.mutate()}>
+                  <Button
+                    disabled={openShift.isPending || Boolean(openPromiseRef.current)}
+                    onClick={() => startOpen()}
+                  >
                     {openShift.isPending ? "Opening…" : "Open shift"}
                   </Button>
                 </div>
               </>
             )}
+
+            {closeConfirmation && activeShift?.id === closeConfirmation.target ? (
+              <div className="rounded-[12px] border border-line bg-surface-muted px-3.5 py-3" data-confirm-close>
+                <p className="text-[12.5px] font-bold text-ink">Confirm blind close</p>
+                <p className="mt-1 text-[12.5px] font-medium text-secondary">
+                  You are closing shift {closeConfirmation.target.slice(0, 8)}. Declared cash{" "}
+                  <span className="font-bold text-ink">{String(closeConfirmation.body.declared_cash)}</span>.
+                  Expected cash is not shown until the close is committed.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    disabled={closeShift.isPending || Boolean(closePromiseRef.current)}
+                    onClick={confirmClose}
+                  >
+                    {closeShift.isPending ? "Closing…" : "Confirm close"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={closeShift.isPending}
+                    onClick={() => {
+                      setCloseConfirmation(null);
+                      shiftCloseIntentRef.current = null;
+                      setError("");
+                    }}
+                  >
+                    Cancel close
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {shiftReconciliation ? (
+              <div
+                className="rounded-[12px] border border-accent-orange/30 bg-accent-orange-soft px-3.5 py-3"
+                role="alert"
+                data-shift-reconciliation
+              >
+                <p className="text-[12.5px] font-bold text-ink">{shiftReconciliation.title}</p>
+                <p className="mt-1 text-[12px] font-medium text-secondary">
+                  {shiftReconciliation.detail}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    disabled={shiftQuery.isFetching}
+                    onClick={() => void reconcileShiftFromRead()}
+                  >
+                    {shiftQuery.isFetching ? "Refreshing…" : "Refresh shift state"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={
+                      !isCurrentAuthority(shiftReconciliation.intent.authority) ||
+                      (shiftReconciliation.command === "open"
+                        ? openShift.isPending || Boolean(openPromiseRef.current)
+                        : closeShift.isPending || Boolean(closePromiseRef.current))
+                    }
+                    onClick={retryShiftIntent}
+                  >
+                    Retry exact {shiftReconciliation.command}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
+            {!closeConfirmation && !shiftReconciliation && lastClosedShift ? (
+              <div
+                className="rounded-[12px] border border-line-soft bg-surface-muted px-3.5 py-3"
+                data-last-closed-shift
+              >
+                <p className="text-[12px] font-bold uppercase tracking-wide text-muted">
+                  Previous shift (closed) — not the active drawer
+                </p>
+                <p className="mt-1 text-[12.5px] font-semibold text-ink">
+                  Shift {lastClosedShift.id.slice(0, 8)} · closed{" "}
+                  {lastClosedShift.closed_at ? formatDate(lastClosedShift.closed_at) : "—"}
+                </p>
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px]">
+                  <dt className="font-medium text-secondary">Declared cash</dt>
+                  <dd className="text-right font-semibold text-ink">
+                    {lastClosedShift.declared_cash ?? "—"}
+                  </dd>
+                  <dt className="font-medium text-secondary">Expected cash</dt>
+                  <dd className="text-right font-semibold text-ink">
+                    {lastClosedShift.expected_cash ?? "—"}
+                  </dd>
+                  <dt className="font-medium text-secondary">Variance</dt>
+                  <dd className="text-right font-semibold text-ink">
+                    {lastClosedShift.variance ?? "—"}
+                  </dd>
+                  {lastClosedShift.close_reason ? (
+                    <>
+                      <dt className="font-medium text-secondary">Reason</dt>
+                      <dd className="text-right font-medium text-ink">
+                        {lastClosedShift.close_reason}
+                      </dd>
+                    </>
+                  ) : null}
+                </dl>
+                <Button
+                  variant="link"
+                  className="mt-2"
+                  disabled={loadZReport.isPending}
+                  onClick={() => loadZReport.mutate(lastClosedShift.id)}
+                >
+                  {loadZReport.isPending ? "Loading Z-report…" : "Load Z-report"}
+                </Button>
+              </div>
+            ) : null}
+
             {closeResult ? (
               <div className="space-y-2">
                 <p className="rounded-[12px] bg-accent-teal-soft px-3.5 py-2.5 text-[12px] font-medium text-ink" role="status">
                   Closed shift {closeResult.id.slice(0, 8)}: expected {closeResult.expected_cash},
                   declared {closeResult.declared_cash}, variance {closeResult.variance}.
                 </p>
-                <Button
-                  variant="link"
-                  disabled={loadZReport.isPending}
-                  onClick={() => loadZReport.mutate(closeResult.id)}
-                >
-                  {loadZReport.isPending ? "Loading Z-report…" : "Load Z-report"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="link"
+                    disabled={loadZReport.isPending}
+                    onClick={() => loadZReport.mutate(closeResult.id)}
+                  >
+                    {loadZReport.isPending ? "Loading Z-report…" : "Load Z-report"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={shiftQuery.isFetching || openShift.isPending || Boolean(openPromiseRef.current)}
+                    onClick={() => startOpen("0.00")}
+                  >
+                    Open next shift
+                  </Button>
+                </div>
+                {shiftQuery.isError ? (
+                  <p className="text-[11.5px] font-medium text-secondary" role="status">
+                    The committed close above is still shown; the refresh failed and no close POST was retried.
+                  </p>
+                ) : null}
               </div>
             ) : null}
           </div>

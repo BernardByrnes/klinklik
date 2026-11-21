@@ -161,7 +161,7 @@
           "emitted_codes": [
             {
               "code": "INVOICE_LINE_ADDED",
-              "evidence": "backend/billing/services.py:1299"
+              "evidence": "backend/billing/services.py:1314"
             }
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
@@ -327,7 +327,7 @@
           "emitted_codes": [
             {
               "code": "INVOICE_LINE_ADDED",
-              "evidence": "backend/billing/services.py:1299"
+              "evidence": "backend/billing/services.py:1314"
             }
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
@@ -441,12 +441,12 @@
           "emitted_codes": [
             {
               "code": "INVOICE_LINE_ADDED",
-              "evidence": "backend/billing/services.py:1299"
+              "evidence": "backend/billing/services.py:1314"
             }
           ],
           "note": "Registry code maps to emitted INVOICE_LINE_ADDED.",
           "path_reviewed": [
-            "backend/billing/views.py:71",
+            "backend/billing/views.py:74",
             "backend/billing/services.py:34"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -473,8 +473,8 @@
           ],
           "note": "Reversal emits PAYMENT_REVERSED only; allocation rows are reversed without a distinct audit event. All branches read.",
           "path_reviewed": [
-            "backend/billing/views.py:355",
-            "backend/billing/services.py:1137"
+            "backend/billing/views.py:358",
+            "backend/billing/services.py:1152"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
           "risk_class": "money"
@@ -490,8 +490,8 @@
           ],
           "note": "Payment reversal recomputes the invoice projection but emits no invoice-state event. All branches read.",
           "path_reviewed": [
-            "backend/billing/views.py:355",
-            "backend/billing/services.py:1137"
+            "backend/billing/views.py:358",
+            "backend/billing/services.py:1152"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
           "risk_class": "money"
@@ -512,12 +512,12 @@
           "emitted_codes": [
             {
               "code": "CREDIT_NOTE_VOIDED",
-              "evidence": "backend/billing/services.py:1493"
+              "evidence": "backend/billing/services.py:1508"
             }
           ],
           "note": "Registry code maps to emitted CREDIT_NOTE_VOIDED.",
           "path_reviewed": [
-            "backend/billing/views.py:545",
+            "backend/billing/views.py:560",
             "backend/billing/services.py:34"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -534,8 +534,8 @@
           ],
           "note": "Credit-note creation emits CREDIT_NOTE_ISSUED and recomputes the invoice projection but emits no INVOICE_STATE event. All branches read.",
           "path_reviewed": [
-            "backend/billing/views.py:545",
-            "backend/billing/services.py:1366"
+            "backend/billing/views.py:560",
+            "backend/billing/services.py:1381"
           ],
           "proposed_disposition": "emit declared code in a separate authorized slice",
           "risk_class": "money"
@@ -561,7 +561,7 @@
           "note": "CMD-079 route is RefundApproveFencedView and refuses until \u00a7973 MFA authority; no processing path exists to emit REFUND_PROCESSED. Owner \u00a759 registry/fence question.",
           "path_reviewed": [
             "backend/billing/views.py:616",
-            "backend/billing/services.py:1597"
+            "backend/billing/services.py:1612"
           ],
           "proposed_disposition": "owner \u00a759 registry revision",
           "risk_class": null
@@ -586,7 +586,7 @@
           ],
           "note": "Registry code maps to emitted SHIFT_OPENED.",
           "path_reviewed": [
-            "backend/billing/views.py:389",
+            "backend/billing/views.py:392",
             "backend/billing/services.py:34"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -608,12 +608,12 @@
           "emitted_codes": [
             {
               "code": "SHIFT_CLOSED",
-              "evidence": "backend/billing/services.py:769"
+              "evidence": "backend/billing/services.py:784"
             }
           ],
           "note": "Registry code maps to emitted SHIFT_CLOSED.",
           "path_reviewed": [
-            "backend/billing/views.py:389",
+            "backend/billing/views.py:392",
             "backend/billing/services.py:34"
           ],
           "proposed_disposition": "accept documented mapping",
@@ -625,12 +625,12 @@
           "emitted_codes": [
             {
               "code": "SHIFT_CLOSED",
-              "evidence": "backend/billing/services.py:769"
+              "evidence": "backend/billing/services.py:784"
             }
           ],
           "note": "Registry code maps to emitted SHIFT_CLOSED.",
           "path_reviewed": [
-            "backend/billing/views.py:389",
+            "backend/billing/views.py:392",
             "backend/billing/services.py:34"
           ],
           "proposed_disposition": "accept documented mapping",

@@ -696,6 +696,21 @@ def current_shift(*, organisation, facility, actor):
     ).first()
 
 
+def last_closed_shift(*, organisation, facility, actor):
+    """Most recent committed close for this cashier and facility."""
+
+    return (
+        CashierShift.objects.filter(
+            organisation=organisation,
+            facility=facility,
+            cashier=actor,
+            status="CLOSED",
+        )
+        .order_by("-closed_at", "id")
+        .first()
+    )
+
+
 def _confirmed_cash_total(*, organisation, facility, shift, statuses):
     total = Payment.objects.filter(
         organisation=organisation,
@@ -1704,6 +1719,12 @@ def shift_z_report(*, organisation, facility, shift):
     """Committed per-shift totals; no fiscal claim is made."""
 
     assert_transaction_active()
+    if shift.status != "CLOSED":
+        raise CanonicalError(
+            "SHIFT_NOT_CLOSED",
+            "Close the cashier shift before requesting a Z-report.",
+            status_code=409,
+        )
     payments = Payment.objects.filter(organisation=organisation, facility=facility, shift=shift)
     refunds = Refund.objects.filter(organisation=organisation, facility=facility, shift=shift)
     tenders = {}
