@@ -4,11 +4,20 @@
 // No identity, token, facility, pending work or clinical data is stored here.
 export const EXPLICIT_SIGNIN_KEY = "klinklik:explicit-signin-required";
 export const LOGOUT_UNCONFIRMED_KEY = "klinklik:logout-unconfirmed";
+export const AUTH_REORDER_KEY = "klinklik:auth-reordered";
 export const EXIT_MARKER_EVENT = "klinklik:exit-marker-changed";
 
 type MarkerChange = Readonly<{ key: string; value: boolean }>;
+type MarkerStore = "localStorage" | "cookie";
 
-function read(key: string): boolean {
+const PROBE_KEY = "klinklik:marker-probe";
+const PROBE_COOKIE = "klinklik_marker_probe";
+
+let storeChecked = false;
+let reliableStore: MarkerStore | null = null;
+let forcedExplicitSignIn = false;
+
+function readLocal(key: string): boolean {
   if (typeof window === "undefined") return false;
   try {
     return window.localStorage.getItem(key) === "1";
@@ -17,42 +26,123 @@ function read(key: string): boolean {
   }
 }
 
-function write(key: string, value: boolean) {
-  if (typeof window === "undefined") return;
+function writeLocal(key: string, value: boolean): boolean {
+  if (typeof window === "undefined") return false;
   try {
-    if (value) window.localStorage.setItem(key, "1");
-    else window.localStorage.removeItem(key);
+    if (value) {
+      window.localStorage.setItem(key, "1");
+      return window.localStorage.getItem(key) === "1";
+    }
+    window.localStorage.removeItem(key);
+    return window.localStorage.getItem(key) !== "1";
   } catch {
-    // Blocked storage cannot stop the exit; persistence is simply unavailable.
+    return false;
   }
+}
+
+function cookieName(key: string): string {
+  if (key === EXPLICIT_SIGNIN_KEY) return "klinklik_explicit_signin";
+  if (key === LOGOUT_UNCONFIRMED_KEY) return "klinklik_logout_unconfirmed";
+  return "klinklik_auth_reordered";
+}
+
+function readCookie(name: string): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  const prefix = `${name}=`;
+  const entry = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  return entry ? entry.slice(prefix.length) : undefined;
+}
+
+function writeCookie(name: string, value: boolean): boolean {
+  if (typeof document === "undefined") return false;
+  document.cookie = `${name}=${value ? "1" : ""}; path=/; SameSite=Lax; Max-Age=${value ? 86400 : 0}`;
+  return value ? readCookie(name) === "1" : readCookie(name) === undefined;
+}
+
+function probeStores() {
+  if (storeChecked) return;
+  storeChecked = true;
+  if (writeLocal(PROBE_KEY, true)) {
+    writeLocal(PROBE_KEY, false);
+    reliableStore = "localStorage";
+    return;
+  }
+  if (writeCookie(PROBE_COOKIE, true)) {
+    writeCookie(PROBE_COOKIE, false);
+    reliableStore = "cookie";
+    return;
+  }
+  reliableStore = null;
+}
+
+function notify(key: string, value: boolean) {
   try {
     window.dispatchEvent(
       new CustomEvent<MarkerChange>(EXIT_MARKER_EVENT, { detail: { key, value } }),
     );
   } catch {
-    // An observer failure must never break the exit either.
+    // An observer failure must never break the exit.
   }
 }
 
+function writeMarker(key: string, value: boolean) {
+  if (typeof window === "undefined") return;
+  probeStores();
+  let persisted = false;
+  if (reliableStore === "localStorage") persisted = writeLocal(key, value);
+  if (!persisted) persisted = writeCookie(cookieName(key), value);
+  if (!persisted && reliableStore === "localStorage") persisted = writeLocal(key, value);
+  if (value && !persisted) forcedExplicitSignIn = true;
+  if (!value) forcedExplicitSignIn = false;
+  notify(key, value);
+}
+
+function readMarker(key: string): boolean {
+  if (typeof window === "undefined") return false;
+  if (readLocal(key)) return true;
+  return readCookie(cookieName(key)) === "1";
+}
+
 export function markExplicitSignInRequired() {
-  write(EXPLICIT_SIGNIN_KEY, true);
+  writeMarker(EXPLICIT_SIGNIN_KEY, true);
 }
 
 export function clearExitMarkers() {
-  write(EXPLICIT_SIGNIN_KEY, false);
-  write(LOGOUT_UNCONFIRMED_KEY, false);
+  forcedExplicitSignIn = false;
+  writeMarker(EXPLICIT_SIGNIN_KEY, false);
+  writeMarker(LOGOUT_UNCONFIRMED_KEY, false);
 }
 
 export function explicitSignInRequired() {
-  return read(EXPLICIT_SIGNIN_KEY);
+  return forcedExplicitSignIn || readMarker(EXPLICIT_SIGNIN_KEY);
 }
 
 export function markLogoutUnconfirmed() {
-  write(LOGOUT_UNCONFIRMED_KEY, true);
+  writeMarker(LOGOUT_UNCONFIRMED_KEY, true);
 }
 
 export function logoutUnconfirmed() {
-  return read(LOGOUT_UNCONFIRMED_KEY);
+  return readMarker(LOGOUT_UNCONFIRMED_KEY);
+}
+
+export function markAuthReordered() {
+  writeMarker(AUTH_REORDER_KEY, true);
+}
+
+export function clearAuthReorderMarker() {
+  writeMarker(AUTH_REORDER_KEY, false);
+}
+
+export function authReordered() {
+  return readMarker(AUTH_REORDER_KEY);
+}
+
+export function automaticRefreshAllowed() {
+  if (!explicitSignInRequired()) {
+    probeStores();
+    if (reliableStore !== null) return true;
+  }
+  return false;
 }
 
 export function subscribeExitMarker(listener: (key: string, value: boolean) => void) {
@@ -62,7 +152,11 @@ export function subscribeExitMarker(listener: (key: string, value: boolean) => v
     if (detail) listener(detail.key, detail.value);
   }
   function onStorage(event: StorageEvent) {
-    if (event.key !== EXPLICIT_SIGNIN_KEY && event.key !== LOGOUT_UNCONFIRMED_KEY) return;
+    if (
+      event.key !== EXPLICIT_SIGNIN_KEY &&
+      event.key !== LOGOUT_UNCONFIRMED_KEY &&
+      event.key !== AUTH_REORDER_KEY
+    ) return;
     listener(event.key, event.newValue === "1");
   }
   window.addEventListener(EXIT_MARKER_EVENT, onMarker);

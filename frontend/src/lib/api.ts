@@ -9,7 +9,7 @@ import {
   type AuthoritySnapshot,
 } from "./authority";
 import { markSyncFailure, markSyncStart, markSyncSuccess, viewFromPath } from "./connectivity";
-import { explicitSignInRequired } from "./exit-marker";
+import { automaticRefreshAllowed, markAuthReordered } from "./exit-marker";
 
 export type ApiSession = SessionResponse;
 export type RoleGrant = SessionResponse["roles"][number];
@@ -44,6 +44,9 @@ export class StaleAuthorityResponseError extends Error {
 let accessToken: string | null = null;
 let facilityId: string | null = null;
 let sessionGeneration = 0;
+let restoreInFlight: Promise<ApiSession | null> | null = null;
+let restoreController: AbortController | null = null;
+let logoutController: AbortController | null = null;
 const activeProtectedControllers = new Set<AbortController>();
 
 export function resetLocalAuth() {
@@ -56,6 +59,24 @@ export function resetLocalAuth() {
 export function cancelProtectedRequests() {
   for (const controller of activeProtectedControllers) controller.abort();
   activeProtectedControllers.clear();
+}
+
+function abortRestoreRequest() {
+  if (restoreController || restoreInFlight) markAuthReordered();
+  restoreController?.abort();
+  restoreController = null;
+  restoreInFlight = null;
+}
+
+// Cookie-changing requests are serialized per session generation. JavaScript
+// cannot undo a Set-Cookie that has already reached the browser, so a newer
+// login must cancel older refresh/logout requests BEFORE it sends its own
+// request. State generation guards alone cannot protect the cookie jar.
+export function prepareAuthForNewLogin() {
+  if (restoreController || logoutController || restoreInFlight) markAuthReordered();
+  abortRestoreRequest();
+  logoutController?.abort();
+  logoutController = null;
 }
 
 export function setAccessToken(token: string | null) {
@@ -72,11 +93,11 @@ export function setFacilityId(id: string | null) {
   setAuthorityFacility(id);
 }
 
-let restoreInFlight: Promise<ApiSession | null> | null = null;
-
 export function restoreSession(): Promise<ApiSession | null> {
-  if (explicitSignInRequired()) return Promise.resolve(null);
+  if (!automaticRefreshAllowed()) return Promise.resolve(null);
   if (!restoreInFlight) {
+    const controller = new AbortController();
+    restoreController = controller;
     restoreInFlight = (async () => {
       const origin = getAuthoritySnapshot();
       const generation = sessionGeneration;
@@ -87,9 +108,10 @@ export function restoreSession(): Promise<ApiSession | null> {
         const response = await fetch(API_URL + "/api/v1/auth/refresh/", {
           method: "POST",
           credentials: "include",
+          signal: controller.signal,
         });
         if (!response.ok) {
-          resetLocalAuth();
+          if (generation === sessionGeneration) resetLocalAuth();
           markSyncFailure();
           return null;
         }
@@ -112,10 +134,11 @@ export function restoreSession(): Promise<ApiSession | null> {
         markSyncSuccess("Workspace");
         return data;
       } catch (error) {
-        resetLocalAuth();
+        if (generation === sessionGeneration) resetLocalAuth();
         markSyncFailure();
         throw error;
       } finally {
+        if (restoreController === controller) restoreController = null;
         restoreInFlight = null;
       }
     })();
@@ -127,6 +150,10 @@ async function refreshAccessToken() {
   return Boolean(await restoreSession());
 }
 export async function login(username: string, password: string, organisationId?: string) {
+  // Cancel any older cookie-writing request before this login sends. A stale
+  // refresh/logout response delivered afterwards would overwrite or delete the
+  // new user's refresh cookie, which JavaScript cannot repair.
+  prepareAuthForNewLogin();
   const response = await fetch(API_URL + "/api/v1/auth/login/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -150,6 +177,9 @@ export async function login(username: string, password: string, organisationId?:
 
 export async function logout(): Promise<{ revoked: boolean; owned: boolean }> {
   cancelProtectedRequests();
+  abortRestoreRequest();
+  const controller = new AbortController();
+  logoutController = controller;
   const generation = sessionGeneration;
   const bearer = accessToken;
   const exitFacility = facilityId;
@@ -160,6 +190,7 @@ export async function logout(): Promise<{ revoked: boolean; owned: boolean }> {
       const response = await fetch(API_URL + "/api/v1/auth/logout/", {
         method: "POST",
         credentials: "include",
+        signal: controller.signal,
         headers: {
           Authorization: "Bearer " + bearer,
           ...(exitFacility ? { "X-Facility-Id": exitFacility } : {}),
@@ -170,6 +201,7 @@ export async function logout(): Promise<{ revoked: boolean; owned: boolean }> {
   } catch {
     revoked = false;
   } finally {
+    if (logoutController === controller) logoutController = null;
     // A newer explicit sign-in owns the module state now; never clear it from
     // an older exit request that completes late.
     owned = generation === sessionGeneration;

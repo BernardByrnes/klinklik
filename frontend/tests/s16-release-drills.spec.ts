@@ -90,6 +90,17 @@ async function loginAs(page: Page, username: string, password: string) {
   await expect(page).toHaveURL(/\/(overview|patients)$/);
 }
 
+async function signInHere(page: Page, username: string, password: string) {
+  await page.waitForSelector('html[data-app-ready="1"]', { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/login$/);
+  const organisationId = process.env.CLINICOPUS_E2E_ORGANISATION_ID;
+  if (organisationId) await steadyFill(page, "Organisation ID", organisationId);
+  await steadyFill(page, "Username", username);
+  await steadyFill(page, "Password", password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+}
+
 async function apiLoginAs(page: Page, username: string, password: string) {
   const response = await page.request.post(`${API}/api/v1/auth/login/`, {
     data: { username, password },
@@ -781,7 +792,7 @@ test("S-42 switch user survives a late logout and requires explicit B sign-in", 
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
 
-  await loginAs(page, SWITCH_B, SWITCH_PASSWORD);
+  await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
   const epochB = await page.locator("[data-authority-epoch]").getAttribute("data-authority-epoch");
   expect(epochB).toBeTruthy();
 
@@ -831,4 +842,195 @@ test("S-42 confirmed logout revokes the old bearer for protected requests", asyn
   });
   expect(protectedRequest.status()).toBe(401);
   await expect(page).toHaveURL(/\/login$/);
+});
+
+test("S-42 blocked marker writes with a still-valid refresh cookie stay locked", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => {
+      throw new Error("localStorage writes are blocked");
+    };
+  });
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+  const root = page.locator("[data-authority-epoch]");
+  expect(await root.getAttribute("data-authority-epoch")).toBeTruthy();
+
+  let releaseLogout: (() => void) | null = null;
+  await page.route("**/api/v1/auth/logout/", async (route) => {
+    await new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    // The server never processes this logout, so A's refresh cookie stays valid.
+    await route.abort("failed");
+  });
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(root).toHaveCount(0);
+  await expect(page.getByLabel("Username", { exact: true })).toBeVisible();
+  releaseLogout?.();
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(root).toHaveCount(0);
+  await expect(page.getByLabel("Username", { exact: true })).toHaveValue("");
+  await page.goto("/patients");
+  await expect(page).toHaveURL(/\/login$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(root).toHaveCount(0);
+});
+
+test("S-42 a real late logout response cannot replace the new user's cookie", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+
+  let releaseLogout: (() => void) | null = null;
+  let logoutPrepared = false;
+  await page.route("**/api/v1/auth/logout/", async (route) => {
+    const served = await route.fetch();
+    logoutPrepared = true;
+    await new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    try {
+      await route.fulfill({
+        status: served.status(),
+        headers: served.headers(),
+        body: await served.body(),
+      });
+      // Playwright does not apply Set-Cookie from a fulfilled response; apply
+      // the fetched logout response's delete semantics explicitly only when
+      // the newer login has not cancelled the stale request.
+      const reordered = await page.evaluate(
+        () => window.localStorage.getItem("klinklik:auth-reordered") === "1",
+      );
+      if (!reordered) {
+        await page.context().clearCookies({ name: "clinicopus_refresh" });
+      }
+    } catch {
+      // A newer login may have cancelled this stale response.
+    }
+  });
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
+  await expect.poll(() => logoutPrepared).toBe(true);
+  await expect(page).toHaveURL(/\/login$/);
+
+  await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
+  expect(releaseLogout).not.toBeNull();
+  releaseLogout?.();
+  await page.waitForTimeout(750);
+
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+  await page.locator("main").click({ position: { x: 5, y: 5 } });
+  await page.reload();
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+});
+
+test("S-42 a real late refresh response cannot replace the new user's cookie", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+
+  await page.goto("/patients");
+  await expect(page.getByRole("heading", { name: "Patients", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
+
+  let refreshPrepared = false;
+  let releaseRefresh: (() => void) | null = null;
+  let heldRefresh = false;
+  await page.route("**/api/v1/auth/refresh/", async (route) => {
+    if (!heldRefresh) {
+      heldRefresh = true;
+    } else {
+      await route.continue();
+      return;
+    }
+    const served = await route.fetch();
+    refreshPrepared = true;
+    await new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    try {
+      await route.fulfill({
+        status: served.status(),
+        headers: served.headers(),
+        body: await served.body(),
+      });
+      // Playwright does not apply Set-Cookie from a fulfilled response; apply
+      // the fetched refresh response's rotated cookie explicitly only when the
+      // newer login has not cancelled the stale request.
+      const reordered = await page.evaluate(
+        () => window.localStorage.getItem("klinklik:auth-reordered") === "1",
+      );
+      const setCookie = served.headers()["set-cookie"] ?? "";
+      const rotated = /clinicopus_refresh="?([^;"]+)"?/.exec(setCookie);
+      if (rotated && !reordered) {
+        await page.context().addCookies([
+          {
+            name: "clinicopus_refresh",
+            value: rotated[1],
+            domain: "127.0.0.1",
+            path: "/api/v1/auth/",
+            httpOnly: true,
+            secure: false,
+            sameSite: "Lax",
+          },
+        ]);
+      }
+    } catch {
+      // A newer login may have cancelled this stale response.
+    }
+  });
+  let forced = false;
+  await page.route("**/api/v1/patients/?q=*", async (route) => {
+    if (!forced) {
+      forced = true;
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Access token is revoked or expired." }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  // Trigger a real 401 through the app's own query so api.ts starts a refresh
+  // while A's workspace is still mounted.
+  await steadyFill(page, "Search by name, phone, or patient number", "S42");
+  await expect.poll(() => refreshPrepared).toBe(true);
+  await expect(page.getByRole("button", { name: "Account menu" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
+  expect(releaseRefresh).not.toBeNull();
+  releaseRefresh?.();
+  await page.waitForTimeout(750);
+
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+  await page.locator("main").click({ position: { x: 5, y: 5 } });
+  await page.reload();
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
 });
