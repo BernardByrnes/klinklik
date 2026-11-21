@@ -71,7 +71,13 @@ type LabRow = {
   version_no: number | null;
 };
 
-type Pagination = { limit: number; offset: number; count: number; has_more: boolean };
+type Pagination = {
+  view: "active" | "history";
+  limit: number;
+  offset: number;
+  count: number;
+  has_more: boolean;
+};
 
 type Worklist = {
   awaiting_payment: LabRow[];
@@ -146,13 +152,16 @@ export default function LabPage() {
   const [notDone, setNotDone] = useState<Record<string, boolean>>({});
   const [comments, setComments] = useState("");
   const [notice, setNotice] = useState("");
+  const [worklistView, setWorklistView] = useState<"active" | "history">("active");
 
-  const worklistKey = useProtectedQueryKey("lab-worklist");
+  const worklistKey = useProtectedQueryKey("lab-worklist", worklistView);
   const worklist = useInfiniteQuery({
     queryKey: worklistKey,
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
-      apiRequest<Worklist>(`/api/v1/lab/worklist/?limit=50&offset=${pageParam}`),
+      apiRequest<Worklist>(
+        `/api/v1/lab/worklist/?limit=50&offset=${pageParam}&view=${worklistView}`
+      ),
     getNextPageParam: (last) =>
       last.pagination.has_more
         ? last.pagination.offset + last.pagination.limit
@@ -168,7 +177,7 @@ export default function LabPage() {
       to_verify: [],
       rejected: [],
       released: [],
-      pagination: { limit: 50, offset: 0, count: 0, has_more: false },
+      pagination: { view: worklistView, limit: 50, offset: 0, count: 0, has_more: false },
     };
     for (const page of worklist.data?.pages ?? []) {
       for (const name of [
@@ -546,6 +555,18 @@ export default function LabPage() {
             ) : null}
           </Card>
         ) : null}
+
+        <div className="flex justify-end">
+          <Button
+            variant="small-secondary"
+            onClick={() => {
+              setSelected(null);
+              setWorklistView((current) => (current === "active" ? "history" : "active"));
+            }}
+          >
+            {worklistView === "active" ? "Show released history" : "Back to active work"}
+          </Button>
+        </div>
 
         {worklist.isLoading ? (
           <Card>

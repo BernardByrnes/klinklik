@@ -27,6 +27,8 @@ function publish(organisationId: string | null, facilityId: string | null) {
 }
 
 export function setAuthoritySession(organisationId: string, facilityId: string | null) {
+  const current = getAuthoritySnapshot();
+  if (current.organisationId === organisationId && current.facilityId === facilityId) return;
   publish(organisationId, facilityId);
 }
 

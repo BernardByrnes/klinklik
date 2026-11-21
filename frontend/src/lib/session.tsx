@@ -6,12 +6,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   ApiSession,
   Facility,
+  getFacilityId,
   login as apiLogin,
   logout as apiLogout,
   restoreSession,
   setFacilityId,
 } from "./api";
 import { subscribeAuthority } from "./authority";
+import { resetConnectivity } from "./connectivity";
 import { clearProtectedState } from "./query-state";
 
 type SessionContextValue = {
@@ -34,6 +36,7 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
 
   useEffect(() => {
     const unsubscribe = subscribeAuthority(() => {
+      resetConnectivity();
       void clearProtectedState(queryClient).catch(() => undefined);
     });
     return () => {
@@ -46,8 +49,9 @@ export function SessionProvider({ children }: Readonly<{ children: React.ReactNo
     restoreSession()
       .then((restored) => {
         if (mounted && restored) {
+          const restoredFacility = getFacilityId();
           setSession(restored);
-          setFacilityIdState(restored.facilities[0]?.id ?? null);
+          setFacilityIdState(restoredFacility);
         }
       })
       .catch(() => {

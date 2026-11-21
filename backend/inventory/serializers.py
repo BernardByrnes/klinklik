@@ -204,6 +204,40 @@ class StockCountListQuerySerializer(serializers.Serializer):
     offset = serializers.IntegerField(min_value=0, required=False, default=0)
 
 
+class StockSummaryQuerySerializer(serializers.Serializer):
+    q = serializers.CharField(required=False, allow_blank=True, default="")
+    category = serializers.CharField(required=False, allow_blank=True)
+    status = serializers.CharField(required=False, allow_blank=True)
+    location_id = serializers.UUIDField(required=False)
+
+
+class StockBatchListQuerySerializer(serializers.Serializer):
+    product_id = serializers.UUIDField(required=False)
+    location_id = serializers.UUIDField(required=False)
+    expiry_from = serializers.DateField(required=False)
+    expiry_to = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        if attrs.get("expiry_from") and attrs.get("expiry_to"):
+            if attrs["expiry_from"] > attrs["expiry_to"]:
+                raise serializers.ValidationError("expiry_from must not follow expiry_to.")
+        return attrs
+
+
+class MovementListQuerySerializer(serializers.Serializer):
+    batch_id = serializers.UUIDField(required=False)
+    movement_type = serializers.CharField(required=False, allow_blank=True)
+    location_id = serializers.UUIDField(required=False)
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+
+    def validate(self, attrs):
+        if attrs.get("date_from") and attrs.get("date_to"):
+            if attrs["date_from"] > attrs["date_to"]:
+                raise serializers.ValidationError("date_from must not follow date_to.")
+        return attrs
+
+
 class StockCountListSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     location_id = serializers.UUIDField()

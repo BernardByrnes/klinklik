@@ -45,6 +45,9 @@ class LabOrderCreateSerializer(serializers.Serializer):
 class LabWorklistQuerySerializer(serializers.Serializer):
     limit = serializers.IntegerField(min_value=1, max_value=200, required=False, default=50)
     offset = serializers.IntegerField(min_value=0, required=False, default=0)
+    view = serializers.ChoiceField(
+        choices=["active", "history"], required=False, default="active"
+    )
 
 
 class LabItemSerializer(serializers.ModelSerializer):

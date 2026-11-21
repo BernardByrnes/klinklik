@@ -942,3 +942,60 @@ def test_s35_r1_draft_head_cannot_be_released(tenant, authed_client):
     with tenant_atomic(tenant.organisation.id):
         assert LabOrderItem.objects.get(id=item_id).state == "RELEASED"
         assert AuditEvent.objects.filter(event_code="LAB_RESULT_RELEASED").count() == 1
+
+
+def test_s35_r6_worklist_separates_actionable_rows_from_history(tenant, authed_client):
+    """S-35 Fix 6: historical releases must not crowd the actionable page."""
+
+    patient_id = register(authed_client, "s35-r6-register")
+    checked_in = check_in(authed_client, patient_id, tenant, "s35-r6-checkin")
+    encounter_id = _encounter(tenant, checked_in["visit_id"])
+    test = _test(authed_client, tenant, code="S35R6")
+
+    released_order = _order(
+        authed_client, encounter_id, test["id"], key="s35-r6-old", priority="URGENT"
+    )
+    assert released_order.status_code == 201, released_order.data
+    old_item_id = released_order.data["items"][0]["id"]
+    assert authed_client.post(
+        f"/api/v1/lab/items/{old_item_id}/collect/", {}, format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-old-collect",
+    ).status_code == 200
+    with tenant_atomic(tenant.organisation.id):
+        analytes = list(
+            LabAnalyteDefinition.objects.filter(test_id=test["id"]).order_by("sequence")
+        )
+    values = [{"analyte_id": str(analyte.id), "value": "12.0"} for analyte in analytes]
+    saved = authed_client.patch(
+        f"/api/v1/lab/items/{old_item_id}/results/",
+        {"values": values, "comments": "", "complete": True},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-old-result",
+    )
+    assert saved.status_code == 201, saved.data
+    verifier, _admin = _admin_client(tenant)
+    assert verifier.post(
+        f"/api/v1/lab/items/{old_item_id}/release/",
+        {"expected_version": saved.data["version_no"]},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="s35-r6-old-release",
+    ).status_code == 200
+
+    active_order = _order(
+        authed_client, encounter_id, test["id"], key="s35-r6-active", priority="ROUTINE"
+    )
+    assert active_order.status_code == 201, active_order.data
+    active_item_id = active_order.data["items"][0]["id"]
+
+    first = authed_client.get("/api/v1/lab/worklist/?limit=1")
+    assert first.status_code == 200, first.data
+    assert [row["item_id"] for row in first.data["to_collect"]] == [active_item_id]
+    assert all(row["item_id"] != old_item_id for section in (
+        "awaiting_payment", "to_collect", "in_bench", "to_verify", "rejected", "released"
+    ) for row in first.data[section])
+    assert first.data["pagination"]["count"] == 1
+
+    history = authed_client.get("/api/v1/lab/worklist/?view=history&limit=1")
+    assert history.status_code == 200, history.data
+    assert [row["item_id"] for row in history.data["released"]] == [old_item_id]
+    assert history.data["pagination"]["count"] == 1

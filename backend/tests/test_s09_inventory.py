@@ -579,3 +579,43 @@ def test_s32_drilldown_filters_by_location_and_date(tenant, authed_client):
     assert in_window.status_code == 200 and out_of_window.status_code == 200
     assert len(in_window.data) >= 1
     assert out_of_window.data == []
+
+
+def test_s35_r6_inventory_filters_validate_and_empty_location_hides_batches(
+    tenant, authed_client
+):
+    """S-35 Fix 6: malformed filters fail closed and empty scopes return no rows."""
+
+    location = _locations(authed_client)[0]
+    product = _product(authed_client, generic_name="S35 Filter Product")
+    _s32_price(authed_client, product["id"])
+    assert _receive(authed_client, product["id"], location["id"], quantity="10.00").status_code == 201
+    empty_location = authed_client.post(
+        "/api/v1/inventory/locations/",
+        {
+            "code": f"S35-EMPTY-{uuid4().hex[:6]}",
+            "name": "S35 empty location",
+            "location_type": "STORE",
+        },
+        format="json",
+        HTTP_IDEMPOTENCY_KEY=f"s35-empty-location-{uuid4().hex}",
+    )
+    assert empty_location.status_code == 201, empty_location.data
+    empty_id = empty_location.data["id"]
+
+    empty_batches = authed_client.get(
+        f"/api/v1/inventory/batches/?product_id={product['id']}&location_id={empty_id}"
+    )
+    assert empty_batches.status_code == 200, empty_batches.data
+    assert empty_batches.data == []
+
+    invalid = [
+        "/api/v1/inventory/batches/?expiry_from=not-a-date",
+        "/api/v1/inventory/batches/?expiry_from=2030-01-01&expiry_to=2029-01-01",
+        "/api/v1/inventory/movements/?date_from=not-a-date",
+        "/api/v1/inventory/movements/?date_from=2030-01-01&date_to=2029-01-01",
+        "/api/v1/inventory/stock/?location_id=not-a-uuid",
+    ]
+    for path in invalid:
+        response = authed_client.get(path)
+        assert response.status_code == 400, (path, response.status_code, response.data)

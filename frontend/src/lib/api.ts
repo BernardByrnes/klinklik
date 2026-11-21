@@ -53,6 +53,10 @@ export function setAccessToken(token: string | null) {
   accessToken = token;
 }
 
+export function getFacilityId() {
+  return facilityId;
+}
+
 export function setFacilityId(id: string | null) {
   if (facilityId === id) return;
   facilityId = id;
@@ -64,6 +68,10 @@ let restoreInFlight: Promise<ApiSession | null> | null = null;
 export function restoreSession(): Promise<ApiSession | null> {
   if (!restoreInFlight) {
     restoreInFlight = (async () => {
+      const origin = getAuthoritySnapshot();
+      const previousOrganisation = origin.organisationId;
+      const previousFacility = origin.facilityId ?? facilityId;
+      markSyncStart();
       try {
         const response = await fetch(API_URL + "/api/v1/auth/refresh/", {
           method: "POST",
@@ -73,17 +81,31 @@ export function restoreSession(): Promise<ApiSession | null> {
           accessToken = null;
           facilityId = null;
           clearAuthority();
+          markSyncFailure();
           return null;
         }
         const data = (await response.json()) as ApiSession;
+        if (!isCurrentAuthority(origin)) {
+          markSyncFailure();
+          return null;
+        }
+        const keepFacility =
+          previousOrganisation === data.organisation.id &&
+          Boolean(previousFacility) &&
+          data.facilities.some((facility) => facility.id === previousFacility);
+        const restoredFacility = keepFacility
+          ? previousFacility
+          : data.facilities[0]?.id || null;
         accessToken = data.access_token;
-        facilityId = data.facilities[0]?.id || null;
-        setAuthoritySession(data.organisation.id, facilityId);
+        facilityId = restoredFacility;
+        setAuthoritySession(data.organisation.id, restoredFacility);
+        markSyncSuccess("Workspace");
         return data;
       } catch (error) {
         accessToken = null;
         facilityId = null;
         clearAuthority();
+        markSyncFailure();
         throw error;
       } finally {
         restoreInFlight = null;

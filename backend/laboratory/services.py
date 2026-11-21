@@ -276,18 +276,24 @@ def order_status(order):
     return "PENDING"
 
 
-def worklists(*, organisation, facility, limit=50, offset=0):
+def worklists(*, organisation, facility, limit=50, offset=0, view="active"):
     assert_transaction_active()
-    base = (
-        LabOrderItem.objects.filter(organisation=organisation, facility=facility)
-        .exclude(state="CANCELLED")
-        .select_related(
-            "order", "order__visit", "order__visit__patient", "order__ordered_by",
-            "test", "result",
+    items = LabOrderItem.objects.filter(organisation=organisation, facility=facility)
+    if view == "history":
+        items = items.filter(state="RELEASED").order_by(
+            "-order__created_at", "-order__priority", "id"
         )
-        .order_by("-order__priority", "order__created_at", "id")
+    else:
+        items = (
+            items.exclude(state__in=("CANCELLED", "RELEASED", "REFERRED_OUT"))
+            .order_by("-order__priority", "order__created_at", "id")
+        )
+    base = items.select_related(
+        "order", "order__visit", "order__visit__patient", "order__ordered_by",
+        "test", "result",
     )
     count = base.count()
+    base = base.annotate(_rejection_count=models.Count("rejections"))
     sections = {
         "awaiting_payment": [],
         "to_collect": [],
@@ -320,7 +326,7 @@ def worklists(*, organisation, facility, limit=50, offset=0):
             "specimen_id": item.specimen_id,
             "urgency": item.priority == "URGENT",
             "rejection_reason": item.rejection_reason,
-            "recollection_count": item.rejections.count(),
+            "recollection_count": item._rejection_count,
             "version_no": result.current_version if result is not None else None,
             "result_state": result.state if result is not None else None,
         }
@@ -339,6 +345,7 @@ def worklists(*, organisation, facility, limit=50, offset=0):
         elif item.state == "RELEASED":
             sections["released"].append(row)
     sections["pagination"] = {
+        "view": view,
         "limit": limit,
         "offset": offset,
         "count": count,

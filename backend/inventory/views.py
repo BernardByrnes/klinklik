@@ -28,16 +28,19 @@ from inventory.serializers import (
     ProductPriceSetSerializer,
     ProductSerializer,
     QuarantineSerializer,
+    MovementListQuerySerializer,
     StockAdjustmentApproveSerializer,
     StockAdjustmentCreateSerializer,
     StockCountApproveSerializer,
     StockCountListQuerySerializer,
     StockCountListSerializer,
     StockCountOpenSerializer,
+    StockBatchListQuerySerializer,
     StockCountSubmitSerializer,
     StockLocationSerializer,
     StockLocationWriteSerializer,
     StockReceiptSerializer,
+    StockSummaryQuerySerializer,
     SupplierSerializer,
     SupplierWriteSerializer,
     ThresholdSerializer,
@@ -271,31 +274,33 @@ class StockReceiptView(TenantAPIView):
 
 class StockSummaryView(TenantAPIView):
     capability = "inventory.read"
+    request_serializer_class = StockSummaryQuerySerializer
 
     def get(self, request):
+        serializer = StockSummaryQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        filters = dict(serializer.validated_data)
+        filters["query"] = filters.pop("q", "")
         rows = stock_summary(
             organisation=request.organisation,
             facility=request.facility,
-            query=request.query_params.get("q", ""),
-            category=request.query_params.get("category"),
-            status=request.query_params.get("status"),
-            location_id=request.query_params.get("location_id"),
+            **filters,
         )
         return Response(rows)
 
 
 class StockBatchListView(TenantAPIView):
     capability = "inventory.read"
+    request_serializer_class = StockBatchListQuerySerializer
 
     def get(self, request):
+        serializer = StockBatchListQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
         return Response(
             stock_batches(
                 organisation=request.organisation,
                 facility=request.facility,
-                product_id=request.query_params.get("product_id"),
-                location_id=request.query_params.get("location_id"),
-                expiry_from=request.query_params.get("expiry_from"),
-                expiry_to=request.query_params.get("expiry_to"),
+                **serializer.validated_data,
             )
         )
 
@@ -317,18 +322,17 @@ class FefoView(TenantAPIView):
 
 class MovementListView(TenantAPIView):
     capability = "inventory.read"
+    request_serializer_class = MovementListQuerySerializer
     response_serializer_class = MovementSerializer
     response_is_list = True
 
     def get(self, request):
+        serializer = MovementListQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
         movements = ledger_movements(
             organisation=request.organisation,
             facility=request.facility,
-            batch_id=request.query_params.get("batch_id"),
-            movement_type=request.query_params.get("movement_type"),
-            location_id=request.query_params.get("location_id"),
-            date_from=request.query_params.get("date_from"),
-            date_to=request.query_params.get("date_to"),
+            **serializer.validated_data,
         )[:500]
         return Response(MovementSerializer(movements, many=True).data)
 

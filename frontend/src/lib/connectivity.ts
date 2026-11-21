@@ -74,6 +74,10 @@ export function markSyncFailure() {
   });
 }
 
+export function resetConnectivity() {
+  publish({ ...INITIAL, online: snapshot.online });
+}
+
 export function setOnline(online: boolean) {
   if (snapshot.online === online) return;
   publish({ ...snapshot, online });

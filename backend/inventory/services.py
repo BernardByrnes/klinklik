@@ -835,6 +835,17 @@ def stock_batches(
         ).select_related("location")
         if location_id:
             balances = balances.filter(location_id=location_id)
+        locations = [
+            {
+                "location_id": str(balance.location_id),
+                "location_name": balance.location.name,
+                "quantity": str(balance.quantity),
+            }
+            for balance in balances
+            if balance.quantity != 0
+        ]
+        if location_id and not locations:
+            continue
         rows.append(
             {
                 "id": str(batch.id),
@@ -842,15 +853,7 @@ def stock_batches(
                 "batch_no": batch.batch_no,
                 "expiry_date": batch.expiry_date.isoformat(),
                 "status": batch_expiry_state(batch),
-                "locations": [
-                    {
-                        "location_id": str(balance.location_id),
-                        "location_name": balance.location.name,
-                        "quantity": str(balance.quantity),
-                    }
-                    for balance in balances
-                    if balance.quantity != 0
-                ],
+                "locations": locations,
             }
         )
     return rows

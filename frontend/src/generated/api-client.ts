@@ -48,10 +48,11 @@ export type LabResultRelease = { expected_version: number; };
 export type LabResultSave = { values: Array<{  }>; comments?: string; complete?: boolean; };
 export type LabTest = { id: string; code: string; name: string; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; service?: string | null; turnaround_minutes?: number; coded_options?: {  }; text_template?: string; active?: boolean; definition_version?: number; version?: number; analytes: Array<{ id: string; code: string; name: string; unit?: string; result_type?: string; sequence?: number; coded_options?: {  }; }>; };
 export type LabTestConfigure = { code: string; name: string; service_id?: string | null; specimen_type?: string; result_type?: "NUMERIC" | "CODED" | "TEXT" | "PANEL"; turnaround_minutes?: number; coded_options?: Array<string>; analytes?: Array<{  }>; };
-export type LabWorklistQuery = { limit?: number; offset?: number; };
+export type LabWorklistQuery = { limit?: number; offset?: number; view?: "active" | "history"; };
 export type Login = { username: string; password: string; organisation_id?: string; };
 export type MeResponse = { user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Movement = { id: string; product: string; batch: string; batch_no: string; expiry_date: string; location: string; location_name: string; movement_type: "IN_GRN" | "OUT_DISPENSE" | "OUT_SALE" | "TRANSFER_IN" | "TRANSFER_OUT" | "ADJUSTMENT" | "WRITE_OFF" | "QUARANTINE" | "REVERSAL" | "OPENING"; quantity: string; source_type: string; source_id: string; reason_code?: string; occurred_at?: string; };
+export type MovementListQuery = { batch_id?: string; movement_type?: string; location_id?: string; date_from?: string; date_to?: string; };
 export type NotDispensed = { reason: "OUT_OF_STOCK" | "PATIENT_DECLINED" | "PATIENT_CANNOT_AFFORD" | "PRESCRIBER_CANCELLED" | "NOT_STOCKED" | "OTHER"; };
 export type NoteAmend = { content: {  }; reason: string; };
 export type NoteResponse = { note: string; status: string; content: { consultation?: string; presenting_complaint?: string; hpi?: string; past_medical_history?: string; past_surgical_history?: string; family_history?: string; social_history?: string; general_examination?: string; cardiovascular_examination?: string; respiratory_examination?: string; abdominal_examination?: string; neurological_examination?: string; genitourinary_examination?: string; musculoskeletal_examination?: string; treatment_plan?: string; [key: string]: unknown; }; complaints: Array<{ text: string; duration_value: number | null; duration_unit: "HOURS" | "DAYS" | "WEEKS" | "MONTHS" | null; }>; etag: string; saved_at: string; current_version?: number; };
@@ -103,6 +104,7 @@ export type ShiftClose = { declared_cash: string; reason?: string; };
 export type ShiftOpen = { opening_float?: string; };
 export type StockAdjustmentApprove = { expected_version?: number; };
 export type StockAdjustmentCreate = { batch_id: string; location_id: string; quantity: string; reason_code: string; note?: string; reference?: string; };
+export type StockBatchListQuery = { product_id?: string; location_id?: string; expiry_from?: string; expiry_to?: string; };
 export type StockCountApprove = { expected_version: number; };
 export type StockCountList = { id: string; location_id: string; location_name: string; state: string; version: number; opened_by_name: string | null; submitted_by_name: string | null; submitted_at: string | null; line_count: number; };
 export type StockCountListQuery = { state?: string; limit?: number; offset?: number; };
@@ -111,6 +113,7 @@ export type StockCountSubmit = { expected_version: number; lines: Array<{ line_i
 export type StockLocation = { id: string; code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; version?: number; };
 export type StockLocationWrite = { code: string; name: string; location_type?: "MAIN" | "STORE" | "DISPENSARY" | "LAB_STORE" | "TREATMENT_ROOM" | "QUARANTINE"; is_default?: boolean; is_quarantine?: boolean; active?: boolean; expected_version?: number; };
 export type StockReceipt = { receipt_no: string; lines: Array<{ product_id: string; location_id: string; batch_no: string; expiry_date: string; quantity: string; unit_cost?: string | null; }>; supplier_id?: string | null; supplier_name?: string; reference?: string; source_event_id?: string; };
+export type StockSummaryQuery = { q?: string; category?: string; status?: string; location_id?: string; };
 export type Supplier = { id: string; code: string; name: string; contact_person?: string; phone?: string; notes?: string; active?: boolean; version?: number; };
 export type SupplierWrite = { code: string; name: string; contact_person?: string; phone?: string; notes?: string; active?: boolean; expected_version?: number; };
 export type Threshold = { id: string; product: string; location?: string | null; reorder_level: string; version?: number; };
@@ -394,7 +397,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "811b7c5cbed555c51562a6f39620285af122fe3fdee00085714e96e430a1350e";
+export const GENERATED_API_CONTRACT_SHA256 = "38368751833c1ea7907ca556739104f4dd2d01ca0ae99d342842bc4b80700d2b";
 
 export const GENERATED_API_OPERATIONS = [
   {
