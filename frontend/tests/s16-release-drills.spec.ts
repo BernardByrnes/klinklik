@@ -1089,3 +1089,87 @@ test("S-42 a late refresh response cannot overwrite the new user's cookie", asyn
   await expect(menu).toContainText(SWITCH_B);
   await expect(menu).not.toContainText(SWITCH_A);
 });
+
+test("S-42 fallback marker cookie outlives the still-valid refresh cookie", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => {
+      throw new Error("localStorage writes are blocked");
+    };
+  });
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+
+  let releaseLogout: (() => void) | null = null;
+  await page.route("**/api/v1/auth/logout/", async (route) => {
+    await new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    await route.abort("failed");
+  });
+
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  releaseLogout?.();
+  await page.waitForTimeout(500);
+
+  const cookies = await page.context().cookies([`${API}/api/v1/auth/`]);
+  const marker = cookies.find((cookie) => cookie.name === "klinklik_explicit_signin");
+  const refresh = cookies.find((cookie) => cookie.name === "clinicopus_refresh");
+  expect(marker).toBeTruthy();
+  expect(refresh).toBeTruthy();
+  const now = Date.now() / 1000;
+  expect(marker!.expires).toBeGreaterThan(now + 24 * 60 * 60);
+  expect(marker!.expires).toBeGreaterThanOrEqual(refresh!.expires);
+  await page.reload();
+  await expect(page).toHaveURL(/\/login$/);
+});
+
+test("S-42 sign-in clears both marker stores after local storage recovers", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      const scoped = window as Window & { __s42BlockMarkerWrites?: boolean };
+      const markerKeys = ["klinklik:explicit-signin-required", "klinklik:logout-unconfirmed"];
+      if (scoped.__s42BlockMarkerWrites && markerKeys.includes(String(key))) {
+        throw new Error("marker localStorage write is blocked");
+      }
+      return original.call(this, key, value);
+    };
+  });
+  ensureSwitchUsers();
+  await loginAs(page, SWITCH_A, SWITCH_PASSWORD);
+
+  await page.evaluate(() => {
+    (window as Window & { __s42BlockMarkerWrites?: boolean }).__s42BlockMarkerWrites = true;
+  });
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Switch user", exact: true }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  const exitCookies = await page.context().cookies([API]);
+  expect(exitCookies.find((cookie) => cookie.name === "klinklik_explicit_signin")).toBeTruthy();
+  expect(
+    await page.evaluate(() => window.localStorage.getItem("klinklik:explicit-signin-required")),
+  ).toBeNull();
+
+  await page.evaluate(() => {
+    (window as Window & { __s42BlockMarkerWrites?: boolean }).__s42BlockMarkerWrites = false;
+  });
+  await signInHere(page, SWITCH_B, SWITCH_PASSWORD);
+
+  expect(
+    await page.evaluate(() => window.localStorage.getItem("klinklik:explicit-signin-required")),
+  ).toBeNull();
+  const signedInCookies = await page.context().cookies([API]);
+  expect(signedInCookies.find((cookie) => cookie.name === "klinklik_explicit_signin")).toBeUndefined();
+  expect(
+    signedInCookies.find((cookie) => cookie.name === "klinklik_logout_unconfirmed"),
+  ).toBeUndefined();
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/(overview|patients)$/);
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menu")).toContainText(SWITCH_B);
+});

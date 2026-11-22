@@ -11,6 +11,16 @@ type MarkerStore = "localStorage" | "cookie";
 
 const PROBE_KEY = "klinklik:marker-probe";
 const PROBE_COOKIE = "klinklik_marker_probe";
+const MARKER_KEYS = [EXPLICIT_SIGNIN_KEY, LOGOUT_UNCONFIRMED_KEY] as const;
+
+// Mirror the backend refresh lifetime. One extra day keeps a fallback marker
+// valid even when a refresh rotates immediately before the exit.
+const configuredRefreshDays = Number(process.env.NEXT_PUBLIC_REFRESH_TOKEN_DAYS ?? "7");
+const REFRESH_TOKEN_DAYS =
+  Number.isFinite(configuredRefreshDays) && configuredRefreshDays >= 1
+    ? Math.floor(configuredRefreshDays)
+    : 7;
+export const MARKER_LIFETIME_SECONDS = (REFRESH_TOKEN_DAYS + 1) * 24 * 60 * 60;
 
 let storeChecked = false;
 let reliableStore: MarkerStore | null = null;
@@ -48,15 +58,35 @@ function cookieName(key: string): string {
 function readCookie(name: string): string | undefined {
   if (typeof document === "undefined") return undefined;
   const prefix = `${name}=`;
-  const entry = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  const entry = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
   return entry ? entry.slice(prefix.length) : undefined;
+}
+
+function cookieAttributes(value: boolean): string {
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  return `path=/; SameSite=Lax${secure}; Max-Age=${value ? MARKER_LIFETIME_SECONDS : 0}`;
 }
 
 function writeCookie(name: string, value: boolean): boolean {
   if (typeof document === "undefined") return false;
-  const secure = window.location.protocol === "https:" ? "; Secure" : "";
-  document.cookie = `${name}=${value ? "1" : ""}; path=/; SameSite=Lax${secure}; Max-Age=${value ? 86400 : 0}`;
-  return value ? readCookie(name) === "1" : readCookie(name) === undefined;
+  try {
+    document.cookie = `${name}=${value ? "1" : ""}; ${cookieAttributes(value)}`;
+    return value ? readCookie(name) === "1" : readCookie(name) === undefined;
+  } catch {
+    return false;
+  }
+}
+
+function clearMarkerCookie(name: string) {
+  if (typeof document === "undefined") return;
+  try {
+    document.cookie = `${name}=; ${cookieAttributes(false)}`;
+  } catch {
+    // Independent clearing attempt; no caller may be blocked by this failure.
+  }
 }
 
 function probeStores() {
@@ -109,8 +139,15 @@ export function markExplicitSignInRequired() {
 
 export function clearExitMarkers() {
   forcedExplicitSignIn = false;
-  writeMarker(EXPLICIT_SIGNIN_KEY, false);
-  writeMarker(LOGOUT_UNCONFIRMED_KEY, false);
+  storeChecked = false;
+  reliableStore = null;
+  for (const key of MARKER_KEYS) {
+    writeLocal(key, false);
+    clearMarkerCookie(cookieName(key));
+    notify(key, false);
+  }
+  clearMarkerCookie(PROBE_COOKIE);
+  writeLocal(PROBE_KEY, false);
 }
 
 export function explicitSignInRequired() {
