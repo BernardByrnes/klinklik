@@ -13,6 +13,10 @@ from tenancy.models import Facility
 from tenancy.serializers import FacilitySerializer, OrganisationSerializer
 
 
+def refresh_lifetime_seconds(session):
+    return int(round((session.refresh_expires_at - session.created_at).total_seconds()))
+
+
 def set_refresh_cookie(response, refresh):
     response.set_cookie(
         settings.REFRESH_COOKIE_NAME,
@@ -52,6 +56,7 @@ class LoginView(APIView):
             {
                 "access_token": opened.access_token,
                 "access_expires_at": opened.session.access_expires_at,
+                "refresh_lifetime_seconds": refresh_lifetime_seconds(opened.session),
                 "user": UserSummarySerializer(opened.user).data,
                 "organisation": OrganisationSerializer(opened.organisation).data,
                 "facilities": FacilitySerializer(opened.facilities, many=True).data,
@@ -80,6 +85,7 @@ class RefreshView(APIView):
             {
                 "access_token": opened.access_token,
                 "access_expires_at": opened.session.access_expires_at,
+                "refresh_lifetime_seconds": refresh_lifetime_seconds(opened.session),
                 "user": UserSummarySerializer(opened.user).data,
                 "organisation": OrganisationSerializer(opened.organisation).data,
                 "facilities": FacilitySerializer(opened.facilities, many=True).data,

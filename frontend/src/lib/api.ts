@@ -9,7 +9,7 @@ import {
   type AuthoritySnapshot,
 } from "./authority";
 import { markSyncFailure, markSyncStart, markSyncSuccess, viewFromPath } from "./connectivity";
-import { automaticRefreshAllowed } from "./exit-marker";
+import { automaticRefreshAllowed, setEffectiveRefreshLifetime } from "./exit-marker";
 
 export type ApiSession = SessionResponse;
 export type RoleGrant = SessionResponse["roles"][number];
@@ -114,6 +114,7 @@ export function restoreSession(): Promise<ApiSession | null> {
           return null;
         }
         const data = (await response.json()) as ApiSession;
+        setEffectiveRefreshLifetime(data.refresh_lifetime_seconds);
         if (!isCurrentAuthority(origin) || generation !== sessionGeneration) {
           markSyncFailure();
           return null;
@@ -168,6 +169,7 @@ export async function login(username: string, password: string, organisationId?:
   if (!response.ok) {
     throw new Error(data.detail || "Could not sign in.");
   }
+  setEffectiveRefreshLifetime(data.refresh_lifetime_seconds);
   accessToken = data.access_token;
   facilityId = data.facilities[0]?.id || null;
   sessionGeneration += 1;

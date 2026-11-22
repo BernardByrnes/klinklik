@@ -13,14 +13,31 @@ const PROBE_KEY = "klinklik:marker-probe";
 const PROBE_COOKIE = "klinklik_marker_probe";
 const MARKER_KEYS = [EXPLICIT_SIGNIN_KEY, LOGOUT_UNCONFIRMED_KEY] as const;
 
-// Mirror the backend refresh lifetime. One extra day keeps a fallback marker
-// valid even when a refresh rotates immediately before the exit.
+const ONE_DAY_SECONDS = 24 * 60 * 60;
+
+// Fallback for an older backend that does not report its effective lifetime.
 const configuredRefreshDays = Number(process.env.NEXT_PUBLIC_REFRESH_TOKEN_DAYS ?? "7");
 const REFRESH_TOKEN_DAYS =
   Number.isFinite(configuredRefreshDays) && configuredRefreshDays >= 1
     ? Math.floor(configuredRefreshDays)
     : 7;
-export const MARKER_LIFETIME_SECONDS = (REFRESH_TOKEN_DAYS + 1) * 24 * 60 * 60;
+const FALLBACK_REFRESH_LIFETIME_SECONDS = REFRESH_TOKEN_DAYS * ONE_DAY_SECONDS;
+
+// The backend reports the lifetime of the refresh cookie it just issued. Keep
+// the latest value here; a refresh response replaces it. One extra day covers
+// a marker written after the cookie and an immediate refresh before exit.
+let effectiveRefreshLifetimeSeconds: number | null = null;
+
+export function setEffectiveRefreshLifetime(seconds: unknown) {
+  const value = typeof seconds === "number" ? seconds : Number(seconds);
+  effectiveRefreshLifetimeSeconds =
+    Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
+export function markerLifetimeSeconds() {
+  const lifetime = effectiveRefreshLifetimeSeconds ?? FALLBACK_REFRESH_LIFETIME_SECONDS;
+  return lifetime + ONE_DAY_SECONDS;
+}
 
 let storeChecked = false;
 let reliableStore: MarkerStore | null = null;
@@ -67,7 +84,7 @@ function readCookie(name: string): string | undefined {
 
 function cookieAttributes(value: boolean): string {
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
-  return `path=/; SameSite=Lax${secure}; Max-Age=${value ? MARKER_LIFETIME_SECONDS : 0}`;
+  return `path=/; SameSite=Lax${secure}; Max-Age=${value ? markerLifetimeSeconds() : 0}`;
 }
 
 function writeCookie(name: string, value: boolean): boolean {

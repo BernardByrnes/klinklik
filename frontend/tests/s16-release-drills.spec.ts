@@ -6,6 +6,11 @@ import path from "node:path";
 const DEMO_PASSWORD = process.env.CLINICOPUS_E2E_PASSWORD ?? "ClinicopusDemo!2026";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8100";
 
+function configuredRefreshSeconds() {
+  const days = Number(process.env.REFRESH_TOKEN_DAYS ?? "7");
+  return Number.isFinite(days) && days >= 1 ? Math.floor(days) * 24 * 60 * 60 : 7 * 24 * 60 * 60;
+}
+
 async function steadyFill(page: Page, label: string, value: string) {
   const locator = page.getByLabel(label, { exact: true });
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -1120,7 +1125,15 @@ test("S-42 fallback marker cookie outlives the still-valid refresh cookie", asyn
   expect(marker).toBeTruthy();
   expect(refresh).toBeTruthy();
   const now = Date.now() / 1000;
+  const configuredSeconds = configuredRefreshSeconds();
+  console.log(
+    `S-42 cookie expiries now=${now.toFixed(0)} configured=${configuredSeconds} ` +
+      `refresh=${refresh!.expires.toFixed(0)} marker=${marker!.expires.toFixed(0)}`,
+  );
+  expect(refresh!.expires - now).toBeGreaterThan(configuredSeconds - 60);
+  expect(refresh!.expires - now).toBeLessThan(configuredSeconds + 60);
   expect(marker!.expires).toBeGreaterThan(now + 24 * 60 * 60);
+  expect(marker!.expires).toBeGreaterThan(now + configuredSeconds);
   expect(marker!.expires).toBeGreaterThanOrEqual(refresh!.expires);
   await page.reload();
   await expect(page).toHaveURL(/\/login$/);

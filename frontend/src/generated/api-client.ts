@@ -101,7 +101,7 @@ export type ReceiptReprint = { id: string; receipt_no: string; print_count: numb
 export type ReferralSource = { source_type: "SELF" | "REFERRED_FACILITY" | "REFERRED_PERSON" | "CAMP_OUTREACH" | "WALK_BY"; source_name?: string; expected_version?: number | null; };
 export type ReferralSourceResponse = { visit_id: string; version: number; };
 export type ServiceCatalog = { id: string; code: string; name: string; category?: string; description?: string; is_active?: boolean; prices: Array<{ id: string; price_list: string; amount: string; currency?: string; effective_from: string; effective_to?: string | null; is_active?: boolean; active?: boolean; source_version?: string; }>; };
-export type SessionResponse = { access_token: string; access_expires_at: string; user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
+export type SessionResponse = { access_token: string; access_expires_at: string; refresh_lifetime_seconds: number; user: { id: string; username: string; email?: string; first_name?: string; last_name?: string; full_name: string; }; organisation: { id: string; name: string; slug: string; status?: "ACTIVE" | "SUSPENDED" | "CLOSED"; timezone?: string; default_currency?: string; }; facilities: Array<{ id: string; name: string; code: string; mode?: "CLINIC" | "PHARMACY" | "CLINIC_PHARMACY"; timezone?: string; is_active?: boolean; }>; roles: Array<{ name: string; template_code: string; facility: string | null; department: string | null; department_code: string | null; }>; capabilities: Array<string>; };
 export type Shift = { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; };
 export type ShiftClose = { declared_cash: string; reason?: string; };
 export type ShiftCurrentResponse = { shift: { id: string; cashier: string; status?: "OPEN" | "CLOSED"; opened_at: string; closed_at?: string | null; closed_by?: string | null; opening_float?: string; declared_cash?: string | null; expected_cash?: string | null; variance?: string | null; close_reason?: string; version?: number; } | null; last_closed_shift: { id: string; status: string; opened_at: string; closed_at: string | null; declared_cash: string | null; expected_cash: string | null; variance: string | null; close_reason: string; } | null; };
@@ -405,7 +405,7 @@ export type GeneratedRequestOptions = RequestInit & {
   ifMatch?: string;
 };
 
-export const GENERATED_API_CONTRACT_SHA256 = "817ee567c0d64859b07ad40e934884a30988bd27f9a21eb629c8f4fa82dd2115";
+export const GENERATED_API_CONTRACT_SHA256 = "b42a1d565a5c16446723c51b6554f1148c14b5a337f8b79ab2f4672be39fd2a5";
 
 export const GENERATED_API_OPERATIONS = [
   {

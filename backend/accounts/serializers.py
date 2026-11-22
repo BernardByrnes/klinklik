@@ -31,6 +31,7 @@ class UserRoleGrantSerializer(serializers.Serializer):
 class SessionResponseSerializer(serializers.Serializer):
     access_token = serializers.CharField()
     access_expires_at = serializers.DateTimeField()
+    refresh_lifetime_seconds = serializers.IntegerField(read_only=True)
     user = UserSummarySerializer()
     organisation = OrganisationSerializer()
     facilities = FacilitySerializer(many=True)
